@@ -51,7 +51,8 @@ check_dep node  "Install Node.js >= 20."
 check_dep npx   "Comes with Node.js."
 
 # Ensure acorn and acorn-walk are available.
-if ! node -e "import('acorn'); import('acorn-walk')" 2>/dev/null; then
+# Use top-level await (--input-type=module) so the dynamic imports actually resolve.
+if ! node --input-type=module -e "await import('acorn'); await import('acorn-walk');" 2>/dev/null; then
   echo "[patch-cowork] Installing acorn and acorn-walk..."
   npm install --prefix "$REPO_DIR" acorn acorn-walk
 fi
@@ -62,11 +63,13 @@ fi
 echo "[patch-cowork] Searching for platform-gate function..."
 
 OFFSETS_FILE="$BUILD_DIR/platform-gate-offsets.json"
+VITE_BUILD_DIR="$APP_DIR/.vite/build"
 
-if ! node "$PATCHES_DIR/find-platform-gate.mjs" "$BUNDLE" > "$OFFSETS_FILE"; then
+if ! node "$PATCHES_DIR/find-platform-gate.mjs" "$VITE_BUILD_DIR" \
+     --output "$OFFSETS_FILE" > "$OFFSETS_FILE"; then
   echo "[patch-cowork] ERROR: find-platform-gate.mjs failed."
   echo "[patch-cowork] Re-running with --dump-candidates for diagnostics..."
-  node "$PATCHES_DIR/find-platform-gate.mjs" "$BUNDLE" --dump-candidates || true
+  node "$PATCHES_DIR/find-platform-gate.mjs" "$VITE_BUILD_DIR" --dump-candidates || true
   exit 1
 fi
 
