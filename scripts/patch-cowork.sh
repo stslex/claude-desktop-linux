@@ -4,106 +4,249 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # patch-cowork.sh
 #
-# Apply two patches to the main-process bundle (.vite/build/index.js):
+# Apply two patches to the main-process bundle:
 #
-#   1. Platform-gate patch — replace the Cowork availability check function
+#   1. Platform-gate patch  — replace the Cowork availability-check function
 #      body with an unconditional `return { status: "supported" }` using the
 #      AST-based find + apply pair in patches/.
 #
-#   2. Path-translator injection — prepend a one-line require of
+#   2. Path-translator injection — prepend a one-line require() of
 #      patches/path-translator.mjs so path/fs monkey-patching is active
 #      from the first tick of the main process.
 #
 # After patching, repack app-extracted/ back into app.asar.
 #
 # Env vars:
-#   BUILD_DIR   default: /tmp/claude-build
+#   BUILD_DIR          default: /tmp/claude-build
+#   SKIP_COWORK_PATCH  set to 1 to skip this script entirely
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+log() {
+  echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] [patch-cowork] $*"
+}
+
+# ---------------------------------------------------------------------------
+# Skip flag
+# ---------------------------------------------------------------------------
+if [[ "${SKIP_COWORK_PATCH:-}" == "1" ]]; then
+  log "Skipping Cowork patch"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
 BUILD_DIR="${BUILD_DIR:-/tmp/claude-build}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PATCHES_DIR="$REPO_DIR/patches"
 
 GUARD="$BUILD_DIR/.patch-cowork-done"
-
 if [[ -f "$GUARD" ]]; then
-  echo "[patch-cowork] Already done (remove $GUARD to re-run)."
+  log "Already done (remove $GUARD to re-run)."
   exit 0
 fi
 
 APP_DIR="$BUILD_DIR/app-extracted"
-BUNDLE="$APP_DIR/.vite/build/index.js"
 
-if [[ ! -f "$BUNDLE" ]]; then
-  echo "[patch-cowork] ERROR: $BUNDLE not found. Run fetch-and-extract.sh first."
+# ---------------------------------------------------------------------------
+# Verify app-extracted/ exists
+# ---------------------------------------------------------------------------
+if [[ ! -d "$APP_DIR" ]]; then
+  log "ERROR: $APP_DIR not found. Run fetch-and-extract.sh first."
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Find the .vite/build/ directory (or an accepted alternative)
+# ---------------------------------------------------------------------------
+VITE_BUILD_DIR=""
+
+if [[ -d "$APP_DIR/.vite/build" ]]; then
+  VITE_BUILD_DIR="$APP_DIR/.vite/build"
+else
+  log "WARNING: $APP_DIR/.vite/build not found — trying alternative locations..."
+  for candidate in \
+    "$APP_DIR/dist" \
+    "$APP_DIR/build" \
+    "$APP_DIR/out" \
+    "$APP_DIR/resources/app/.vite/build" \
+    "$APP_DIR/resources/app/dist"
+  do
+    if [[ -d "$candidate" ]] && compgen -G "$candidate/*.js" > /dev/null 2>&1; then
+      VITE_BUILD_DIR="$candidate"
+      log "Using alternative build directory: $VITE_BUILD_DIR"
+      break
+    fi
+  done
+fi
+
+if [[ -z "$VITE_BUILD_DIR" ]]; then
+  log "ERROR: Could not find .vite/build/ or any alternative build directory under $APP_DIR"
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Dependency checks
+# ---------------------------------------------------------------------------
 check_dep() {
   if ! command -v "$1" &>/dev/null; then
-    echo "[patch-cowork] ERROR: '$1' not found. $2"
+    log "ERROR: '$1' not found. $2"
     exit 1
   fi
 }
 
-check_dep node  "Install Node.js >= 20."
-check_dep npx   "Comes with Node.js."
+check_dep node "Install Node.js >= 20."
+check_dep npx  "Comes with Node.js."
 
-# Ensure acorn and acorn-walk are available.
-# Use top-level await (--input-type=module) so the dynamic imports actually resolve.
 if ! node --input-type=module -e "await import('acorn'); await import('acorn-walk');" 2>/dev/null; then
-  echo "[patch-cowork] Installing acorn and acorn-walk..."
+  log "Installing acorn and acorn-walk..."
   npm install --prefix "$REPO_DIR" acorn acorn-walk
 fi
 
 # ---------------------------------------------------------------------------
-# Patch 1 — Platform gate
+# Patch 1 — Find platform gate
 # ---------------------------------------------------------------------------
-echo "[patch-cowork] Searching for platform-gate function..."
+log "Searching for platform-gate function in $VITE_BUILD_DIR..."
 
-OFFSETS_FILE="$BUILD_DIR/platform-gate-offsets.json"
-VITE_BUILD_DIR="$APP_DIR/.vite/build"
+GATE_JSON="$BUILD_DIR/gate-location.json"
+FIND_LOG="$BUILD_DIR/patch-find.log"
 
-if ! node "$PATCHES_DIR/find-platform-gate.mjs" "$VITE_BUILD_DIR" \
-     --output "$OFFSETS_FILE" > "$OFFSETS_FILE"; then
-  echo "[patch-cowork] ERROR: find-platform-gate.mjs failed."
-  echo "[patch-cowork] Re-running with --dump-candidates for diagnostics..."
-  node "$PATCHES_DIR/find-platform-gate.mjs" "$VITE_BUILD_DIR" --dump-candidates || true
+set +e
+node "$PATCHES_DIR/find-platform-gate.mjs" "$VITE_BUILD_DIR" \
+  --output "$GATE_JSON" \
+  2>"$FIND_LOG"
+FIND_EXIT=$?
+set -e
+
+if [[ $FIND_EXIT -ne 0 ]]; then
+  log "ERROR: find-platform-gate.mjs failed (exit $FIND_EXIT). Log preserved at $FIND_LOG"
+  cat "$FIND_LOG" >&2
+  log "Re-running with --dump-candidates for additional diagnostics..."
+  node "$PATCHES_DIR/find-platform-gate.mjs" "$VITE_BUILD_DIR" \
+    --dump-candidates >> "$FIND_LOG" 2>&1 || true
   exit 1
 fi
 
-echo "[patch-cowork] Offsets: $(cat "$OFFSETS_FILE")"
-echo "[patch-cowork] Applying platform-gate patch..."
+log "Gate location: $(cat "$GATE_JSON")"
 
-node "$PATCHES_DIR/apply-platform-gate.mjs" "$BUNDLE" "$OFFSETS_FILE"
+# Extract fields for the summary (pass the path via argv to avoid quoting issues).
+GATE_FILE="$(node -e \
+  "const j=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));process.stdout.write(j.file);" \
+  -- "$GATE_JSON")"
+GATE_START="$(node -e \
+  "const j=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));process.stdout.write(String(j.start));" \
+  -- "$GATE_JSON")"
+GATE_END="$(node -e \
+  "const j=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));process.stdout.write(String(j.end));" \
+  -- "$GATE_JSON")"
 
 # ---------------------------------------------------------------------------
-# Patch 2 — Path translator injection
+# Patch 1 — Apply platform gate
 # ---------------------------------------------------------------------------
-echo "[patch-cowork] Injecting path-translator..."
+log "Applying platform-gate patch to $GATE_FILE..."
 
+APPLY_LOG="$BUILD_DIR/patch-apply.log"
+
+set +e
+node "$PATCHES_DIR/apply-platform-gate.mjs" \
+  --input "$GATE_JSON" \
+  2>"$APPLY_LOG"
+APPLY_EXIT=$?
+set -e
+
+if [[ $APPLY_EXIT -ne 0 ]]; then
+  log "ERROR: apply-platform-gate.mjs failed (exit $APPLY_EXIT). Log preserved at $APPLY_LOG"
+  cat "$APPLY_LOG" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Patch 2 — Find main entry point
+# ---------------------------------------------------------------------------
+log "Locating main entry point..."
+
+MAIN_ENTRY=""
+PKG_JSON="$APP_DIR/package.json"
+
+if [[ -f "$PKG_JSON" ]]; then
+  MAIN_FIELD="$(node -e \
+    "try{const p=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));if(p.main)process.stdout.write(p.main);}catch(e){}" \
+    -- "$PKG_JSON" 2>/dev/null || true)"
+  if [[ -n "$MAIN_FIELD" ]]; then
+    if [[ "$MAIN_FIELD" = /* ]]; then
+      CANDIDATE="$MAIN_FIELD"
+    else
+      CANDIDATE="$APP_DIR/$MAIN_FIELD"
+    fi
+    if [[ -f "$CANDIDATE" ]]; then
+      MAIN_ENTRY="$CANDIDATE"
+      log "Found main entry from package.json: $MAIN_ENTRY"
+    else
+      log "WARNING: package.json main='$MAIN_FIELD' → $CANDIDATE not found; trying fallbacks."
+    fi
+  fi
+fi
+
+if [[ -z "$MAIN_ENTRY" ]]; then
+  for candidate in \
+    "$APP_DIR/.vite/build/index.js" \
+    "$APP_DIR/.vite/build/main.js" \
+    "$VITE_BUILD_DIR/index.js" \
+    "$VITE_BUILD_DIR/main.js" \
+    "$APP_DIR/dist/main.js" \
+    "$APP_DIR/build/main.js" \
+    "$APP_DIR/index.js"
+  do
+    if [[ -f "$candidate" ]]; then
+      MAIN_ENTRY="$candidate"
+      log "Found main entry via fallback pattern: $MAIN_ENTRY"
+      break
+    fi
+  done
+fi
+
+if [[ -z "$MAIN_ENTRY" ]]; then
+  log "ERROR: Could not locate main entry point under $APP_DIR"
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Patch 2 — Prepend import of path-translator (idempotent)
+# ---------------------------------------------------------------------------
 TRANSLATOR_PATH="$PATCHES_DIR/path-translator.mjs"
+# path-translator.mjs is an ESM module (uses import/export); require() on a
+# .mjs file throws ERR_REQUIRE_ESM in Node.js.  Use top-level import instead.
 PREPEND_LINE="import '$TRANSLATOR_PATH';"
 
-# Only prepend if not already present (idempotency within a single run).
-if ! head -1 "$BUNDLE" | grep -qF 'path-translator'; then
-  # Prepend via a temp file to avoid reading and writing the same file.
-  TMPFILE="$(mktemp)"
-  { echo "$PREPEND_LINE"; cat "$BUNDLE"; } > "$TMPFILE"
-  mv "$TMPFILE" "$BUNDLE"
-  echo "[patch-cowork] Prepended: $PREPEND_LINE"
+if head -1 "$MAIN_ENTRY" | grep -qF 'path-translator'; then
+  log "path-translator already injected into $MAIN_ENTRY — skipping prepend."
 else
-  echo "[patch-cowork] path-translator already injected — skipping prepend."
+  TMPFILE="$(mktemp)"
+  { echo "$PREPEND_LINE"; cat "$MAIN_ENTRY"; } > "$TMPFILE"
+  mv "$TMPFILE" "$MAIN_ENTRY"
+  log "Prepended path-translator import to $MAIN_ENTRY"
 fi
 
 # ---------------------------------------------------------------------------
 # Repack app.asar
 # ---------------------------------------------------------------------------
-echo "[patch-cowork] Repacking app.asar..."
+log "Repacking app.asar..."
 npx --yes @electron/asar pack "$APP_DIR" "$BUILD_DIR/app.asar"
-
-echo "[patch-cowork] app.asar written to $BUILD_DIR/app.asar"
+log "app.asar written to $BUILD_DIR/app.asar"
 
 touch "$GUARD"
-echo "[patch-cowork] Done."
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+log "------------------------------------------------------------"
+log "Patch summary"
+log "  Gate-patched file   : $GATE_FILE"
+log "  Gate location       : start=$GATE_START  end=$GATE_END"
+log "  Translator injected : $MAIN_ENTRY"
+log "------------------------------------------------------------"
+log "Done."
