@@ -11,58 +11,83 @@ set -euo pipefail
 #   BUILD_DIR   default: /tmp/claude-build
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+log() {
+  echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] $*"
+}
+
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
 BUILD_DIR="${BUILD_DIR:-/tmp/claude-build}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-STUBS_DIR="$REPO_DIR/stubs"
-
-GUARD="$BUILD_DIR/.inject-stubs-done"
-
-if [[ -f "$GUARD" ]]; then
-  echo "[inject-stubs] Already done (remove $GUARD to re-run)."
-  exit 0
-fi
 
 APP_DIR="$BUILD_DIR/app-extracted"
 
+# ---------------------------------------------------------------------------
+# Pre-flight: extracted ASAR must exist
+# ---------------------------------------------------------------------------
 if [[ ! -d "$APP_DIR" ]]; then
-  echo "[inject-stubs] ERROR: $APP_DIR not found. Run fetch-and-extract.sh first."
+  log "ERROR: $APP_DIR not found."
+  log "Run scripts/fetch-and-extract.sh first."
   exit 1
 fi
 
 # ---------------------------------------------------------------------------
-# Helper: replace a native module directory with our stub.
-#
-# $1 — package name under node_modules (e.g. @ant/claude-native)
-# $2 — stub JS file (basename in stubs/)
-# $3 — stub package.json file (basename in stubs/)
+# Target directories
 # ---------------------------------------------------------------------------
-inject_stub() {
-  local pkg="$1"
-  local stub_js="$2"
-  local stub_pkg="$3"
+NATIVE_DIR="$APP_DIR/node_modules/@ant/claude-native"
+SWIFT_DIR="$APP_DIR/node_modules/@ant/claude-swift"
 
-  local mod_dir="$APP_DIR/node_modules/$pkg"
+mkdir -p "$NATIVE_DIR"
+mkdir -p "$SWIFT_DIR"
 
-  if [[ ! -d "$mod_dir" ]]; then
-    echo "[inject-stubs] WARNING: $mod_dir not found — skipping."
-    return
-  fi
+# ---------------------------------------------------------------------------
+# Copy stubs (overwrites on re-run — idempotent)
+# ---------------------------------------------------------------------------
+log "Injecting @ant/claude-native stub..."
+cp "$REPO_DIR/stubs/claude-native.js"       "$NATIVE_DIR/index.js"
+cp "$REPO_DIR/stubs/claude-native-pkg.json"  "$NATIVE_DIR/package.json"
 
-  echo "[inject-stubs] Replacing $pkg ..."
+log "Injecting @ant/claude-swift stub..."
+cp "$REPO_DIR/stubs/claude-swift.js"        "$SWIFT_DIR/index.js"
+cp "$REPO_DIR/stubs/claude-swift-pkg.json"   "$SWIFT_DIR/package.json"
 
-  # Remove everything inside the module directory.
-  rm -rf "${mod_dir:?}"/*
+# ---------------------------------------------------------------------------
+# Smoke checks — each stub must be require()-able by Node
+# ---------------------------------------------------------------------------
+log "Running smoke checks..."
 
-  # Copy our stub in place.
-  cp "$STUBS_DIR/$stub_js"  "$mod_dir/index.js"
-  cp "$STUBS_DIR/$stub_pkg" "$mod_dir/package.json"
+if ! node -e "require('$NATIVE_DIR')" 2>/dev/null; then
+  log "ERROR: smoke check failed for @ant/claude-native"
+  node -e "require('$NATIVE_DIR')" || true
+  exit 1
+fi
+log "  @ant/claude-native  OK"
 
-  echo "[inject-stubs]   → wrote $mod_dir/index.js + package.json"
-}
+if ! node -e "require('$SWIFT_DIR')" 2>/dev/null; then
+  log "ERROR: smoke check failed for @ant/claude-swift"
+  node -e "require('$SWIFT_DIR')" || true
+  exit 1
+fi
+log "  @ant/claude-swift   OK"
 
-inject_stub "@ant/claude-native" "claude-native.js" "claude-native-pkg.json"
-inject_stub "@ant/claude-swift"  "claude-swift.js"  "claude-swift-pkg.json"
+# ---------------------------------------------------------------------------
+# Summary with file sizes
+# ---------------------------------------------------------------------------
+NATIVE_JS_SIZE=$(du -sh "$NATIVE_DIR/index.js"      | awk '{print $1}')
+NATIVE_PKG_SIZE=$(du -sh "$NATIVE_DIR/package.json" | awk '{print $1}')
+SWIFT_JS_SIZE=$(du -sh "$SWIFT_DIR/index.js"        | awk '{print $1}')
+SWIFT_PKG_SIZE=$(du -sh "$SWIFT_DIR/package.json"   | awk '{print $1}')
 
-touch "$GUARD"
-echo "[inject-stubs] Done."
+log "------------------------------------------------------------"
+log "Stubs injected successfully"
+log "  $NATIVE_DIR/index.js    ($NATIVE_JS_SIZE)"
+log "  $NATIVE_DIR/package.json ($NATIVE_PKG_SIZE)"
+log "  $SWIFT_DIR/index.js     ($SWIFT_JS_SIZE)"
+log "  $SWIFT_DIR/package.json  ($SWIFT_PKG_SIZE)"
+log "------------------------------------------------------------"
+log "Done."
