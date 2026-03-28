@@ -39,7 +39,39 @@ if ! command -v rpmbuild &>/dev/null; then
 fi
 
 VERSION="$(cat "$BUILD_DIR/VERSION")"
+ELECTRON_VERSION="${ELECTRON_OVERRIDE:-$(cat "$BUILD_DIR/ELECTRON_VERSION")}"
 log "Version      : $VERSION"
+log "Electron     : $ELECTRON_VERSION"
+
+# ---------------------------------------------------------------------------
+# Download / cache Electron binary (shared cache with build-appimage.sh)
+# ---------------------------------------------------------------------------
+ELECTRON_CACHE="$BUILD_DIR/electron-cache"
+mkdir -p "$ELECTRON_CACHE"
+
+ELECTRON_ZIP="$ELECTRON_CACHE/electron-v${ELECTRON_VERSION}-linux-x64.zip"
+ELECTRON_BASE_URL="https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}"
+
+if [[ ! -f "$ELECTRON_ZIP" ]]; then
+    log "Fetching Electron SHA256 manifest..."
+    SHASUMS="$(curl -fsSL "${ELECTRON_BASE_URL}/SHASUMS256.txt")"
+    EXPECTED_SHA="$(echo "$SHASUMS" | grep "electron-v${ELECTRON_VERSION}-linux-x64\.zip$" | awk '{print $1}')"
+    if [[ -z "$EXPECTED_SHA" ]]; then
+        log "ERROR: Could not find SHA256 for electron-v${ELECTRON_VERSION}-linux-x64.zip"
+        exit 1
+    fi
+    log "Downloading Electron $ELECTRON_VERSION..."
+    curl -fL --progress-bar -o "$ELECTRON_ZIP" "${ELECTRON_BASE_URL}/electron-v${ELECTRON_VERSION}-linux-x64.zip"
+    ACTUAL_SHA="$(sha256sum "$ELECTRON_ZIP" | awk '{print $1}')"
+    if [[ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]]; then
+        log "ERROR: SHA256 mismatch after download (expected $EXPECTED_SHA, got $ACTUAL_SHA)"
+        rm -f "$ELECTRON_ZIP"
+        exit 1
+    fi
+    log "SHA256 verified: $ACTUAL_SHA"
+else
+    log "Electron zip   : $ELECTRON_ZIP (cached)"
+fi
 
 # ---------------------------------------------------------------------------
 # Re-pack the patched ASAR
@@ -59,6 +91,19 @@ log "Copying sources into $RPM_ROOT/SOURCES/ ..."
 cp "$ASAR_OUT" "$RPM_ROOT/SOURCES/app-patched.asar"
 cp "$REPO_DIR/packaging/AppDir/usr/bin/claude-desktop" "$RPM_ROOT/SOURCES/claude-desktop"
 cp "$REPO_DIR/packaging/AppDir/claude-desktop.desktop" "$RPM_ROOT/SOURCES/claude-desktop.desktop"
+
+# Electron tarball — extract zip and re-pack as tar.gz for rpmbuild
+log "Creating electron.tar.gz from cached zip..."
+ELECTRON_TMP="$BUILD_DIR/electron-rpm-extract"
+rm -rf "$ELECTRON_TMP"
+mkdir -p "$ELECTRON_TMP"
+unzip -q "$ELECTRON_ZIP" -d "$ELECTRON_TMP"
+tar -czf "$RPM_ROOT/SOURCES/electron.tar.gz" -C "$ELECTRON_TMP" .
+rm -rf "$ELECTRON_TMP"
+log "Created electron.tar.gz"
+
+# Write ELECTRON_VERSION file so the launcher can report the required version
+echo "$ELECTRON_VERSION" > "$RPM_ROOT/SOURCES/ELECTRON_VERSION"
 
 # Icons tarball — source is packaging/icons/ (written by fetch-and-extract.sh)
 ICONS_DIR="$REPO_DIR/packaging/icons"

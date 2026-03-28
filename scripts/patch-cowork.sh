@@ -165,7 +165,41 @@ if [[ $APPLY_EXIT -ne 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Patch 2 — Find main entry point
+# Patch 2 — CCD platform: add linux-x64/linux-arm64 support
+# ---------------------------------------------------------------------------
+log "Locating CCD getHostPlatform / getBinaryPathIfReady..."
+
+CCD_FIND_LOG="$BUILD_DIR/patch-ccd-find.log"
+CCD_JSON="$BUILD_DIR/ccd-platform-location.json"
+
+set +e
+node "$PATCHES_DIR/find-ccd-platform.mjs" \
+  2>"$CCD_FIND_LOG"
+CCD_FIND_EXIT=$?
+set -e
+
+cat "$CCD_FIND_LOG" >&2
+
+if [[ $CCD_FIND_EXIT -ne 0 ]]; then
+  log "WARNING: find-ccd-platform.mjs failed — plugins will show 'Unsupported platform' on Linux."
+else
+  CCD_APPLY_LOG="$BUILD_DIR/patch-ccd-apply.log"
+  set +e
+  node "$PATCHES_DIR/apply-ccd-platform.mjs" \
+    --input "$CCD_JSON" \
+    2>"$CCD_APPLY_LOG"
+  CCD_APPLY_EXIT=$?
+  set -e
+  cat "$CCD_APPLY_LOG" >&2
+  if [[ $CCD_APPLY_EXIT -ne 0 ]]; then
+    log "WARNING: apply-ccd-platform.mjs failed — plugins may not work on Linux."
+  else
+    log "CCD platform patch applied."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Patch 3 — Find main entry point
 # ---------------------------------------------------------------------------
 log "Locating main entry point..."
 
@@ -243,18 +277,25 @@ BRIDGE_DEST="$MAIN_ENTRY_DIR/open-url-bridge.js"
 cp "$BRIDGE_SRC" "$BRIDGE_DEST"
 log "Copied open-url-bridge to $BRIDGE_DEST"
 
-# -- Prepend both requires (idempotent: skip if already present) -------------
+# -- native-frame (already CJS, just copy) ------------------------------------
+FRAME_SRC="$PATCHES_DIR/native-frame.js"
+FRAME_DEST="$MAIN_ENTRY_DIR/native-frame.js"
+cp "$FRAME_SRC" "$FRAME_DEST"
+log "Copied native-frame to $FRAME_DEST"
+
+# -- Prepend all requires (idempotent: skip if already present) ---------------
 if head -1 "$MAIN_ENTRY" | grep -qF 'open-url-bridge'; then
   log "Patches already injected into $MAIN_ENTRY — skipping prepend."
 else
   TMPFILE="$(mktemp)"
   {
+    echo "require('./native-frame.js');"
     echo "require('./open-url-bridge.js');"
     echo "require('./path-translator.js');"
     cat "$MAIN_ENTRY"
   } > "$TMPFILE"
   mv "$TMPFILE" "$MAIN_ENTRY"
-  log "Prepended open-url-bridge + path-translator to $MAIN_ENTRY"
+  log "Prepended native-frame + open-url-bridge + path-translator to $MAIN_ENTRY"
 fi
 
 # ---------------------------------------------------------------------------
@@ -273,7 +314,9 @@ log "------------------------------------------------------------"
 log "Patch summary"
 log "  Gate-patched file   : $GATE_FILE"
 log "  Gate location       : start=$GATE_START  end=$GATE_END"
+log "  CCD platform patch  : linux-x64/linux-arm64 added to getHostPlatform + getBinaryPathIfReady"
 log "  Patches injected    : $MAIN_ENTRY"
+log "    native-frame.js    (force frame:true on all BrowserWindow instances)"
 log "    open-url-bridge.js (second-instance → open-url bridge for Linux OAuth)"
 log "    path-translator.js (/sessions/… path remapping)"
 log "------------------------------------------------------------"
