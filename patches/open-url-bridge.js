@@ -26,13 +26,19 @@ if (!global[INIT_SYM] && process.type === 'browser') {
     if (!app) throw new Error('electron.app not available');
 
     // Register claude:// as a handled protocol so Electron knows about it.
-    app.setAsDefaultProtocolClient('claude');
+    const registered = app.setAsDefaultProtocolClient('claude');
+    process.stderr.write(`[open-url-bridge] setAsDefaultProtocolClient('claude') => ${registered}\n`);
+    process.stderr.write(`[open-url-bridge] execPath: ${process.execPath}\n`);
 
     // Ensure the single-instance lock is held.  Without it, a second process
     // launched by the OS to handle claude:// will NOT trigger second-instance
     // on the first — it will just start a second window instead.
-    if (!app.hasSingleInstanceLock()) {
-      app.requestSingleInstanceLock();
+    const hadLock = app.hasSingleInstanceLock();
+    if (!hadLock) {
+      const gotLock = app.requestSingleInstanceLock();
+      process.stderr.write(`[open-url-bridge] requestSingleInstanceLock() => ${gotLock} (hadLock=false)\n`);
+    } else {
+      process.stderr.write(`[open-url-bridge] already holds single instance lock\n`);
     }
 
     // -----------------------------------------------------------------------
