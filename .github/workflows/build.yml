@@ -4,16 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Claude Desktop version (leave empty to build latest)'
+        description: 'Claude Desktop version to build'
         required: false
-        default: ''
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write     # needed to create a GitHub Release
-
     env:
       BUILD_DIR:  /tmp/claude-build
       OUTPUT_DIR: ${{ github.workspace }}/output
@@ -22,45 +23,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # -----------------------------------------------------------------------
-      # Dependencies
-      # -----------------------------------------------------------------------
-      - name: Install apt dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            dmg2img p7zip-full rpm bubblewrap curl unzip \
-            imagemagick libmagickcore-dev
-
-      - name: Install appimagetool
-        run: |
-          curl -sSL -o /usr/local/bin/appimagetool \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x /usr/local/bin/appimagetool
+            dmg2img p7zip-full rpm rpm-build imagemagick fuse libfuse2
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
+      - name: Install Node.js tools globally
+        run: npm install -g @electron/asar acorn acorn-walk
+
       - name: Cache node_modules
+        if: hashFiles('package-lock.json') != ''
         uses: actions/cache@v4
         with:
           path: node_modules
           key: node-modules-${{ hashFiles('package-lock.json') }}
           restore-keys: node-modules-
 
-      - name: Install Node dependencies
-        run: npm ci --ignore-scripts
-
       # -----------------------------------------------------------------------
       # Build pipeline
       # -----------------------------------------------------------------------
-      - name: Set SKIP_DOWNLOAD if version pinned
-        if: ${{ inputs.version != '' }}
-        run: |
-          echo "Version input: ${{ inputs.version }} (fetch-and-extract.sh will use latest unless DMG is pre-cached)"
-
       - name: fetch-and-extract
         run: bash scripts/fetch-and-extract.sh
 
@@ -73,22 +60,33 @@ jobs:
       - name: Cache Electron binary
         uses: actions/cache@v4
         with:
-          path: /tmp/claude-build/electron-cache
+          path: ${{ env.BUILD_DIR }}/electron-cache
           key: electron-${{ steps.ver.outputs.electron }}
 
       - name: inject-stubs
         run: bash scripts/inject-stubs.sh
 
       - name: patch-cowork
+        id: patch
         run: bash scripts/patch-cowork.sh
 
+      - name: Upload patch logs on failure
+        if: failure() && steps.patch.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-logs
+          path: ${{ env.BUILD_DIR }}/patch-*.log
+          if-no-files-found: warn
+
       - name: build-packages
+        env:
+          KEEP_BUILD_DIR: '1'   # preserve BUILD_DIR so electron-cache can be saved above
         run: bash scripts/build-packages.sh
 
       # -----------------------------------------------------------------------
-      # Upload build artifacts (always, even on failure, for debugging)
+      # Artifacts
       # -----------------------------------------------------------------------
-      - name: Upload artifacts
+      - name: Upload build artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -97,24 +95,24 @@ jobs:
           if-no-files-found: warn
 
       # -----------------------------------------------------------------------
-      # GitHub Release
+      # GitHub Release (tag push or workflow_dispatch with explicit version)
       # -----------------------------------------------------------------------
       - name: Compute checksums for release body
         id: sums
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.version != '')
         run: |
-          DMG_SHA="$(cat /tmp/claude-build/claude.dmg.sha256)"
-          RPM_SHA="$(cat output/claude-desktop-${{ steps.ver.outputs.version }}-x86_64.rpm.sha256 2>/dev/null || echo n/a)"
-          AI_SHA="$(cat  output/claude-desktop-${{ steps.ver.outputs.version }}-x86_64.AppImage.sha256 2>/dev/null || echo n/a)"
-          echo "dmg=$DMG_SHA"  >> "$GITHUB_OUTPUT"
-          echo "rpm=$RPM_SHA"  >> "$GITHUB_OUTPUT"
-          echo "appimage=$AI_SHA" >> "$GITHUB_OUTPUT"
+          VERSION="${{ steps.ver.outputs.version }}"
+          RPM_SHA="$(cat output/claude-desktop-${VERSION}-x86_64.rpm.sha256       2>/dev/null || echo n/a)"
+          AI_SHA="$(cat  output/claude-desktop-${VERSION}-x86_64.AppImage.sha256  2>/dev/null || echo n/a)"
+          echo "rpm=$RPM_SHA"      >> "$GITHUB_OUTPUT"
+          echo "appimage=$AI_SHA"  >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.version != '')
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION:  ${{ steps.ver.outputs.version }}
           ELECTRON: ${{ steps.ver.outputs.electron }}
-          DMG_SHA:  ${{ steps.sums.outputs.dmg }}
           RPM_SHA:  ${{ steps.sums.outputs.rpm }}
           AI_SHA:   ${{ steps.sums.outputs.appimage }}
         run: |
@@ -125,7 +123,6 @@ jobs:
 
           | Asset | SHA256 |
           |---|---|
-          | Source DMG | \`${DMG_SHA}\` |
           | RPM | \`${RPM_SHA}\` |
           | AppImage | \`${AI_SHA}\` |
 
