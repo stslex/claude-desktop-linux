@@ -155,7 +155,16 @@ if [[ -d "$ICONS_DIR" ]] && ls "$ICONS_DIR"/*.png &>/dev/null; then
         cp "$PNG" "$ICON_DEST/claude-desktop.png"
     done
 else
-    log "WARNING: No PNG icons found in $ICONS_DIR — AppImage will have no icon."
+    log "WARNING: No PNG icons found in $ICONS_DIR — generating placeholder icon."
+    # appimagetool requires an icon file; generate a minimal 256x256 placeholder.
+    if command -v convert &>/dev/null; then
+        convert -size 256x256 xc:'#d97706' -fill white -gravity center \
+            -pointsize 120 -annotate 0 'C' "$APPDIR/claude-desktop.png" 2>/dev/null || true
+    fi
+    # Fallback: 1x1 transparent PNG if convert is unavailable or failed
+    if [[ ! -f "$APPDIR/claude-desktop.png" ]]; then
+        printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n\xb4\x00\x00\x00\x00IEND\xaeB`\x82' > "$APPDIR/claude-desktop.png"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
