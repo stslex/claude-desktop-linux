@@ -10,7 +10,6 @@ License:        Proprietary
 URL:            https://github.com/your-org/claude-desktop-linux
 BuildArch:      x86_64
 
-Requires:       electron
 Requires:       xdg-utils
 Requires:       bash
 
@@ -22,6 +21,8 @@ Source0:        app-patched.asar
 Source1:        claude-desktop
 Source2:        claude-desktop.desktop
 Source3:        icons.tar.gz
+Source4:        electron.tar.gz
+Source5:        ELECTRON_VERSION
 
 %description
 Unofficial repackage of the macOS Claude Desktop application for Linux.
@@ -32,8 +33,7 @@ Code runs directly on Linux without a virtual machine.
 Cowork isolation uses bubblewrap by default (COWORK_BACKEND=bubblewrap).
 Set COWORK_BACKEND=host to disable the sandbox.
 
-This package requires a system-installed `electron` binary.
-See /usr/lib/claude-desktop/ELECTRON_VERSION for the required version.
+Electron is bundled at /usr/lib/electron/. No system electron required.
 
 %prep
 # Create build directory and extract icon tarball into it.
@@ -47,6 +47,14 @@ tar -xf %{SOURCE3} 2>/dev/null || true
 %install
 # App ASAR
 install -D -m 644 %{SOURCE0} %{buildroot}/usr/lib/claude-desktop/app.asar
+
+# Electron version hint for the launcher
+install -D -m 644 %{SOURCE5} %{buildroot}/usr/lib/claude-desktop/ELECTRON_VERSION
+
+# Bundled Electron binaries
+mkdir -p %{buildroot}/usr/lib/electron
+tar -xf %{SOURCE4} -C %{buildroot}/usr/lib/electron
+chmod 755 %{buildroot}/usr/lib/electron/electron
 
 # Launcher script
 install -D -m 755 %{SOURCE1} %{buildroot}/usr/bin/claude-desktop
@@ -114,6 +122,7 @@ fi
 %defattr(-,root,root,-)
 /usr/bin/claude-desktop
 /usr/lib/claude-desktop/
+/usr/lib/electron/
 /usr/share/applications/claude-desktop.desktop
 /usr/share/icons/hicolor/
 
