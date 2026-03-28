@@ -56,12 +56,14 @@ install -D -m 644 %{SOURCE2} %{buildroot}/usr/share/applications/claude-desktop.
 
 # Icons — iterate over what was extracted from icons.tar.gz.
 # Files are named claude-<N>.png; map to hicolor/<N>x<N>/apps/.
-for png in %{_builddir}/%{name}-%{version}/icons/*.png; do
+# Always create the base hicolor directory so %files never fails.
+mkdir -p %{buildroot}%{_datadir}/icons/hicolor
+for png in %{_builddir}/%{name}-%{version}/icons/claude-*.png; do
     [ -f "$png" ] || continue
     n=$(basename "$png" | grep -oP '(?<=claude-)\d+(?=\.png)')
     [ -z "$n" ] && continue
     install -D -m 644 "$png" \
-        %{buildroot}/usr/share/icons/hicolor/${n}x${n}/apps/claude-desktop.png
+        %{buildroot}%{_datadir}/icons/hicolor/${n}x${n}/apps/claude-desktop.png
 done
 
 %post
@@ -73,6 +75,11 @@ fi
 # Refresh the desktop database so the MIME registration takes effect.
 if command -v update-desktop-database &>/dev/null; then
     update-desktop-database -q /usr/share/applications || true
+fi
+
+# Refresh icon cache so the Claude icon appears immediately.
+if command -v gtk-update-icon-cache &>/dev/null; then
+    gtk-update-icon-cache -qf /usr/share/icons/hicolor || true
 fi
 
 # Create the /sessions symlink required by the path translator.
