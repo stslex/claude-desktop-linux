@@ -331,16 +331,48 @@ ICON_COUNT=0
 
 if [[ -n "$ICNS_FILE" ]]; then
   log "Extracting icons from: $ICNS_FILE"
-  for SIZE in 16 32 48 64 128 256 512; do
-    OUT="$ICONS_DIR/claude-${SIZE}.png"
-    if convert -background none "$ICNS_FILE" \
-        -resize "${SIZE}x${SIZE}" -flatten "$OUT" 2>/dev/null; then
-      ICON_COUNT=$((ICON_COUNT + 1))
-    else
-      log "WARNING: Failed to extract ${SIZE}x${SIZE} icon."
+
+  # Strategy 1: icns2png (libicns-utils) — native icns decoder, extracts all
+  # sizes at once into <name>_<size>x<size>x<depth>.png files.
+  if command -v icns2png &>/dev/null; then
+    ICNS_TMP="$(mktemp -d)"
+    if icns2png -x -d 32 "$ICNS_FILE" -o "$ICNS_TMP" 2>/dev/null; then
+      for SIZE in 16 32 48 64 128 256 512; do
+        # icns2png names files like: electron_<SIZE>x<SIZE>x32.png
+        SRC=$(find "$ICNS_TMP" -name "*_${SIZE}x${SIZE}x*.png" | head -1 || true)
+        if [[ -n "$SRC" ]]; then
+          cp "$SRC" "$ICONS_DIR/claude-${SIZE}.png"
+          ICON_COUNT=$((ICON_COUNT + 1))
+        else
+          # Resize from the largest available
+          LARGEST=$(find "$ICNS_TMP" -name "*.png" | sort -V | tail -1 || true)
+          if [[ -n "$LARGEST" ]] && command -v convert &>/dev/null; then
+            convert "$LARGEST" -resize "${SIZE}x${SIZE}" "$ICONS_DIR/claude-${SIZE}.png" 2>/dev/null \
+              && ICON_COUNT=$((ICON_COUNT + 1)) || true
+          fi
+        fi
+      done
     fi
-  done
-  log "Icons written to $ICONS_DIR"
+    rm -rf "$ICNS_TMP"
+  fi
+
+  # Strategy 2: ImageMagick convert fallback
+  if [[ $ICON_COUNT -eq 0 ]] && command -v convert &>/dev/null; then
+    log "icns2png produced no icons — falling back to ImageMagick convert..."
+    for SIZE in 16 32 48 64 128 256 512; do
+      OUT="$ICONS_DIR/claude-${SIZE}.png"
+      if convert -background none "$ICNS_FILE" \
+          -resize "${SIZE}x${SIZE}" -flatten "$OUT" 2>/dev/null; then
+        ICON_COUNT=$((ICON_COUNT + 1))
+      fi
+    done
+  fi
+
+  if [[ $ICON_COUNT -gt 0 ]]; then
+    log "Icons written to $ICONS_DIR"
+  else
+    log "WARNING: could not extract any icons from $ICNS_FILE"
+  fi
 else
   log "WARNING: no .icns file found anywhere in extracted bundle — no icons extracted."
 fi
