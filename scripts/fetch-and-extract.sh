@@ -69,13 +69,12 @@ check_dep npx     "Comes with Node.js."
 # or fall back to GCS DMG URL (legacy).
 # ---------------------------------------------------------------------------
 RELEASES_URL="https://downloads.claude.ai/releases/darwin/universal/RELEASES.json"
-GCS_LATEST_URL="https://storage.googleapis.com/osprey-downloads-c02f6a0d-347c-492b-a752-3e0651722e97/nest-apple/Claude-latest.dmg"
 DOWNLOAD_FILE="$BUILD_DIR/claude-download"   # extension set later based on format
 DOWNLOAD_FORMAT=""  # "zip" or "dmg"
 DOWNLOAD_URL=""
 
 log "Querying Anthropic RELEASES.json for latest version..."
-RELEASES_JSON="$(curl -sSf "$RELEASES_URL" 2>/dev/null || true)"
+RELEASES_JSON="$(curl -sSf --max-time 30 --retry 3 --retry-delay 5 "$RELEASES_URL" 2>/dev/null || true)"
 if [[ -n "$RELEASES_JSON" ]]; then
   # Extract ZIP download URL from RELEASES.json (use node since it's already required).
   # Structure: { releases: [{ updateTo: { url: "https://...zip" } }] }
@@ -92,12 +91,11 @@ if [[ -n "$RELEASES_JSON" ]]; then
   fi
 fi
 
-# Fallback: GCS DMG URL (legacy — may no longer work).
 if [[ -z "$DOWNLOAD_URL" ]]; then
-  log "WARNING: RELEASES.json unavailable — falling back to GCS DMG URL."
-  DOWNLOAD_URL="$GCS_LATEST_URL"
-  DOWNLOAD_FORMAT="dmg"
-  DOWNLOAD_FILE="$BUILD_DIR/claude.dmg"
+  log "ERROR: Could not resolve download URL from RELEASES.json."
+  log "  URL tried: $RELEASES_URL"
+  [[ -n "$RELEASES_JSON" ]] && log "  Response: $RELEASES_JSON" || log "  (empty response)"
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------
