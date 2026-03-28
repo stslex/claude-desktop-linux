@@ -57,82 +57,66 @@ check_dep() {
 }
 
 check_dep curl    "Install with: sudo dnf install curl"
-check_dep dmg2img "Install with: sudo dnf install dmg2img"
-check_dep 7z      "Install with: sudo dnf install p7zip-plugins  # or apt install p7zip-full"
+check_dep unzip   "Install with: sudo dnf install unzip  # or apt install unzip"
 check_dep node    "Install Node.js >= 20 from https://nodejs.org"
 check_dep npx     "Comes with Node.js."
-check_dep convert "Install with: sudo dnf install ImageMagick  # or apt install imagemagick"
+
+# dmg2img and 7z are only needed for the legacy DMG path (fallback).
+# convert (ImageMagick) is only needed for icon extraction from .icns.
 
 # ---------------------------------------------------------------------------
-# Resolve versioned DMG URL via redirect headers.
+# Resolve download URL via Anthropic's RELEASES.json (primary)
+# or fall back to GCS DMG URL (legacy).
 # ---------------------------------------------------------------------------
-DMG_LATEST_URL="https://storage.googleapis.com/osprey-downloads-c02f6a0d-347c-492b-a752-3e0651722e97/nest-apple/Claude-latest.dmg"
-DMG_FILE="$BUILD_DIR/claude.dmg"
+RELEASES_URL="https://downloads.claude.ai/releases/darwin/universal/RELEASES.json"
+GCS_LATEST_URL="https://storage.googleapis.com/osprey-downloads-c02f6a0d-347c-492b-a752-3e0651722e97/nest-apple/Claude-latest.dmg"
+DOWNLOAD_FILE="$BUILD_DIR/claude-download"   # extension set later based on format
+DOWNLOAD_FORMAT=""  # "zip" or "dmg"
+DOWNLOAD_URL=""
 
-log "Resolving latest DMG URL (following redirects)..."
-VERSIONED_FILENAME=""
-
-# Strategy 1: Follow redirects with a GET range request and check the
-# effective URL.  Some CDNs only redirect GET (not HEAD) requests.
-RESOLVED_URL="$(curl -sSL -o /dev/null -w '%{url_effective}' -r 0-0 "$DMG_LATEST_URL" 2>/dev/null || true)"
-if [[ -n "$RESOLVED_URL" && "$RESOLVED_URL" != "$DMG_LATEST_URL" ]]; then
-  VERSIONED_FILENAME="$(basename "$RESOLVED_URL")"
-  log "Resolved via GET effective URL: $VERSIONED_FILENAME"
-fi
-
-# Strategy 2: Parse the Location header from redirect responses.
-if [[ -z "$VERSIONED_FILENAME" || "$VERSIONED_FILENAME" == "Claude-latest.dmg" ]]; then
-  REDIRECT_HEADERS=$(curl -sIL "$DMG_LATEST_URL" 2>/dev/null || true)
-  LOCATION_LINE=$(echo "$REDIRECT_HEADERS" | grep -i "^location:" | tail -1 | tr -d '\r' || true)
-  if [[ -n "$LOCATION_LINE" ]]; then
-    VERSIONED_FILENAME=$(echo "$LOCATION_LINE" | awk '{print $2}' | xargs -I{} basename {})
-    log "Resolved via Location header: $VERSIONED_FILENAME"
+log "Querying Anthropic RELEASES.json for latest version..."
+RELEASES_JSON="$(curl -sSf "$RELEASES_URL" 2>/dev/null || true)"
+if [[ -n "$RELEASES_JSON" ]]; then
+  # Extract ZIP download URL from RELEASES.json.
+  ZIP_URL="$(echo "$RELEASES_JSON" | grep -oP '"url"\s*:\s*"\K[^"]+' | head -1 || true)"
+  if [[ -n "$ZIP_URL" && "$ZIP_URL" == *.zip ]]; then
+    DOWNLOAD_URL="$ZIP_URL"
+    DOWNLOAD_FORMAT="zip"
+    DOWNLOAD_FILE="$BUILD_DIR/claude.zip"
+    log "Download URL (from RELEASES.json): $DOWNLOAD_URL"
   fi
 fi
 
-# Strategy 3: Check Content-Disposition header for the original filename.
-if [[ -z "$VERSIONED_FILENAME" || "$VERSIONED_FILENAME" == "Claude-latest.dmg" ]]; then
-  HEADERS="$(curl -sI "$DMG_LATEST_URL" 2>/dev/null || true)"
-  CD="$(echo "$HEADERS" | grep -i '^content-disposition:' | tr -d '\r' || true)"
-  if [[ -n "$CD" ]]; then
-    FNAME="$(echo "$CD" | grep -oP 'filename="?\K[^";]+' || true)"
-    if [[ -n "$FNAME" ]]; then
-      VERSIONED_FILENAME="$FNAME"
-      log "Resolved via Content-Disposition: $VERSIONED_FILENAME"
-    fi
-  fi
-fi
-
-# Pattern: Claude-X.X.XXXX.dmg
-DMG_VERSION=$(echo "$VERSIONED_FILENAME" | grep -oP '(?<=Claude-)[\d]+\.[\d]+\.[\d]+(?=\.dmg)' || true)
-
-if [[ -n "$VERSIONED_FILENAME" && "$VERSIONED_FILENAME" == Claude-*.dmg ]]; then
-  # Reconstruct versioned URL from the same bucket prefix.
-  DOWNLOAD_URL="${DMG_LATEST_URL%/*}/$VERSIONED_FILENAME"
-  log "Resolved filename : $VERSIONED_FILENAME"
-  log "Version from URL  : ${DMG_VERSION:-unknown}"
-  log "Download URL      : $DOWNLOAD_URL"
-else
-  log "WARNING: Could not extract versioned filename — falling back to latest URL."
-  DOWNLOAD_URL="$DMG_LATEST_URL"
-  DMG_VERSION=""
+# Fallback: GCS DMG URL (legacy — may no longer work).
+if [[ -z "$DOWNLOAD_URL" ]]; then
+  log "WARNING: RELEASES.json unavailable — falling back to GCS DMG URL."
+  DOWNLOAD_URL="$GCS_LATEST_URL"
+  DOWNLOAD_FORMAT="dmg"
+  DOWNLOAD_FILE="$BUILD_DIR/claude.dmg"
 fi
 
 # ---------------------------------------------------------------------------
-# Download DMG — skip if file exists and stored checksum matches.
+# Download — skip if file exists and stored checksum matches.
 # ---------------------------------------------------------------------------
 _do_download() {
-  log "Downloading DMG..."
-  curl -L --progress-bar -o "$DMG_FILE" "$DOWNLOAD_URL"
+  log "Downloading ($DOWNLOAD_FORMAT)..."
+  curl -fSL --progress-bar -o "$DOWNLOAD_FILE" "$DOWNLOAD_URL"
+  local file_size
+  file_size="$(stat -c%s "$DOWNLOAD_FILE" 2>/dev/null || echo 0)"
+  if [[ "$file_size" -lt 1000000 ]]; then
+    log "ERROR: Downloaded file is only ${file_size} bytes — likely an error page."
+    head -c 500 "$DOWNLOAD_FILE" || true
+    exit 1
+  fi
 }
 
-if [[ "${SKIP_DOWNLOAD:-}" == "1" && -f "$DMG_FILE" ]]; then
-  log "SKIP_DOWNLOAD=1 — reusing $DMG_FILE"
-elif [[ -f "$DMG_FILE" && -f "${DMG_FILE}.sha256" ]]; then
-  STORED_SHA=$(cat "${DMG_FILE}.sha256")
-  ACTUAL_SHA=$(sha256sum "$DMG_FILE" | awk '{print $1}')
+if [[ "${SKIP_DOWNLOAD:-}" == "1" && -f "$DOWNLOAD_FILE" ]]; then
+  log "SKIP_DOWNLOAD=1 — reusing $DOWNLOAD_FILE"
+elif [[ -f "$DOWNLOAD_FILE" && -f "${DOWNLOAD_FILE}.sha256" ]]; then
+  STORED_SHA=$(cat "${DOWNLOAD_FILE}.sha256")
+  ACTUAL_SHA=$(sha256sum "$DOWNLOAD_FILE" | awk '{print $1}')
   if [[ "$STORED_SHA" == "$ACTUAL_SHA" ]]; then
-    log "DMG already present and checksum matches — skipping download."
+    log "File already present and checksum matches — skipping download."
   else
     log "Checksum mismatch (stored: $STORED_SHA, actual: $ACTUAL_SHA) — re-downloading."
     _do_download
@@ -145,24 +129,27 @@ fi
 # SHA256 — always recompute and write after (potential) download.
 # ---------------------------------------------------------------------------
 log "Computing SHA256..."
-sha256sum "$DMG_FILE" | awk '{print $1}' > "${DMG_FILE}.sha256"
-log "SHA256: $(cat "${DMG_FILE}.sha256")"
+sha256sum "$DOWNLOAD_FILE" | awk '{print $1}' > "${DOWNLOAD_FILE}.sha256"
+log "SHA256: $(cat "${DOWNLOAD_FILE}.sha256")"
 
 # ---------------------------------------------------------------------------
-# Convert DMG → raw image
-# ---------------------------------------------------------------------------
-IMG_FILE="$BUILD_DIR/claude.img"
-log "Converting DMG to raw image with dmg2img..."
-dmg2img -i "$DMG_FILE" -o "$IMG_FILE"
-
-# ---------------------------------------------------------------------------
-# Extract raw image with 7z
+# Extract application contents
 # ---------------------------------------------------------------------------
 EXTRACT_DIR="$BUILD_DIR/dmg-contents"
 rm -rf "$EXTRACT_DIR"
 mkdir -p "$EXTRACT_DIR"
-log "Extracting raw image with 7z..."
-7z x -o"$EXTRACT_DIR" "$IMG_FILE" -y -bd 2>/dev/null || true
+
+if [[ "$DOWNLOAD_FORMAT" == "zip" ]]; then
+  log "Extracting ZIP archive..."
+  unzip -q -o "$DOWNLOAD_FILE" -d "$EXTRACT_DIR"
+else
+  # Legacy DMG path: convert to raw image, then extract with 7z.
+  IMG_FILE="$BUILD_DIR/claude.img"
+  log "Converting DMG to raw image with dmg2img..."
+  dmg2img -i "$DOWNLOAD_FILE" -o "$IMG_FILE"
+  log "Extracting raw image with 7z..."
+  7z x -o"$EXTRACT_DIR" "$IMG_FILE" -y -bd 2>/dev/null || true
+fi
 
 # ---------------------------------------------------------------------------
 # Locate app.asar inside Claude.app/Contents/Resources/
