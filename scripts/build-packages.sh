@@ -23,6 +23,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-$REPO_DIR/output}"
 # ---------------------------------------------------------------------------
 # Cleanup trap — removed unless KEEP_BUILD_DIR=1
 # ---------------------------------------------------------------------------
+# shellcheck disable=SC2329  # invoked via trap EXIT below
 cleanup() {
     if [[ "${KEEP_BUILD_DIR:-}" != "1" ]]; then
         log "Cleaning up $BUILD_DIR ..."

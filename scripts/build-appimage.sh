@@ -143,7 +143,7 @@ if [[ -d "$ICONS_DIR" ]] && ls "$ICONS_DIR"/*.png &>/dev/null; then
     log "Installing icons from $ICONS_DIR ..."
 
     # Largest PNG becomes the AppImage root icon (required by appimagetool)
-    LARGEST_ICON="$(ls "$ICONS_DIR"/*.png | sort -V | tail -1)"
+    LARGEST_ICON="$(find "$ICONS_DIR" -maxdepth 1 -name '*.png' | sort -V | tail -1)"
     cp "$LARGEST_ICON" "$APPDIR/claude-desktop.png"
 
     # Install into hicolor theme tree for desktop environments

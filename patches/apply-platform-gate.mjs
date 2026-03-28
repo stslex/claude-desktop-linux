@@ -32,6 +32,13 @@ if (inputIdx !== -1 && inputIdx + 1 < args.length) {
   inputPath = args[inputIdx + 1];
 }
 
+// Also accept a plain positional path argument (first non-flag arg)
+if (!inputPath) {
+  const skipIdx = new Set(inputIdx !== -1 ? [inputIdx, inputIdx + 1] : []);
+  const positional = args.find((a, i) => !skipIdx.has(i) && !a.startsWith('--'));
+  if (positional) inputPath = positional;
+}
+
 if (!inputPath) {
   inputPath = process.env.BUILD_DIR
     ? join(process.env.BUILD_DIR, 'gate-location.json')

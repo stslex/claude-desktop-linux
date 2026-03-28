@@ -94,7 +94,7 @@ fi
 if [[ -z "$DOWNLOAD_URL" ]]; then
   log "ERROR: Could not resolve download URL from RELEASES.json."
   log "  URL tried: $RELEASES_URL"
-  [[ -n "$RELEASES_JSON" ]] && log "  Response: $RELEASES_JSON" || log "  (empty response)"
+  if [[ -n "$RELEASES_JSON" ]]; then log "  Response: $RELEASES_JSON"; else log "  (empty response)"; fi
   exit 1
 fi
 
@@ -164,7 +164,7 @@ if [[ -z "$ASAR_SRC" ]]; then
 fi
 if [[ -z "$ASAR_SRC" ]]; then
   log "ERROR: app.asar not found inside extracted image."
-  ls -R "$EXTRACT_DIR" | head -60
+  find "$EXTRACT_DIR" | head -60
   exit 1
 fi
 log "Found app.asar: $ASAR_SRC"
