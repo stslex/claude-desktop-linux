@@ -72,28 +72,63 @@ class AuthRequest {
   constructor(url, callbackURLScheme) {
     this._url = url;
     this._callbackURLScheme = callbackURLScheme || 'claude';
-    this._callback = null;
-
-    // Extract the redirect_uri / callback URL from the authorization URL.
-    try {
-      const parsed = new URL(url);
-      this.callbackUrl = parsed.searchParams.get('redirect_uri') || `${this._callbackURLScheme}://`;
-    } catch {
-      this.callbackUrl = `${this._callbackURLScheme}://`;
-    }
   }
 
+  /**
+   * Open the system browser for OAuth and return a Promise that resolves
+   * with { callbackUrl: string } when the claude:// redirect arrives.
+   *
+   * On macOS the native ASWebAuthenticationSession does this automatically.
+   * On Linux, open-url-bridge.js forwards the second-instance event to
+   * app.emit('open-url', ...) which we listen for here.
+   *
+   * The app awaits the return value:
+   *   const { callbackUrl } = await request.start();
+   */
   start() {
+    const scheme = this._callbackURLScheme;
+    const authUrl = this._url;
+
+    // Open the browser immediately (fire-and-forget).
     try {
-      const child = spawn('xdg-open', [this._url], {
-        detached: true,
-        stdio: 'ignore',
-      });
+      const child = spawn('xdg-open', [authUrl], { detached: true, stdio: 'ignore' });
       child.unref();
+      process.stderr.write(`[claude-native stub] Opened browser for OAuth: ${authUrl}\n`);
     } catch {
-      process.stderr.write(`[claude-native stub] xdg-open unavailable. Open manually:\n  ${this._url}\n`);
+      process.stderr.write(`[claude-native stub] xdg-open unavailable. Open manually:\n  ${authUrl}\n`);
     }
-    return this;
+
+    // Return a Promise that resolves when the claude:// callback arrives.
+    // open-url-bridge.js emits 'open-url' on the Electron app when a
+    // second instance is launched with the callback URL in its argv.
+    let app;
+    try {
+      app = require('electron').app;
+    } catch {
+      // Not running inside Electron — resolve immediately with a stub URL.
+      process.stderr.write(`[claude-native stub] Not in Electron context; resolving stub callbackUrl.\n`);
+      return Promise.resolve({ callbackUrl: `${scheme}://` });
+    }
+
+    return new Promise((resolve) => {
+      const onOpenUrl = (event, url) => {
+        if (typeof url === 'string' && url.toLowerCase().startsWith(`${scheme}://`)) {
+          process.stderr.write(`[claude-native stub] OAuth callback received: ${url}\n`);
+          resolve({ callbackUrl: url });
+        }
+      };
+      app.on('open-url', onOpenUrl);
+
+      // Safety timeout: after 5 minutes give up so the UI can show an error.
+      const timer = setTimeout(() => {
+        app.removeListener('open-url', onOpenUrl);
+        process.stderr.write(`[claude-native stub] OAuth timeout — no ${scheme}:// callback received.\n`);
+        resolve({ callbackUrl: `${scheme}://timeout` });
+      }, 5 * 60 * 1000);
+
+      // Don't keep the Node event loop alive just for the timeout.
+      if (timer.unref) timer.unref();
+    });
   }
 
   // Legacy alias
