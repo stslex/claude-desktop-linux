@@ -1,0 +1,10 @@
+output/*.rpm
+output/*.AppImage
+output/*.sha256
+
+node_modules/
+
+/tmp/
+*.img
+*.dmg
+build/

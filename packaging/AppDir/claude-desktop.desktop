@@ -1,0 +1,11 @@
+[Desktop Entry]
+# TODO: Fill in Version, Icon, and Categories.
+Type=Application
+Name=Claude
+Comment=Claude Desktop (unofficial Linux repackage)
+Exec=claude-desktop %u
+Icon=claude-desktop
+Terminal=false
+Categories=Network;Office;
+MimeType=x-scheme-handler/claude;
+StartupWMClass=Claude

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# AppRun — AppImage entry point for Claude Desktop Linux.
+# ---------------------------------------------------------------------------
+
+APPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ---------------------------------------------------------------------------
+# Locate Electron binary.
+# Prefer the bundled one; fall back to system electron.
+# ---------------------------------------------------------------------------
+BUNDLED_ELECTRON="$APPDIR/usr/lib/electron/electron"
+
+if [[ -x "$BUNDLED_ELECTRON" ]]; then
+  ELECTRON="$BUNDLED_ELECTRON"
+elif command -v electron &>/dev/null; then
+  ELECTRON="$(command -v electron)"
+  echo "[claude-desktop] Using system electron: $ELECTRON" >&2
+else
+  echo "[claude-desktop] ERROR: No electron binary found." >&2
+  echo "  Install electron from your distribution or place it at:" >&2
+  echo "    $BUNDLED_ELECTRON" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Ensure the /sessions symlink exists.
+# ---------------------------------------------------------------------------
+SESSION_TARGET="$HOME/.local/share/claude-linux/sessions"
+mkdir -p "$SESSION_TARGET"
+
+if [[ ! -L /sessions ]]; then
+  echo "[claude-desktop] Creating /sessions symlink (requires sudo)..." >&2
+  if command -v sudo &>/dev/null; then
+    sudo ln -sf "$SESSION_TARGET" /sessions || \
+      echo "[claude-desktop] WARNING: Could not create /sessions. Cowork paths may fail." >&2
+  else
+    echo "[claude-desktop] WARNING: sudo not available. Create symlink manually:" >&2
+    echo "  sudo ln -sf $SESSION_TARGET /sessions" >&2
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Cowork backend selection.
+# ---------------------------------------------------------------------------
+COWORK_BACKEND="${COWORK_BACKEND:-bubblewrap}"
+export COWORK_BACKEND
+
+if [[ "$COWORK_BACKEND" == "bubblewrap" ]] && ! command -v bwrap &>/dev/null; then
+  echo "[claude-desktop] WARNING: bwrap not found. Falling back to COWORK_BACKEND=host." >&2
+  echo "  Install bubblewrap for sandbox isolation: sudo dnf install bubblewrap" >&2
+  export COWORK_BACKEND=host
+fi
+
+# ---------------------------------------------------------------------------
+# Launch.
+# --no-sandbox is required: AppImage FUSE mount sets nosuid, which prevents
+# the chrome-sandbox setuid bit from being honoured by Electron.
+# ---------------------------------------------------------------------------
+ASAR="$APPDIR/usr/lib/claude-desktop/app.asar"
+
+exec "$ELECTRON" "$ASAR" --no-sandbox "$@"

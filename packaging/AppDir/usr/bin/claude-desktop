@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# claude-desktop — system launcher for the RPM package.
+# This script is installed to /usr/bin/claude-desktop.
+# ---------------------------------------------------------------------------
+
+ASAR="/usr/lib/claude-desktop/app.asar"
+VERSION_FILE="/usr/lib/claude-desktop/ELECTRON_VERSION"
+
+# ---------------------------------------------------------------------------
+# Locate Electron.
+# ---------------------------------------------------------------------------
+if ! command -v electron &>/dev/null; then
+  REQUIRED_VER=""
+  [[ -f "$VERSION_FILE" ]] && REQUIRED_VER="$(cat "$VERSION_FILE")"
+  echo "[claude-desktop] ERROR: 'electron' binary not found in PATH." >&2
+  echo "  Required version: ${REQUIRED_VER:-unknown}" >&2
+  echo "  Install with:  sudo dnf install electron" >&2
+  echo "                 # or from the Electron project RPM repo" >&2
+  exit 1
+fi
+
+ELECTRON="$(command -v electron)"
+
+# ---------------------------------------------------------------------------
+# Cowork backend.
+# ---------------------------------------------------------------------------
+COWORK_BACKEND="${COWORK_BACKEND:-bubblewrap}"
+export COWORK_BACKEND
+
+if [[ "$COWORK_BACKEND" == "bubblewrap" ]] && ! command -v bwrap &>/dev/null; then
+  echo "[claude-desktop] WARNING: bwrap not found. Falling back to COWORK_BACKEND=host." >&2
+  echo "  Install: sudo dnf install bubblewrap" >&2
+  export COWORK_BACKEND=host
+fi
+
+# ---------------------------------------------------------------------------
+# Ensure the /sessions symlink exists.
+# ---------------------------------------------------------------------------
+SESSION_TARGET="$HOME/.local/share/claude-linux/sessions"
+mkdir -p "$SESSION_TARGET"
+
+if [[ ! -L /sessions ]]; then
+  echo "[claude-desktop] INFO: /sessions symlink missing. Attempting to create..." >&2
+  sudo ln -sf "$SESSION_TARGET" /sessions 2>/dev/null || \
+    echo "[claude-desktop] WARNING: Could not create /sessions. Run: sudo ln -sf $SESSION_TARGET /sessions" >&2
+fi
+
+# ---------------------------------------------------------------------------
+# Launch.
+# --no-sandbox keeps parity with the AppImage (Electron needs it when
+# chrome-sandbox is not setuid, which is common on hardened systems).
+# ---------------------------------------------------------------------------
+exec "$ELECTRON" "$ASAR" --no-sandbox "$@"

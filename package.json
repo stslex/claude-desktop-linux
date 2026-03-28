@@ -1,0 +1,19 @@
+{
+  "name": "claude-desktop-linux",
+  "version": "0.0.0",
+  "description": "Build scripts for the unofficial Claude Desktop Linux repackage",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fetch":   "bash scripts/fetch-and-extract.sh",
+    "stubs":   "bash scripts/inject-stubs.sh",
+    "patch":   "bash scripts/patch-cowork.sh",
+    "package": "bash scripts/build-packages.sh",
+    "build":   "bash scripts/fetch-and-extract.sh && bash scripts/inject-stubs.sh && bash scripts/patch-cowork.sh && bash scripts/build-packages.sh"
+  },
+  "dependencies": {
+    "@electron/asar": "^3.3.0",
+    "acorn":          "^8.14.0",
+    "acorn-walk":     "^8.3.4"
+  }
+}
