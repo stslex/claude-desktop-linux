@@ -2,189 +2,330 @@
 /**
  * find-platform-gate.mjs
  *
- * Locate the Cowork platform-gate function inside the minified
- * .vite/build/index.js bundle using the acorn AST parser.
+ * Locate the Cowork platform-gate function inside the minified .vite/build/
+ * bundle by recursively scanning a directory and using the acorn AST parser.
  *
  * Usage:
- *   node find-platform-gate.mjs <bundle.js>
- *   node find-platform-gate.mjs <bundle.js> --dump-candidates
+ *   node find-platform-gate.mjs <build-dir> [--output <path>] [--dump-candidates]
+ *
+ *   <build-dir>   Directory to scan (e.g. .vite/build/)
+ *   --output      Where to write gate-location.json
+ *                 Default: $BUILD_DIR/gate-location.json, or ./gate-location.json
+ *   --dump-candidates  Print all scored candidates to stderr regardless of outcome
  *
  * Stdout (JSON) on success:
- *   { "bodyStart": <charOffset>, "bodyEnd": <charOffset> }
+ *   { "file": "...", "start": N, "end": N, "score": 5, "preview": "..." }
  *
- * Exit 1 on failure (pattern not found or score below threshold).
+ *   start/end are character offsets of the matched function *body* (BlockStatement).
+ *   Pass them directly to apply-platform-gate.mjs.
+ *
+ * Exit codes:
+ *   0  Exactly one max-score candidate found.
+ *   1  No match, ambiguous match, or parse/IO error.
  */
 
-import { readFileSync } from 'fs';
-import { parse }        from 'acorn';
-import { simple }       from 'acorn-walk';
+import { readFileSync, writeFileSync, readdirSync } from 'fs';
+import { resolve, join }                            from 'path';
+import { parse }                                    from 'acorn';
+import { simple }                                   from 'acorn-walk';
 
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
-const args         = process.argv.slice(2);
-const dumpAll      = args.includes('--dump-candidates');
-const bundlePath   = args.find(a => !a.startsWith('--'));
+const rawArgs = process.argv.slice(2);
+const dumpAll = rawArgs.includes('--dump-candidates');
 
-if (!bundlePath) {
-  process.stderr.write('Usage: find-platform-gate.mjs <bundle.js> [--dump-candidates]\n');
+// --output <path>
+let outputPath = null;
+const outputIdx = rawArgs.indexOf('--output');
+if (outputIdx !== -1 && outputIdx + 1 < rawArgs.length) {
+  outputPath = rawArgs[outputIdx + 1];
+}
+
+// Positional argument: build directory (first non-flag arg, not the --output value)
+const skipIdx = new Set(outputIdx !== -1 ? [outputIdx, outputIdx + 1] : []);
+const dirArg  = rawArgs.find((a, i) => !skipIdx.has(i) && !a.startsWith('--'));
+
+if (!dirArg) {
+  process.stderr.write(
+    'Usage: find-platform-gate.mjs <build-dir> [--output <path>] [--dump-candidates]\n'
+  );
   process.exit(1);
 }
 
-const src = readFileSync(bundlePath, 'utf8');
+const buildDir = resolve(dirArg);
+
+// Default output path: $BUILD_DIR env var → cwd
+if (!outputPath) {
+  outputPath = process.env.BUILD_DIR
+    ? join(process.env.BUILD_DIR, 'gate-location.json')
+    : join(process.cwd(), 'gate-location.json');
+}
 
 // ---------------------------------------------------------------------------
-// Scoring criteria
+// Recursively collect .js files
+// ---------------------------------------------------------------------------
+function findJsFiles(dir) {
+  const results = [];
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    process.stderr.write(`[find-platform-gate] Warning: cannot read directory ${dir}: ${err.message}\n`);
+    return results;
+  }
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...findJsFiles(full));
+    } else if (entry.isFile() && entry.name.endsWith('.js')) {
+      results.push(full);
+    }
+  }
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Scoring criteria  (5 points total, all must match for threshold)
 //
-// The target function (pre-minification) looks like:
+// Target (pre-minification):
 //
 //   function isCoworkSupported() {
-//     const platform = getPlatform()
+//     const platform = getPlatform()       // stub returns "darwin"
 //     if (platform === 'darwin') return { status: 'supported' }
 //     if (platform === 'win32')  return { status: 'supported' }
 //     return { status: 'unsupported' }
 //   }
 //
 // After minification the name changes; string literals are stable.
-// We score each function/arrow on five criteria (1 pt each):
 //
-//   1. Contains a ReturnStatement whose argument is { status: "supported" }
-//   2. Contains a ReturnStatement whose argument is { status: "unsupported" }
-//   3. Contains the string literal "darwin"
-//   4. Contains the string literal "win32"
-//   5. The only return values are objects with a "status" key
-//
-// All five must match (score === MAX_SCORE).
+//   1. Function body contains a conditional chain (if / ternary / switch)
+//   2. Function body references the string literal "darwin"
+//   3. Function body references the string literal "win32"
+//   4. At least one ReturnStatement returns { status: "supported" }
+//   5. At least one ReturnStatement returns { status: "unsupported" }
 // ---------------------------------------------------------------------------
 const MAX_SCORE = 5;
 
-/**
- * Collect all literal string values inside a subtree.
- * @param {import('acorn').Node} node
- * @returns {Set<string>}
- */
+/** Collect all string literal values in a subtree. */
 function collectStrings(node) {
-  const strings = new Set();
+  const out = new Set();
   simple(node, {
     Literal(n) {
-      if (typeof n.value === 'string') strings.add(n.value);
+      if (typeof n.value === 'string') out.add(n.value);
     },
   });
-  return strings;
+  return out;
 }
 
-/**
- * Return true if node is an ObjectExpression { status: <string> }.
- * @param {import('acorn').Node|null|undefined} node
- * @param {string} value  Expected value of the status property.
- */
+/** True if node is an ObjectExpression { status: <value> }. */
 function isStatusObject(node, value) {
-  return (
-    node &&
-    node.type === 'ObjectExpression' &&
-    node.properties.length === 1 &&
-    node.properties[0].key &&
-    (node.properties[0].key.name === 'status' || node.properties[0].key.value === 'status') &&
-    node.properties[0].value &&
-    node.properties[0].value.value === value
-  );
+  if (!node || node.type !== 'ObjectExpression' || node.properties.length !== 1) return false;
+  const prop    = node.properties[0];
+  const keyName = prop.key?.name ?? prop.key?.value;
+  return keyName === 'status' && prop.value?.value === value;
 }
 
 /**
- * Collect all ReturnStatement argument nodes in a subtree.
- * @param {import('acorn').Node} node
- * @returns {Array<import('acorn').Node|null>}
+ * True if any ObjectExpression { status: <value> } exists anywhere in the
+ * subtree — covers both direct `return { status: "x" }` and the common
+ * minified ternary form `return cond ? { status: "x" } : { status: "y" }`.
  */
-function collectReturnValues(node) {
-  const vals = [];
+function hasStatusValueAnywhere(node, value) {
+  let found = false;
   simple(node, {
-    ReturnStatement(n) { vals.push(n.argument); },
+    ObjectExpression(n) {
+      if (isStatusObject(n, value)) found = true;
+    },
   });
-  return vals;
+  return found;
 }
 
 /**
- * Score a function body node.
- * @param {import('acorn').Node} body
- * @returns {number}
+ * True if the subtree contains at least one ReturnStatement (meaning the body
+ * uses returns at all, not just falls off the end).
  */
+function hasReturnStatement(node) {
+  let found = false;
+  simple(node, { ReturnStatement() { found = true; } });
+  return found;
+}
+
+/** True if the subtree contains any conditional branching construct. */
+function hasConditionalChain(node) {
+  let found = false;
+  simple(node, {
+    IfStatement()          { found = true; },
+    ConditionalExpression(){ found = true; },
+    SwitchStatement()      { found = true; },
+  });
+  return found;
+}
+
+/** Score a BlockStatement body node 0-5. */
 function scoreBody(body) {
   let score = 0;
-  const strings   = collectStrings(body);
-  const returns   = collectReturnValues(body);
 
-  const hasSupported   = returns.some(r => isStatusObject(r, 'supported'));
-  const hasUnsupported = returns.some(r => isStatusObject(r, 'unsupported'));
-  const onlyStatus     = returns.length > 0 &&
-    returns.every(r => r === null || isStatusObject(r, 'supported') || isStatusObject(r, 'unsupported'));
-
-  if (hasSupported)   score++;
-  if (hasUnsupported) score++;
-  if (strings.has('darwin')) score++;
-  if (strings.has('win32'))  score++;
-  if (onlyStatus)     score++;
+  if (hasConditionalChain(body))                   score++; // criterion 1: conditional chain
+  const strings = collectStrings(body);
+  if (strings.has('darwin'))                       score++; // criterion 2: "darwin" literal
+  if (strings.has('win32'))                        score++; // criterion 3: "win32" literal
+  if (hasStatusValueAnywhere(body, 'supported'))   score++; // criterion 4: { status:"supported" }
+  if (hasStatusValueAnywhere(body, 'unsupported')) score++; // criterion 5: { status:"unsupported" }
 
   return score;
 }
 
 // ---------------------------------------------------------------------------
-// AST walk — collect candidate functions with their body offsets.
+// Walk every .js file and collect scored candidates
 // ---------------------------------------------------------------------------
-let ast;
-try {
-  ast = parse(src, { ecmaVersion: 'latest', sourceType: 'script' });
-} catch (err) {
-  process.stderr.write(`[find-platform-gate] Parse error: ${err.message}\n`);
+const jsFiles = findJsFiles(buildDir);
+
+if (jsFiles.length === 0) {
+  process.stderr.write(`[find-platform-gate] No .js files found in ${buildDir}\n`);
   process.exit(1);
 }
 
-/** @type {Array<{ score: number, bodyStart: number, bodyEnd: number, snippet: string }>} */
+/**
+ * @type {Array<{
+ *   file:    string,
+ *   score:   number,
+ *   start:   number,
+ *   end:     number,
+ *   preview: string,
+ * }>}
+ */
 const candidates = [];
 
-function checkFunction(node) {
-  const body = node.body;
-  if (!body || body.type !== 'BlockStatement') return;
-  const score = scoreBody(body);
-  if (score > 0) {
+for (const filePath of jsFiles) {
+  let src;
+  try {
+    src = readFileSync(filePath, 'utf8');
+  } catch (err) {
+    process.stderr.write(`[find-platform-gate] Warning: cannot read ${filePath}: ${err.message}\n`);
+    continue;
+  }
+
+  let ast;
+  try {
+    ast = parse(src, {
+      ecmaVersion: 'latest',
+      sourceType:  'module',
+      onComment:   () => {},     // discard comments; satisfies the handler requirement
+    });
+  } catch {
+    // Retry as script — some bundles use CJS syntax
+    try {
+      ast = parse(src, {
+        ecmaVersion: 'latest',
+        sourceType:  'script',
+        onComment:   () => {},
+        allowReserved: true,
+      });
+    } catch (err2) {
+      process.stderr.write(`[find-platform-gate] Warning: skipping ${filePath}: ${err2.message}\n`);
+      continue;
+    }
+  }
+
+  function checkFunction(node) {
+    const body = node.body;
+    if (!body || body.type !== 'BlockStatement') return;
+
+    const score = scoreBody(body);
+    if (score === 0) return;
+
     candidates.push({
+      file:    filePath,
       score,
-      bodyStart: body.start,
-      bodyEnd:   body.end,
-      snippet:   src.slice(node.start, Math.min(node.start + 120, node.end)).replace(/\n/g, ' '),
+      start:   body.start,
+      end:     body.end,
+      preview: src
+        .slice(node.start, Math.min(node.start + 120, node.end))
+        .replace(/\n/g, ' '),
     });
   }
+
+  simple(ast, {
+    FunctionDeclaration:     checkFunction,
+    FunctionExpression:      checkFunction,
+    ArrowFunctionExpression: checkFunction,
+  });
 }
 
-simple(ast, {
-  FunctionDeclaration:  checkFunction,
-  FunctionExpression:   checkFunction,
-  ArrowFunctionExpression: checkFunction,
-});
-
-// Sort best-first.
+// Best-first
 candidates.sort((a, b) => b.score - a.score);
 
 // ---------------------------------------------------------------------------
-// Output
+// --dump-candidates
 // ---------------------------------------------------------------------------
 if (dumpAll) {
-  process.stderr.write('\n--- Platform-gate candidates ---\n');
+  process.stderr.write(`\n--- Platform-gate candidates (${candidates.length} total) ---\n`);
   for (const c of candidates) {
-    process.stderr.write(`score=${c.score}/${MAX_SCORE}  body=[${c.bodyStart}..${c.bodyEnd}]\n  ${c.snippet}\n\n`);
+    process.stderr.write(
+      `score=${c.score}/${MAX_SCORE}  ${c.file}  body=[${c.start}..${c.end}]\n` +
+      `  ${c.preview}\n\n`
+    );
   }
 }
 
-const best = candidates[0];
+// ---------------------------------------------------------------------------
+// Evaluate outcome
+// ---------------------------------------------------------------------------
+const topMatches = candidates.filter(c => c.score === MAX_SCORE);
 
-if (!best || best.score < MAX_SCORE) {
+// --- zero matches ---
+if (topMatches.length === 0) {
+  const best = candidates[0];
   process.stderr.write(
-    `[find-platform-gate] ERROR: No function matched all ${MAX_SCORE} criteria.\n` +
-    `  Best score: ${best ? best.score : 0}/${MAX_SCORE}\n` +
-    `  Re-run with --dump-candidates to inspect partial matches.\n` +
-    `  This usually means a new Claude Desktop release changed the gate function shape.\n` +
-    `  See CLAUDE.md § "Updating After a Claude Desktop Release".\n`
+    '[find-platform-gate] ERROR: No platform gate function found.\n' +
+    `  Best score: ${best ? best.score : 0}/${MAX_SCORE}\n`
+  );
+  if (candidates.length > 0) {
+    process.stderr.write('  Partial matches:\n');
+    for (const c of candidates.slice(0, 10)) {
+      process.stderr.write(
+        `    score=${c.score}/${MAX_SCORE}  ${c.file}:[${c.start}..${c.end}]\n` +
+        `      ${c.preview}\n`
+      );
+    }
+  }
+  process.stderr.write(
+    '  Re-run with --dump-candidates to inspect all partial matches.\n' +
+    '  See CLAUDE.md § "Updating After a Claude Desktop Release".\n'
   );
   process.exit(1);
 }
 
-process.stdout.write(JSON.stringify({ bodyStart: best.bodyStart, bodyEnd: best.bodyEnd }) + '\n');
+// --- ambiguous ---
+if (topMatches.length > 1) {
+  process.stderr.write(
+    `[find-platform-gate] ERROR: Ambiguous: multiple matches at score ${MAX_SCORE}/${MAX_SCORE}.\n`
+  );
+  for (const c of topMatches) {
+    process.stderr.write(`  ${c.file}:[${c.start}..${c.end}]  ${c.preview}\n`);
+  }
+  process.exit(1);
+}
+
+// --- exactly one ---
+const best = topMatches[0];
+const result = {
+  file:    best.file,
+  start:   best.start,
+  end:     best.end,
+  score:   best.score,
+  preview: best.preview,
+};
+
+const json = JSON.stringify(result, null, 2) + '\n';
+process.stdout.write(json);
+
+try {
+  writeFileSync(outputPath, json, 'utf8');
+  process.stderr.write(`[find-platform-gate] Gate location written to ${outputPath}\n`);
+} catch (err) {
+  process.stderr.write(
+    `[find-platform-gate] Warning: could not write ${outputPath}: ${err.message}\n`
+  );
+}

@@ -8,9 +8,11 @@
  * Usage:
  *   node apply-platform-gate.mjs <bundle.js> <offsets-json>
  *
- *   <offsets-json>  Path to a JSON file containing { bodyStart, bodyEnd }
- *                   as written by find-platform-gate.mjs, OR "-" to read
- *                   the JSON from stdin.
+ *   <offsets-json>  Path to a JSON file containing { start, end } (or the
+ *                   legacy { bodyStart, bodyEnd } shape) as written by
+ *                   find-platform-gate.mjs, OR "-" to read from stdin.
+ *                   The "file" field in the JSON is ignored here; the bundle
+ *                   path must be supplied explicitly as the first argument.
  *
  * The bundle is patched in-place. A backup is written to <bundle.js>.orig
  * before any modification.
@@ -46,10 +48,15 @@ try {
   process.exit(1);
 }
 
-const { bodyStart, bodyEnd } = offsets;
+// Accept both the new { start, end } shape and the legacy { bodyStart, bodyEnd } shape.
+const bodyStart = offsets.start    ?? offsets.bodyStart;
+const bodyEnd   = offsets.end      ?? offsets.bodyEnd;
 
 if (typeof bodyStart !== 'number' || typeof bodyEnd !== 'number') {
-  process.stderr.write('[apply-platform-gate] offsets JSON must contain numeric bodyStart and bodyEnd\n');
+  process.stderr.write(
+    '[apply-platform-gate] offsets JSON must contain numeric start/end ' +
+    '(or legacy bodyStart/bodyEnd)\n'
+  );
   process.exit(1);
 }
 
