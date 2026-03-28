@@ -83,7 +83,7 @@ fi
 # Strategy 2: Parse the Location header from redirect responses.
 if [[ -z "$VERSIONED_FILENAME" || "$VERSIONED_FILENAME" == "Claude-latest.dmg" ]]; then
   REDIRECT_HEADERS=$(curl -sIL "$DMG_LATEST_URL" 2>/dev/null || true)
-  LOCATION_LINE=$(echo "$REDIRECT_HEADERS" | grep -i "^location:" | tail -1 | tr -d '\r')
+  LOCATION_LINE=$(echo "$REDIRECT_HEADERS" | grep -i "^location:" | tail -1 | tr -d '\r' || true)
   if [[ -n "$LOCATION_LINE" ]]; then
     VERSIONED_FILENAME=$(echo "$LOCATION_LINE" | awk '{print $2}' | xargs -I{} basename {})
     log "Resolved via Location header: $VERSIONED_FILENAME"
@@ -93,7 +93,7 @@ fi
 # Strategy 3: Check Content-Disposition header for the original filename.
 if [[ -z "$VERSIONED_FILENAME" || "$VERSIONED_FILENAME" == "Claude-latest.dmg" ]]; then
   HEADERS="$(curl -sI "$DMG_LATEST_URL" 2>/dev/null || true)"
-  CD="$(echo "$HEADERS" | grep -i '^content-disposition:' | tr -d '\r')"
+  CD="$(echo "$HEADERS" | grep -i '^content-disposition:' | tr -d '\r' || true)"
   if [[ -n "$CD" ]]; then
     FNAME="$(echo "$CD" | grep -oP 'filename="?\K[^";]+' || true)"
     if [[ -n "$FNAME" ]]; then
