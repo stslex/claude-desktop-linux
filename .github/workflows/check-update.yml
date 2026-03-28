@@ -4,10 +4,6 @@ on:
   schedule:
     - cron: '0 */6 * * *'   # every 6 hours
   workflow_dispatch:          # allow manual trigger
-  push:
-    branches: ['dev', 'main']
-  pull_request:
-    branches: ['dev', 'main']
 
 jobs:
   check:
@@ -78,7 +74,6 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Get latest released Claude version
-        if: github.event_name != 'pull_request'
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -93,7 +88,6 @@ jobs:
           echo "tag=${BASE}" >> "$GITHUB_OUTPUT"
 
       - name: Trigger build if version is newer
-        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           UPSTREAM: ${{ steps.version.outputs.version }}
@@ -107,5 +101,6 @@ jobs:
           gh workflow run build.yml \
             --repo "${{ github.repository }}" \
             --ref main \
-            --field version="$UPSTREAM"
+            --field version="$UPSTREAM" \
+            --field release=true
           echo "Triggered build.yml for version $UPSTREAM."
