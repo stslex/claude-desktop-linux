@@ -22,7 +22,7 @@ jobs:
           echo "Resolved URL: $RESOLVED"
           # Extract version from filename, e.g. Claude-1.1.8629.dmg → 1.1.8629
           VERSION="$(basename "$RESOLVED" .dmg | sed 's/^Claude-//')"
-          if [[ -z "$VERSION" || "$VERSION" == "Claude-latest" ]]; then
+          if [[ -z "$VERSION" || "$VERSION" == "latest" ]]; then
             echo "ERROR: Could not extract version from redirect URL: $RESOLVED"
             exit 1
           fi

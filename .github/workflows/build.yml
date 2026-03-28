@@ -58,7 +58,8 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Set SKIP_DOWNLOAD if version pinned
         if: ${{ inputs.version != '' }}
-        run: echo "Version input: ${{ inputs.version }} (fetch-and-extract.sh will use latest unless DMG is pre-cached)"
+        run: |
+          echo "Version input: ${{ inputs.version }} (fetch-and-extract.sh will use latest unless DMG is pre-cached)"
 
       - name: fetch-and-extract
         run: bash scripts/fetch-and-extract.sh
