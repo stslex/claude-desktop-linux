@@ -218,17 +218,22 @@ fi
 # Patch 2 — Prepend import of path-translator (idempotent)
 # ---------------------------------------------------------------------------
 TRANSLATOR_SRC="$PATCHES_DIR/path-translator.mjs"
-# path-translator.mjs is an ESM module (uses import/export); require() on a
-# .mjs file throws ERR_REQUIRE_ESM in Node.js.  Use top-level import instead.
+# The main bundle is CJS (uses require()).  Prepending an `import` statement
+# would force Node to reparse the file as ESM, breaking every require() call.
+# So we convert path-translator from ESM to CJS on the fly and use require().
 #
-# Copy the file into the same directory as the main entry so the import uses a
-# relative path.  This avoids baking an absolute CI build path into the asar
-# (which would fail at runtime on the user's machine).
+# Copy into the same directory as the main entry so the require uses a relative
+# path — avoids baking an absolute CI build path into the asar.
 MAIN_ENTRY_DIR="$(dirname "$MAIN_ENTRY")"
-TRANSLATOR_DEST="$MAIN_ENTRY_DIR/path-translator.mjs"
-cp "$TRANSLATOR_SRC" "$TRANSLATOR_DEST"
-log "Copied path-translator.mjs to $TRANSLATOR_DEST"
-PREPEND_LINE="import './path-translator.mjs';"
+TRANSLATOR_DEST="$MAIN_ENTRY_DIR/path-translator.js"
+sed \
+  -e "s/^import path from 'path';/const path = require('path');/" \
+  -e "s/^import fs   from 'fs';/const fs   = require('fs');/" \
+  -e "s/^import os   from 'os';/const os   = require('os');/" \
+  -e "s/^export function translatePath/module.exports.translatePath = function translatePath/" \
+  "$TRANSLATOR_SRC" > "$TRANSLATOR_DEST"
+log "Converted path-translator to CJS at $TRANSLATOR_DEST"
+PREPEND_LINE="require('./path-translator.js');"
 
 if head -1 "$MAIN_ENTRY" | grep -qF 'path-translator'; then
   log "path-translator already injected into $MAIN_ENTRY — skipping prepend."
