@@ -46,8 +46,8 @@ if (!global[INIT_SYM] && process.type === 'browser') {
     if (startupUrl) {
       app.once('ready', () => {
         process.stderr.write(`[open-url-bridge] startup argv → open-url: ${startupUrl}\n`);
-        // Use a plain object as the event — the app handler only reads the url arg.
-        app.emit('open-url', {}, startupUrl);
+        // Provide a minimal event-like object so event.preventDefault() won't throw.
+        app.emit('open-url', { preventDefault() {} }, startupUrl);
       });
     }
 
