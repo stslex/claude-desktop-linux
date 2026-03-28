@@ -69,31 +69,23 @@ function getPlatform()  { return 'darwin'; }   // must stay "darwin"
 class AuthRequest {
   static isAvailable() { return true; }
 
-  constructor(...args) {
-    // Log all args so we can identify the native API shape.
-    process.stderr.write(`[claude-native stub] AuthRequest constructor args: ${
-      JSON.stringify(args.map(a => typeof a === 'function' ? '<function>' : a))
-    }\n`);
-    this._url              = args[0];
-    this._callbackURLScheme = (typeof args[1] === 'string' ? args[1] : null) || 'claude';
-    this._completionCb     = typeof args[1] === 'function' ? args[1]
-                           : typeof args[2] === 'function' ? args[2] : null;
+  constructor() {
+    this._callbackURLScheme = 'claude';
   }
 
   /**
    * Open the system browser for OAuth and return a Promise that resolves
    * with { callbackUrl: string } when the claude:// redirect arrives.
    *
-   * On macOS the native ASWebAuthenticationSession does this automatically.
+   * The app calls: new AuthRequest(); then await request.start(url)
+   * The URL is passed to start(), not the constructor.
+   *
    * On Linux, open-url-bridge.js forwards the second-instance event to
    * app.emit('open-url', ...) which we listen for here.
-   *
-   * The app awaits the return value:
-   *   const { callbackUrl } = await request.start();
    */
-  start() {
+  start(url) {
     const scheme = this._callbackURLScheme;
-    const authUrl = this._url;
+    const authUrl = url;
 
     // Open the browser immediately (fire-and-forget).
     try {
@@ -117,10 +109,11 @@ class AuthRequest {
     }
 
     return new Promise((resolve) => {
-      const onOpenUrl = (event, url) => {
-        if (typeof url === 'string' && url.toLowerCase().startsWith(`${scheme}://`)) {
-          process.stderr.write(`[claude-native stub] OAuth callback received: ${url}\n`);
-          resolve({ callbackUrl: url });
+      const onOpenUrl = (event, cbUrl) => {
+        if (typeof cbUrl === 'string' && cbUrl.toLowerCase().startsWith(`${scheme}://`)) {
+          process.stderr.write(`[claude-native stub] OAuth callback received: ${cbUrl}\n`);
+          app.removeListener('open-url', onOpenUrl);
+          resolve({ callbackUrl: cbUrl });
         }
       };
       app.on('open-url', onOpenUrl);
@@ -138,7 +131,7 @@ class AuthRequest {
   }
 
   // Legacy alias
-  open() { return this.start(); }
+  open(...args) { return this.start(...args); }
 }
 
 // ---------------------------------------------------------------------------
