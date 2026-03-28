@@ -67,6 +67,8 @@ function getPlatform()  { return 'darwin'; }   // must stay "darwin"
 // Uses detached+stdio:ignore+unref so the opener does not block Electron.
 // ---------------------------------------------------------------------------
 class AuthRequest {
+  static isAvailable() { return true; }
+
   constructor(url) {
     this._url = url;
   }
