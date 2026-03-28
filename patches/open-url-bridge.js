@@ -21,7 +21,19 @@ if (!global[INIT_SYM] && process.type === 'browser') {
   global[INIT_SYM] = true;
 
   try {
-    const { app } = require('electron');
+    const electron = require('electron');
+    const app = electron.app || electron.default?.app;
+    if (!app) throw new Error('electron.app not available');
+
+    // Register claude:// as a handled protocol so Electron knows about it.
+    app.setAsDefaultProtocolClient('claude');
+
+    // Ensure the single-instance lock is held.  Without it, a second process
+    // launched by the OS to handle claude:// will NOT trigger second-instance
+    // on the first — it will just start a second window instead.
+    if (!app.hasSingleInstanceLock()) {
+      app.requestSingleInstanceLock();
+    }
 
     // -----------------------------------------------------------------------
     // Bridge second-instance → open-url

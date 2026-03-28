@@ -29,43 +29,6 @@ if (!global[INIT_SYM] && process.type === 'browser') {
   const DEBUG = process.env.COWORK_DEBUG === '1';
 
   // -------------------------------------------------------------------------
-  // Linux deep-link bridge: second-instance → open-url
-  //
-  // On macOS, clicking a claude:// link sends an Apple Event that Electron
-  // translates into the 'open-url' event.  On Linux, the system launches a
-  // second process with the URL as an argv argument.  If the app holds a
-  // single-instance lock, the second process exits and the first receives
-  // the 'second-instance' event with the argv.  The app's existing code
-  // listens for 'open-url', so we bridge the two.
-  // -------------------------------------------------------------------------
-  try {
-    const electron = require('electron');
-    const electronApp = electron.app || electron.default?.app;
-    if (electronApp) {
-      electronApp.setAsDefaultProtocolClient('claude');
-
-      // Ensure single-instance lock is held so we receive second-instance
-      // events.  If the app already holds the lock this is a no-op (returns
-      // true).  If it hasn't been requested yet, we grab it first.
-      if (!electronApp.hasSingleInstanceLock()) {
-        electronApp.requestSingleInstanceLock();
-      }
-
-      electronApp.on('second-instance', (_event, argv) => {
-        const url = argv.find(a => typeof a === 'string' && a.startsWith('claude://'));
-        if (url) {
-          if (DEBUG) {
-            process.stderr.write(`[path-translator] deep-link bridge: ${url}\n`);
-          }
-          electronApp.emit('open-url', { preventDefault() {} }, url);
-        }
-      });
-    }
-  } catch {
-    // electron module may not be available in all contexts
-  }
-
-  // -------------------------------------------------------------------------
   // Session base directory
   // -------------------------------------------------------------------------
   const SESSION_BASE = path.join(
