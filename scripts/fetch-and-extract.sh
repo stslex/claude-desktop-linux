@@ -192,47 +192,49 @@ log "Unpacking app.asar with @electron/asar..."
 npx --yes @electron/asar extract "$ASAR_DEST" "$APP_DIR"
 
 # ---------------------------------------------------------------------------
-# Copy extra resources from the macOS bundle into app-extracted.
-# Some resources (e.g. i18n JSON files) live alongside app.asar in
-# Contents/Resources/ rather than inside the asar itself.  The app
-# loads them via app.getAppPath()-relative paths, so they must be
-# present in the repacked asar.
+# Copy extra resources (i18n, etc.) into app-extracted so they are in the
+# repacked asar.  The app loads resources/i18n/en-US.json relative to
+# app.getAppPath(), which resolves inside the asar.
 # ---------------------------------------------------------------------------
+log "Searching for i18n / resource files in extracted bundle..."
+# Diagnostic: show where any i18n files live in the full extraction.
+find "$EXTRACT_DIR" -name "*.json" -path "*/i18n/*" 2>/dev/null | head -20 | while read -r f; do
+  log "  found: $f"
+done
+
 RESOURCES_SRC_DIR="$(dirname "$ASAR_SRC")"
 COPIED_EXTRA=0
-for extra_dir in "resources" "i18n"; do
-  if [[ -d "$RESOURCES_SRC_DIR/$extra_dir" ]]; then
-    cp -a "$RESOURCES_SRC_DIR/$extra_dir" "$APP_DIR/"
-    log "Copied extra resource dir: $extra_dir/"
+
+# Search several candidate locations where i18n files may reside.
+I18N_CANDIDATES=(
+  "$RESOURCES_SRC_DIR/resources/i18n"
+  "$RESOURCES_SRC_DIR/i18n"
+  "${ASAR_SRC}.unpacked/resources/i18n"
+  "${ASAR_SRC}.unpacked/i18n"
+)
+# Also search the whole extracted tree for any i18n directory.
+while IFS= read -r candidate; do
+  I18N_CANDIDATES+=("$candidate")
+done < <(find "$EXTRACT_DIR" -type d -name "i18n" 2>/dev/null)
+
+for candidate in "${I18N_CANDIDATES[@]}"; do
+  if [[ -d "$candidate" ]] && ls "$candidate"/*.json &>/dev/null; then
+    mkdir -p "$APP_DIR/resources/i18n"
+    cp -a "$candidate"/*.json "$APP_DIR/resources/i18n/"
+    log "Copied i18n files from: $candidate"
     COPIED_EXTRA=$((COPIED_EXTRA + 1))
+    break
   fi
 done
-# Also check for loose i18n files at a deeper path (some builds use resources/i18n/)
-if [[ -d "$RESOURCES_SRC_DIR/resources/i18n" && ! -d "$APP_DIR/resources/i18n" ]]; then
-  mkdir -p "$APP_DIR/resources"
-  cp -a "$RESOURCES_SRC_DIR/resources/i18n" "$APP_DIR/resources/"
-  log "Copied extra resource dir: resources/i18n/"
+
+# Fallback: if no i18n files were found anywhere, create a minimal stub
+# so the app doesn't crash on launch.  The app uses i18n for UI strings
+# and falls back to English keys when a translation is missing.
+if [[ ! -f "$APP_DIR/resources/i18n/en-US.json" ]]; then
+  log "WARNING: en-US.json not found in bundle — creating minimal stub."
+  mkdir -p "$APP_DIR/resources/i18n"
+  echo '{}' > "$APP_DIR/resources/i18n/en-US.json"
   COPIED_EXTRA=$((COPIED_EXTRA + 1))
-fi
-# Check app.asar.unpacked/ too — Electron stores some files there
-ASAR_UNPACKED_DIR="${ASAR_SRC}.unpacked"
-if [[ -d "$ASAR_UNPACKED_DIR" ]]; then
-  for extra_dir in "resources" "i18n"; do
-    if [[ -d "$ASAR_UNPACKED_DIR/$extra_dir" && ! -d "$APP_DIR/$extra_dir" ]]; then
-      cp -a "$ASAR_UNPACKED_DIR/$extra_dir" "$APP_DIR/"
-      log "Copied from asar.unpacked: $extra_dir/"
-      COPIED_EXTRA=$((COPIED_EXTRA + 1))
-    fi
-  done
-  if [[ -d "$ASAR_UNPACKED_DIR/resources/i18n" && ! -d "$APP_DIR/resources/i18n" ]]; then
-    mkdir -p "$APP_DIR/resources"
-    cp -a "$ASAR_UNPACKED_DIR/resources/i18n" "$APP_DIR/resources/"
-    log "Copied from asar.unpacked: resources/i18n/"
-    COPIED_EXTRA=$((COPIED_EXTRA + 1))
-  fi
-fi
-if [[ "$COPIED_EXTRA" -eq 0 ]]; then
-  log "No extra resource directories found alongside asar (this may be fine)."
 fi
 
 # ---------------------------------------------------------------------------
