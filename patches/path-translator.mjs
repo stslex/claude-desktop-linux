@@ -1,122 +1,117 @@
+'use strict';
 /**
- * path-translator.mjs
+ * path-translator.mjs  (CommonJS — loaded via require())
  *
- * Injected as the first require/import in the main-process bundle.
- * Monkey-patches Node.js `path` and `fs.promises` to redirect Cowork VM paths
+ * Injected as the first require() at the main-process entry point.
+ * Monkey-patches Node.js `path` and `fs` to redirect Cowork VM paths
  * to real host paths.
  *
  * Translation rule:
  *   /sessions/<uuid>/mnt/<mount-name>/…
  *     → ~/.local/share/claude-linux/sessions/<uuid>/<mount-name>/…
  *
- * The mount table is populated by the claude-swift stub via
- * globalThis.__claudeRegisterMounts(sessionId, mounts).
- *
- * Set COWORK_DEBUG=1 to log intercepted paths to stderr.
+ * Set COWORK_DEBUG=1 to log every translated path to stderr.
  */
 
-import path from 'path';
-import fs   from 'fs';
-import os   from 'os';
+// ---------------------------------------------------------------------------
+// Guard against double-initialisation
+// ---------------------------------------------------------------------------
+const INIT_SYM = Symbol.for('__claudePathTranslatorInitialised');
+if (global[INIT_SYM]) {
+  module.exports = { translatePath: global[Symbol.for('__claudeTranslatePath')] };
+  return; // already patched
+}
+global[INIT_SYM] = true;
 
-const DEBUG       = process.env.COWORK_DEBUG === '1';
+// Self-activate only in the Electron main process.
+if (process.type !== 'browser') {
+  module.exports = { translatePath: p => p };
+  return;
+}
+
+const path = require('path');
+const fs   = require('fs');
+const os   = require('os');
+
+const DEBUG = process.env.COWORK_DEBUG === '1';
+
+// ---------------------------------------------------------------------------
+// Session base directory
+// ---------------------------------------------------------------------------
 const SESSION_BASE = path.join(os.homedir(), '.local', 'share', 'claude-linux', 'sessions');
 
-// ---------------------------------------------------------------------------
-// Mount table: Map<sessionId, Map<mountName, hostPath>>
-// ---------------------------------------------------------------------------
-/** @type {Map<string, Map<string, string>>} */
-const mountTable = new Map();
-
-/**
- * Called by the claude-swift stub before spawning a Cowork session.
- * @param {string} sessionId
- * @param {Array<{name: string, hostPath: string}>} mounts
- */
-globalThis.__claudeRegisterMounts = function registerMounts(sessionId, mounts) {
-  const m = new Map();
-  for (const { name, hostPath } of mounts) {
-    m.set(name, hostPath);
-    if (DEBUG) process.stderr.write(`[path-translator] register mount [${sessionId}] ${name} → ${hostPath}\n`);
-  }
-  mountTable.set(sessionId, m);
-};
+// Create it eagerly so callers can write without additional checks.
+fs.mkdirSync(SESSION_BASE, { recursive: true });
 
 // ---------------------------------------------------------------------------
-// Translation logic
+// Translation
 // ---------------------------------------------------------------------------
 const SESSION_RE = /^\/sessions\/([^/]+)\/mnt\/([^/]+)(\/.*)?$/;
 
 /**
  * Translate a /sessions/… path to its host equivalent.
  * Returns the original path if it does not match the pattern.
- * @param {string} p
+ * @param {string} inputPath
  * @returns {string}
  */
-function translate(p) {
-  if (typeof p !== 'string') return p;
-  const m = SESSION_RE.exec(p);
-  if (!m) return p;
+function translatePath(inputPath) {
+  if (typeof inputPath !== 'string') return inputPath;
+  const m = SESSION_RE.exec(inputPath);
+  if (!m) return inputPath;
 
-  const [, sessionId, mountName, rest = ''] = m;
-  const mounts = mountTable.get(sessionId);
+  const [, uuid, mountName, rest = ''] = m;
+  const translated = path.join(SESSION_BASE, uuid, mountName) + rest;
 
-  let hostBase;
-  if (mounts && mounts.has(mountName)) {
-    hostBase = mounts.get(mountName);
-  } else {
-    // Fallback: map to the session directory under SESSION_BASE.
-    hostBase = path.join(SESSION_BASE, sessionId, mountName);
+  if (DEBUG) {
+    process.stderr.write(`[path-translator] ${inputPath} → ${translated}\n`);
   }
-
-  const translated = hostBase + rest;
-  if (DEBUG) process.stderr.write(`[path-translator] ${p} → ${translated}\n`);
   return translated;
 }
 
-// ---------------------------------------------------------------------------
-// Patch path.join and path.resolve
-// ---------------------------------------------------------------------------
-const origJoin    = path.join.bind(path);
-const origResolve = path.resolve.bind(path);
-
-path.join = (...segments) => {
-  const result = origJoin(...segments);
-  return translate(result);
-};
-
-path.resolve = (...segments) => {
-  const result = origResolve(...segments);
-  return translate(result);
-};
+// Expose via global symbol so the guard block above can re-export it.
+global[Symbol.for('__claudeTranslatePath')] = translatePath;
 
 // ---------------------------------------------------------------------------
-// Wrap fs.promises methods that take a path as their first argument.
+// Monkey-patch path.join and path.resolve
 // ---------------------------------------------------------------------------
-const FS_METHODS = [
-  'open', 'readFile', 'writeFile', 'appendFile',
-  'stat', 'lstat', 'access', 'chmod', 'chown',
-  'mkdir', 'readdir', 'rmdir', 'rm', 'rename',
-  'copyFile', 'symlink', 'readlink', 'unlink',
-  'truncate', 'utimes',
-];
+const _origJoin    = path.join.bind(path);
+const _origResolve = path.resolve.bind(path);
 
-for (const method of FS_METHODS) {
+path.join = (...segments) => translatePath(_origJoin(...segments));
+path.resolve = (...segments) => translatePath(_origResolve(...segments));
+
+// ---------------------------------------------------------------------------
+// Monkey-patch fs.promises methods
+// ---------------------------------------------------------------------------
+const _promiseMethods = ['open', 'readFile', 'writeFile', 'stat', 'readdir'];
+
+for (const method of _promiseMethods) {
   if (typeof fs.promises[method] !== 'function') continue;
-  const original = fs.promises[method].bind(fs.promises);
-  fs.promises[method] = (p, ...rest) => original(translate(p), ...rest);
+  const _orig = fs.promises[method].bind(fs.promises);
+  fs.promises[method] = (p, ...rest) => _orig(translatePath(p), ...rest);
 }
 
-// Also patch the synchronous variants for completeness.
-const FS_SYNC_METHODS = [
-  'readFileSync', 'writeFileSync', 'statSync', 'lstatSync',
-  'accessSync', 'mkdirSync', 'readdirSync', 'rmdirSync',
-  'rmSync', 'renameSync', 'copyFileSync', 'symlinkSync',
-  'readlinkSync', 'unlinkSync', 'openSync', 'chmodSync',
-];
-
-for (const method of FS_SYNC_METHODS) {
-  if (typeof fs[method] !== 'function') continue;
-  const original = fs[method].bind(fs);
-  fs[method] = (p, ...rest) => original(translate(p), ...rest);
+// ---------------------------------------------------------------------------
+// Monkey-patch fs.realpathSync and fs.realpath
+// ---------------------------------------------------------------------------
+if (typeof fs.realpathSync === 'function') {
+  const _orig = fs.realpathSync.bind(fs);
+  fs.realpathSync = (p, ...rest) => _orig(translatePath(p), ...rest);
+  // Preserve any sub-properties (e.g. fs.realpathSync.native)
+  if (typeof _orig.native === 'function') {
+    fs.realpathSync.native = (p, ...rest) => _orig.native(translatePath(p), ...rest);
+  }
 }
+
+if (typeof fs.realpath === 'function') {
+  const _orig = fs.realpath.bind(fs);
+  fs.realpath = (p, ...rest) => _orig(translatePath(p), ...rest);
+  if (typeof _orig.native === 'function') {
+    fs.realpath.native = (p, ...rest) => _orig.native(translatePath(p), ...rest);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Exports
+// ---------------------------------------------------------------------------
+module.exports = { translatePath };
