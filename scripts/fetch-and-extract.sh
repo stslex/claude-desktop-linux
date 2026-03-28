@@ -310,7 +310,11 @@ log "Electron version: ${ELECTRON_VERSION:-unknown}"
 # Output: packaging/icons/claude-{16,32,48,64,128,256,512}.png
 # ---------------------------------------------------------------------------
 RESOURCES_DIR="$(dirname "$ASAR_SRC")"
-ICNS_FILE=$(find "$RESOURCES_DIR" -name "claude.icns" | head -1 || true)
+# Search case-insensitively; fall back to the whole extract tree.
+ICNS_FILE=$(find "$RESOURCES_DIR" -iname "*.icns" | head -1 || true)
+if [[ -z "$ICNS_FILE" ]]; then
+  ICNS_FILE=$(find "$EXTRACT_DIR" -iname "*.icns" | head -1 || true)
+fi
 
 ICONS_DIR="$REPO_DIR/packaging/icons"
 mkdir -p "$ICONS_DIR"
@@ -329,7 +333,7 @@ if [[ -n "$ICNS_FILE" ]]; then
   done
   log "Icons written to $ICONS_DIR"
 else
-  log "WARNING: claude.icns not found in $RESOURCES_DIR — no icons extracted."
+  log "WARNING: no .icns file found anywhere in extracted bundle — no icons extracted."
 fi
 
 # ---------------------------------------------------------------------------
