@@ -310,14 +310,19 @@ log "Electron version: ${ELECTRON_VERSION:-unknown}"
 # Output: packaging/icons/claude-{16,32,48,64,128,256,512}.png
 # ---------------------------------------------------------------------------
 RESOURCES_DIR="$(dirname "$ASAR_SRC")"
-# Prefer the app icon (claude.icns / Claude.icns) over generic electron.icns.
-# Search order: exact app name → any non-electron icns in Resources → whole tree.
+# Search order:
+#   1. claude.icns (case-insensitive) — explicit app icon name
+#   2. any *.icns that is not electron.icns — other bundled icons
+#   3. electron.icns — Electron apps replace this file with the real app icon
 ICNS_FILE=$(find "$RESOURCES_DIR" -iname "claude.icns" | head -1 || true)
 if [[ -z "$ICNS_FILE" ]]; then
   ICNS_FILE=$(find "$RESOURCES_DIR" -iname "*.icns" ! -iname "electron.icns" | head -1 || true)
 fi
 if [[ -z "$ICNS_FILE" ]]; then
-  ICNS_FILE=$(find "$EXTRACT_DIR" -iname "*.icns" ! -iname "electron.icns" | head -1 || true)
+  ICNS_FILE=$(find "$RESOURCES_DIR" -iname "electron.icns" | head -1 || true)
+fi
+if [[ -z "$ICNS_FILE" ]]; then
+  ICNS_FILE=$(find "$EXTRACT_DIR" -iname "*.icns" | head -1 || true)
 fi
 
 ICONS_DIR="$REPO_DIR/packaging/icons"
