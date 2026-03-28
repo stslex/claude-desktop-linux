@@ -60,11 +60,11 @@ cp "$ASAR_OUT" "$RPM_ROOT/SOURCES/app-patched.asar"
 cp "$REPO_DIR/packaging/AppDir/usr/bin/claude-desktop" "$RPM_ROOT/SOURCES/claude-desktop"
 cp "$REPO_DIR/packaging/AppDir/claude-desktop.desktop" "$RPM_ROOT/SOURCES/claude-desktop.desktop"
 
-# Icons tarball — always create it (may be empty if icon extraction was skipped)
-ICONS_DIR="$BUILD_DIR/icons"
+# Icons tarball — source is packaging/icons/ (written by fetch-and-extract.sh)
+ICONS_DIR="$REPO_DIR/packaging/icons"
 mkdir -p "$ICONS_DIR"
 log "Creating icons.tar.gz ..."
-tar -czf "$RPM_ROOT/SOURCES/icons.tar.gz" -C "$BUILD_DIR" icons/
+tar -czf "$RPM_ROOT/SOURCES/icons.tar.gz" -C "$REPO_DIR/packaging" icons/
 
 # Copy spec
 cp "$REPO_DIR/packaging/claude-desktop.spec" "$RPM_ROOT/SPECS/claude-desktop.spec"

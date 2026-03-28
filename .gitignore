@@ -1,5 +1,6 @@
 output/*.rpm
 output/*.AppImage
+output/*.AppImage.zsync
 output/*.sha256
 
 node_modules/

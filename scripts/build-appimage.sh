@@ -146,11 +146,13 @@ if [[ -d "$ICONS_DIR" ]] && ls "$ICONS_DIR"/*.png &>/dev/null; then
     LARGEST_ICON="$(find "$ICONS_DIR" -maxdepth 1 -name '*.png' | sort -V | tail -1)"
     cp "$LARGEST_ICON" "$APPDIR/claude-desktop.png"
 
-    # Install into hicolor theme tree for desktop environments
+    # Install into hicolor theme tree for desktop environments.
+    # Icons are named claude-<N>.png (e.g. claude-256.png); convert to <N>x<N>
+    # directory name required by the freedesktop hicolor spec.
     for PNG in "$ICONS_DIR"/*.png; do
-        SIZE="$(basename "$PNG" | grep -oP '\d+x\d+' | head -1 || true)"
-        [[ -z "$SIZE" ]] && continue
-        ICON_DEST="$APPDIR/usr/share/icons/hicolor/$SIZE/apps"
+        N="$(basename "$PNG" | grep -oP '(?<=claude-)\d+(?=\.png)' || true)"
+        [[ -z "$N" ]] && continue
+        ICON_DEST="$APPDIR/usr/share/icons/hicolor/${N}x${N}/apps"
         mkdir -p "$ICON_DEST"
         cp "$PNG" "$ICON_DEST/claude-desktop.png"
     done
@@ -171,11 +173,32 @@ fi
 # Build AppImage
 # ---------------------------------------------------------------------------
 APPIMAGE_OUT="$OUTPUT_DIR/claude-desktop-${APP_VERSION}-x86_64.AppImage"
+
+# Embed zsync update info so AppImageUpdate can fetch the latest release.
+# Pattern matches the repack-N filename used in GitHub releases.
+REPO="${GITHUB_REPOSITORY:-stslex/claude-desktop-linux}"
+REPO_USER="${REPO%%/*}"
+REPO_NAME="${REPO##*/}"
+UPDATE_INFO="gh-releases-zsync|${REPO_USER}|${REPO_NAME}|latest|claude-desktop-*-x86_64.AppImage.zsync"
+
 log "Running appimagetool ..."
-ARCH=x86_64 "$APPIMAGETOOL" "$APPDIR" "$APPIMAGE_OUT" 2>&1
+ARCH=x86_64 "$APPIMAGETOOL" \
+    --updateinformation "$UPDATE_INFO" \
+    "$APPDIR" "$APPIMAGE_OUT" 2>&1
 
 chmod +x "$APPIMAGE_OUT"
 sha256sum "$APPIMAGE_OUT" | awk '{print $1}' > "${APPIMAGE_OUT}.sha256"
+
+# Generate zsync file for delta updates.
+# zsyncmake is optional — skip gracefully if not installed.
+ZSYNC_OUT="${APPIMAGE_OUT}.zsync"
+if command -v zsyncmake &>/dev/null; then
+    log "Generating zsync delta file..."
+    zsyncmake -u "$(basename "$APPIMAGE_OUT")" -o "$ZSYNC_OUT" "$APPIMAGE_OUT"
+    log "zsync    : $ZSYNC_OUT"
+else
+    log "WARNING: zsyncmake not found — skipping .zsync generation (install zsync package)."
+fi
 
 log "AppImage : $APPIMAGE_OUT"
 log "SHA256   : $(cat "${APPIMAGE_OUT}.sha256")"
