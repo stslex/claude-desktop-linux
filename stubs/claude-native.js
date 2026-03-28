@@ -1,35 +1,70 @@
 'use strict';
 
-const { execFileSync } = require('child_process');
+const { spawn } = require('child_process');
 
 // ---------------------------------------------------------------------------
-// KeyboardKey enum — integer constants used by the global hotkey system.
-// Values copied from existing community ports (k3d3/patchy-cnb, etc.).
+// KeyboardKey enum — Windows Virtual-Key codes used by the hotkey system.
+// Values match the VK_* constants a hotkey system needs.
 // ---------------------------------------------------------------------------
 const KeyboardKey = {
-  A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, G: 6, H: 7, I: 8, J: 9,
-  K: 10, L: 11, M: 12, N: 13, O: 14, P: 15, Q: 16, R: 17, S: 18, T: 19,
-  U: 20, V: 21, W: 22, X: 23, Y: 24, Z: 25,
-  Zero: 26, One: 27, Two: 28, Three: 29, Four: 30,
-  Five: 31, Six: 32, Seven: 33, Eight: 34, Nine: 35,
-  F1: 36, F2: 37, F3: 38, F4: 39, F5: 40, F6: 41,
-  F7: 42, F8: 43, F9: 44, F10: 45, F11: 46, F12: 47,
-  Space: 48, Enter: 49, Tab: 50, Backspace: 51, Escape: 52,
-  Up: 53, Down: 54, Left: 55, Right: 56,
-  Shift: 57, Control: 58, Alt: 59, Meta: 60,
+  // Special / editing keys
+  Back:      0x08,  // VK_BACK    — Backspace
+  Tab:       0x09,  // VK_TAB
+  Return:    0x0D,  // VK_RETURN  — Enter
+  Escape:    0x1B,  // VK_ESCAPE
+  Space:     0x20,  // VK_SPACE
+  Prior:     0x21,  // VK_PRIOR   — Page Up
+  Next:      0x22,  // VK_NEXT    — Page Down
+  End:       0x23,  // VK_END
+  Home:      0x24,  // VK_HOME
+  Left:      0x25,  // VK_LEFT
+  Up:        0x26,  // VK_UP
+  Right:     0x27,  // VK_RIGHT
+  Down:      0x28,  // VK_DOWN
+  Delete:    0x2E,  // VK_DELETE
+
+  // Modifier keys (main)
+  Shift:     0x10,  // VK_SHIFT
+  Control:   0x11,  // VK_CONTROL
+  Menu:      0x12,  // VK_MENU    — Alt
+  Capital:   0x14,  // VK_CAPITAL — Caps Lock
+  LWin:      0x5B,  // VK_LWIN   — Left Super/Meta
+  RWin:      0x5C,  // VK_RWIN   — Right Super/Meta
+
+  // Left / right variants
+  LShift:    0xA0,  // VK_LSHIFT
+  RShift:    0xA1,  // VK_RSHIFT
+  LControl:  0xA2,  // VK_LCONTROL
+  RControl:  0xA3,  // VK_RCONTROL
+  LMenu:     0xA4,  // VK_LMENU  — Left Alt
+  RMenu:     0xA5,  // VK_RMENU  — Right Alt
+
+  // Digits 0–9 (0x30–0x39)
+  Zero:  0x30, One:   0x31, Two:   0x32, Three: 0x33, Four:  0x34,
+  Five:  0x35, Six:   0x36, Seven: 0x37, Eight: 0x38, Nine:  0x39,
+
+  // Letters A–Z (0x41–0x5A)
+  A: 0x41, B: 0x42, C: 0x43, D: 0x44, E: 0x45, F: 0x46, G: 0x47,
+  H: 0x48, I: 0x49, J: 0x4A, K: 0x4B, L: 0x4C, M: 0x4D, N: 0x4E,
+  O: 0x4F, P: 0x50, Q: 0x51, R: 0x52, S: 0x53, T: 0x54, U: 0x55,
+  V: 0x56, W: 0x57, X: 0x58, Y: 0x59, Z: 0x5A,
+
+  // Function keys F1–F12 (0x70–0x7B)
+  F1:  0x70, F2:  0x71, F3:  0x72, F4:  0x73,
+  F5:  0x74, F6:  0x75, F7:  0x76, F8:  0x77,
+  F9:  0x78, F10: 0x79, F11: 0x7A, F12: 0x7B,
 };
 
 // ---------------------------------------------------------------------------
 // Platform / version spoofs — required for the Cowork availability check.
 // The in-process JS gate does getPlatform() === "darwin"; we satisfy it here.
 // ---------------------------------------------------------------------------
-function getOSVersion() { return '14.0.0'; }   // macOS Sonoma spoof
-function getPlatform()  { return 'darwin'; }    // must stay "darwin"
+function getOSVersion() { return '14.0.0'; }  // macOS Sonoma spoof
+function getPlatform()  { return 'darwin'; }   // must stay "darwin"
 
 // ---------------------------------------------------------------------------
 // AuthRequest — handles the claude:// OAuth deep-link callback.
-// The .desktop file + RPM %post register the URI scheme via xdg-mime so the
-// system routes claude:// back to us.
+// Uses detached+stdio:ignore+unref so the opener does not block Electron.
 // ---------------------------------------------------------------------------
 class AuthRequest {
   constructor(url) {
@@ -38,39 +73,32 @@ class AuthRequest {
 
   open() {
     try {
-      execFileSync('xdg-open', [this._url], { stdio: 'ignore' });
+      const child = spawn('xdg-open', [this._url], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      child.unref();
     } catch {
-      // xdg-open not available — print the URL so the user can open it manually.
       process.stderr.write(`[claude-native stub] xdg-open unavailable. Open manually:\n  ${this._url}\n`);
     }
   }
 }
 
 // ---------------------------------------------------------------------------
-// Everything else — silent no-ops. The app calls some of these but does not
-// rely on their return values for core functionality.
+// Proxy — any unknown property returns a no-op function, with a one-time
+// warning to stderr so callers are visible in logs.
 // ---------------------------------------------------------------------------
-function noop() { return undefined; }
+const _warned = new Set();
 
-module.exports = {
-  KeyboardKey,
-  getOSVersion,
-  getPlatform,
-  AuthRequest,
-  // Clipboard helpers
-  getClipboardText:    noop,
-  setClipboardText:    noop,
-  // Notification bridge
-  showNotification:    noop,
-  // Hardware identifier
-  getMachineId:        noop,
-  getSerialNumber:     noop,
-  // Window / dock helpers
-  setDockBadge:        noop,
-  getDockBadge:        noop,
-  setWindowVibrancy:   noop,
-  // Misc
-  getSystemIdleTime:   noop,
-  registerGlobalShortcut:   noop,
-  unregisterGlobalShortcut: noop,
-};
+const _base = { KeyboardKey, getOSVersion, getPlatform, AuthRequest };
+
+module.exports = new Proxy(_base, {
+  get(target, prop) {
+    if (prop in target) return target[prop];
+    if (!_warned.has(prop)) {
+      _warned.add(prop);
+      process.stderr.write(`[claude-native stub] unknown property accessed: ${String(prop)}\n`);
+    }
+    return function noop() {};
+  },
+});

@@ -5,13 +5,13 @@ const path = require('path');
 const os   = require('os');
 
 // ---------------------------------------------------------------------------
-// State — one Map per module instance (module-scope singleton).
+// State — module-scope singletons.
 // ---------------------------------------------------------------------------
 /** @type {{ onReady?: Function, onExit?: Function, onStdout?: Function, onStderr?: Function }} */
 let _callbacks = {};
 
 /** @type {Map<number, import('child_process').ChildProcess>} */
-const _processes = new Map();
+const _procs = new Map();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -29,7 +29,6 @@ function bwrapPrefix(sessionDir) {
     '--new-session',
     '--ro-bind', '/usr', '/usr',
     '--ro-bind', '/lib', '/lib',
-    // /lib64 may not exist on all distros
     ...( require('fs').existsSync('/lib64') ? ['--ro-bind', '/lib64', '/lib64'] : [] ),
     '--ro-bind', '/etc', '/etc',
     '--ro-bind', os.homedir(), os.homedir(),
@@ -41,10 +40,20 @@ function bwrapPrefix(sessionDir) {
   ];
 }
 
+/**
+ * Placeholder — real path translation is handled by patches/path-translator.mjs.
+ * Returns opts unchanged so callers can be wired up without modification.
+ * @param {object} opts
+ * @returns {object}
+ */
+function translatePaths(opts) {
+  return opts;
+}
+
 // ---------------------------------------------------------------------------
 // VM interface — matches the shape the Cowork orchestrator expects.
 // ---------------------------------------------------------------------------
-const vm = {
+const _vmBase = {
   /**
    * Store the event callback set.
    * @param {{ onReady?: Function, onExit?: Function, onStdout?: Function, onStderr?: Function }} cbs
@@ -70,6 +79,7 @@ const vm = {
 
   /**
    * Spawn a subprocess, optionally inside a bubblewrap sandbox.
+   * Stores the child in _procs keyed by PID.
    *
    * @param {string}   binary  Executable to run.
    * @param {string[]} args    Arguments.
@@ -77,13 +87,12 @@ const vm = {
    * @returns {Promise<number>}  The child process PID (used as stable handle).
    */
   spawn(binary, args = [], opts = {}) {
+    opts = translatePaths(opts);
     const { cwd, env, additionalMounts = [] } = opts;
 
-    // Determine the session directory from cwd or a default.
     const sessionDir = cwd || path.join(SESSION_BASE, 'default');
     require('fs').mkdirSync(sessionDir, { recursive: true });
 
-    // Register mounts with the path translator if it's loaded.
     if (typeof globalThis.__claudeRegisterMounts === 'function' && additionalMounts.length) {
       const sessionId = path.basename(sessionDir);
       globalThis.__claudeRegisterMounts(sessionId, additionalMounts);
@@ -105,7 +114,7 @@ const vm = {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    _processes.set(child.pid, child);
+    _procs.set(child.pid, child);
 
     child.stdout.on('data', (data) => {
       if (typeof _callbacks.onStdout === 'function') _callbacks.onStdout(child.pid, data);
@@ -114,12 +123,12 @@ const vm = {
       if (typeof _callbacks.onStderr === 'function') _callbacks.onStderr(child.pid, data);
     });
     child.on('exit', (code, signal) => {
-      _processes.delete(child.pid);
+      _procs.delete(child.pid);
       if (typeof _callbacks.onExit === 'function') _callbacks.onExit(child.pid, code, signal);
     });
     child.on('error', (err) => {
       process.stderr.write(`[claude-swift stub] spawn error (${spawnBin}): ${err.message}\n`);
-      _processes.delete(child.pid);
+      _procs.delete(child.pid);
       if (typeof _callbacks.onExit === 'function') _callbacks.onExit(child.pid, 1, null);
     });
 
@@ -131,10 +140,10 @@ const vm = {
    * @param {number} pid
    */
   kill(pid) {
-    const child = _processes.get(pid);
+    const child = _procs.get(pid);
     if (child) {
       child.kill();
-      _processes.delete(pid);
+      _procs.delete(pid);
     }
   },
 
@@ -144,21 +153,36 @@ const vm = {
    * @param {Buffer|string} data
    */
   writeStdin(pid, data) {
-    const child = _processes.get(pid);
+    const child = _procs.get(pid);
     if (child && child.stdin) {
       child.stdin.write(data);
     }
   },
 
   /**
-   * Check whether a spawned process is still running.
-   * @param {number} pid
+   * Report whether the VM is running.
+   * On Linux there is no VM — always return true.
    * @returns {boolean}
    */
-  isRunning(pid) {
-    return _processes.has(pid);
+  isRunning() {
+    return true;
   },
 };
+
+// Wrap vm in a Proxy so unknown method calls are logged to stderr.
+const vm = new Proxy(_vmBase, {
+  get(target, prop) {
+    if (prop in target) return target[prop];
+    process.stderr.write(`[claude-swift stub] unknown vm method called: ${String(prop)}\n`);
+    return function noop() {};
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Module state exposed for testing / path-translator integration.
+// ---------------------------------------------------------------------------
+vm._callbacks = _callbacks;
+vm._procs     = _procs;
 
 // ---------------------------------------------------------------------------
 // Export shape — the app does: require('@ant/claude-swift').default.vm

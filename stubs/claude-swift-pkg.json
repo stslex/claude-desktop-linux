@@ -1,6 +1,5 @@
 {
   "name": "@ant/claude-swift",
-  "version": "0.0.0",
-  "description": "Linux stub replacing the macOS-native @ant/claude-swift (VZVirtualMachine) addon",
-  "main": "claude-swift.js"
+  "version": "1.0.0",
+  "main": "index.js"
 }
