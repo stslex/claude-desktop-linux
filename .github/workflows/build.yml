@@ -33,7 +33,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            dmg2img p7zip-full rpm imagemagick libicns-utils fuse libfuse2 zsync
+            dmg2img p7zip-full rpm imagemagick icnsutils fuse libfuse2 zsync
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -136,17 +136,22 @@ jobs:
           VERSION: ${{ steps.ver.outputs.version }}
           REPACK:  ${{ steps.repack.outputs.num }}
         run: |
-          for ext in rpm AppImage AppImage.zsync; do
+          for ext in rpm AppImage; do
             src="output/claude-desktop-${VERSION}-x86_64.${ext}"
             dst="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.${ext}"
             [[ -f "$src" ]] || continue
             mv "$src" "$dst"
-            # zsync already contains its own checksums — no separate .sha256 needed
-            if [[ "$ext" != "AppImage.zsync" ]]; then
-              sha256sum "$dst" | awk '{print $1}' > "${dst}.sha256"
-              rm -f "${src}.sha256"
-            fi
+            sha256sum "$dst" | awk '{print $1}' > "${dst}.sha256"
+            rm -f "${src}.sha256"
           done
+          # Remove the stale zsync (it has the wrong embedded filename) and
+          # regenerate it from the renamed AppImage so the internal URL matches.
+          rm -f "output/claude-desktop-${VERSION}-x86_64.AppImage.zsync"
+          APPIMAGE="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.AppImage"
+          ZSYNC="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.AppImage.zsync"
+          if [[ -f "$APPIMAGE" ]] && command -v zsyncmake &>/dev/null; then
+            zsyncmake -u "$(basename "$APPIMAGE")" -o "$ZSYNC" "$APPIMAGE"
+          fi
 
       - name: Compute checksums for release notes
         id: sums
