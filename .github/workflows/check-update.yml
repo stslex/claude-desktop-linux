@@ -17,15 +17,46 @@ jobs:
         id: version
         run: |
           LATEST_URL="https://storage.googleapis.com/osprey-downloads-c02f6a0d-347c-492b-a752-3e0651722e97/nest-apple/Claude-latest.dmg"
-          # Follow the redirect to get the versioned filename.
-          RESOLVED="$(curl -sSL --head -o /dev/null -w '%{url_effective}' "$LATEST_URL")"
-          echo "Resolved URL: $RESOLVED"
-          # Extract version from filename, e.g. Claude-1.1.8629.dmg → 1.1.8629
-          VERSION="$(basename "$RESOLVED" .dmg | sed 's/^Claude-//')"
-          if [[ -z "$VERSION" || "$VERSION" == "latest" ]]; then
-            echo "ERROR: Could not extract version from redirect URL: $RESOLVED"
+          VERSION=""
+
+          # Strategy 1: Follow redirects with a GET request (range 0-0 to
+          # avoid downloading the full file) and check the effective URL.
+          RESOLVED="$(curl -sSL -o /dev/null -w '%{url_effective}' -r 0-0 "$LATEST_URL" 2>/dev/null || true)"
+          echo "Resolved URL (GET range): ${RESOLVED:-empty}"
+          if [[ -n "$RESOLVED" ]]; then
+            VERSION="$(basename "$RESOLVED" .dmg | sed 's/^Claude-//')"
+          fi
+
+          # Strategy 2: Parse the Location header from redirect responses.
+          if [[ -z "$VERSION" || "$VERSION" == "latest" || "$VERSION" == "Claude-latest" ]]; then
+            HEADERS="$(curl -sIL "$LATEST_URL" 2>/dev/null || true)"
+            LOCATION="$(echo "$HEADERS" | grep -i '^location:' | tail -1 | tr -d '\r' | awk '{print $2}')"
+            echo "Location header: ${LOCATION:-empty}"
+            if [[ -n "$LOCATION" ]]; then
+              VERSION="$(basename "$LOCATION" .dmg | sed 's/^Claude-//')"
+            fi
+          fi
+
+          # Strategy 3: Check Content-Disposition header for the filename.
+          if [[ -z "$VERSION" || "$VERSION" == "latest" || "$VERSION" == "Claude-latest" ]]; then
+            HEADERS="$(curl -sI "$LATEST_URL" 2>/dev/null || true)"
+            CD="$(echo "$HEADERS" | grep -i '^content-disposition:' | tr -d '\r')"
+            echo "Content-Disposition: ${CD:-empty}"
+            if [[ -n "$CD" ]]; then
+              FNAME="$(echo "$CD" | grep -oP 'filename="?\K[^";]+' || true)"
+              if [[ -n "$FNAME" ]]; then
+                VERSION="$(basename "$FNAME" .dmg | sed 's/^Claude-//')"
+              fi
+            fi
+          fi
+
+          # Validate: version must be a dotted number like 1.1.8629.
+          if [[ -z "$VERSION" || ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: Could not resolve a valid version from $LATEST_URL"
+            echo "  Last resolved version string: '${VERSION:-}'"
             exit 1
           fi
+
           echo "Upstream version: $VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 

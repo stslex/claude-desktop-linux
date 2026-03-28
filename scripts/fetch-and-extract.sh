@@ -70,11 +70,38 @@ DMG_LATEST_URL="https://storage.googleapis.com/osprey-downloads-c02f6a0d-347c-49
 DMG_FILE="$BUILD_DIR/claude.dmg"
 
 log "Resolving latest DMG URL (following redirects)..."
-REDIRECT_HEADERS=$(curl -sIL "$DMG_LATEST_URL")
+VERSIONED_FILENAME=""
 
-# Extract the last Location header value (the final redirect target).
-LOCATION_LINE=$(echo "$REDIRECT_HEADERS" | grep -i "^location:" | tail -1 | tr -d '\r')
-VERSIONED_FILENAME=$(echo "$LOCATION_LINE" | awk '{print $2}' | xargs -I{} basename {})
+# Strategy 1: Follow redirects with a GET range request and check the
+# effective URL.  Some CDNs only redirect GET (not HEAD) requests.
+RESOLVED_URL="$(curl -sSL -o /dev/null -w '%{url_effective}' -r 0-0 "$DMG_LATEST_URL" 2>/dev/null || true)"
+if [[ -n "$RESOLVED_URL" && "$RESOLVED_URL" != "$DMG_LATEST_URL" ]]; then
+  VERSIONED_FILENAME="$(basename "$RESOLVED_URL")"
+  log "Resolved via GET effective URL: $VERSIONED_FILENAME"
+fi
+
+# Strategy 2: Parse the Location header from redirect responses.
+if [[ -z "$VERSIONED_FILENAME" || "$VERSIONED_FILENAME" == "Claude-latest.dmg" ]]; then
+  REDIRECT_HEADERS=$(curl -sIL "$DMG_LATEST_URL" 2>/dev/null || true)
+  LOCATION_LINE=$(echo "$REDIRECT_HEADERS" | grep -i "^location:" | tail -1 | tr -d '\r')
+  if [[ -n "$LOCATION_LINE" ]]; then
+    VERSIONED_FILENAME=$(echo "$LOCATION_LINE" | awk '{print $2}' | xargs -I{} basename {})
+    log "Resolved via Location header: $VERSIONED_FILENAME"
+  fi
+fi
+
+# Strategy 3: Check Content-Disposition header for the original filename.
+if [[ -z "$VERSIONED_FILENAME" || "$VERSIONED_FILENAME" == "Claude-latest.dmg" ]]; then
+  HEADERS="$(curl -sI "$DMG_LATEST_URL" 2>/dev/null || true)"
+  CD="$(echo "$HEADERS" | grep -i '^content-disposition:' | tr -d '\r')"
+  if [[ -n "$CD" ]]; then
+    FNAME="$(echo "$CD" | grep -oP 'filename="?\K[^";]+' || true)"
+    if [[ -n "$FNAME" ]]; then
+      VERSIONED_FILENAME="$FNAME"
+      log "Resolved via Content-Disposition: $VERSIONED_FILENAME"
+    fi
+  fi
+fi
 
 # Pattern: Claude-X.X.XXXX.dmg
 DMG_VERSION=$(echo "$VERSIONED_FILENAME" | grep -oP '(?<=Claude-)[\d]+\.[\d]+\.[\d]+(?=\.dmg)' || true)
@@ -86,7 +113,7 @@ if [[ -n "$VERSIONED_FILENAME" && "$VERSIONED_FILENAME" == Claude-*.dmg ]]; then
   log "Version from URL  : ${DMG_VERSION:-unknown}"
   log "Download URL      : $DOWNLOAD_URL"
 else
-  log "WARNING: Could not extract versioned filename from Location headers — falling back to latest URL."
+  log "WARNING: Could not extract versioned filename — falling back to latest URL."
   DOWNLOAD_URL="$DMG_LATEST_URL"
   DMG_VERSION=""
 fi
