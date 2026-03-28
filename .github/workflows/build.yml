@@ -33,7 +33,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            dmg2img p7zip-full rpm imagemagick fuse libfuse2
+            dmg2img p7zip-full rpm imagemagick fuse libfuse2 zsync
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -136,13 +136,16 @@ jobs:
           VERSION: ${{ steps.ver.outputs.version }}
           REPACK:  ${{ steps.repack.outputs.num }}
         run: |
-          for ext in rpm AppImage; do
+          for ext in rpm AppImage AppImage.zsync; do
             src="output/claude-desktop-${VERSION}-x86_64.${ext}"
             dst="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.${ext}"
             [[ -f "$src" ]] || continue
             mv "$src" "$dst"
-            sha256sum "$dst" | awk '{print $1}' > "${dst}.sha256"
-            rm -f "${src}.sha256"
+            # zsync already contains its own checksums — no separate .sha256 needed
+            if [[ "$ext" != "AppImage.zsync" ]]; then
+              sha256sum "$dst" | awk '{print $1}' > "${dst}.sha256"
+              rm -f "${src}.sha256"
+            fi
           done
 
       - name: Compute checksums for release notes
@@ -192,7 +195,8 @@ jobs:
           # Build asset list — only include files that actually exist.
           ASSETS=()
           for f in "${BASE}.rpm" "${BASE}.rpm.sha256" \
-                   "${BASE}.AppImage" "${BASE}.AppImage.sha256"; do
+                   "${BASE}.AppImage" "${BASE}.AppImage.sha256" \
+                   "${BASE}.AppImage.zsync"; do
             [[ -f "$f" ]] && ASSETS+=("$f")
           done
 
