@@ -2,55 +2,84 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# claude-desktop — system launcher for the RPM package.
-# This script is installed to /usr/bin/claude-desktop.
+# claude-desktop — launcher for the RPM package and AppImage.
+# Installed to /usr/bin/claude-desktop (RPM) or usr/bin/claude-desktop (AppImage).
 # ---------------------------------------------------------------------------
 
 ASAR="/usr/lib/claude-desktop/app.asar"
 VERSION_FILE="/usr/lib/claude-desktop/ELECTRON_VERSION"
 
 # ---------------------------------------------------------------------------
-# Locate Electron.
+# Optional debug logging.
 # ---------------------------------------------------------------------------
-if ! command -v electron &>/dev/null; then
-  REQUIRED_VER=""
-  [[ -f "$VERSION_FILE" ]] && REQUIRED_VER="$(cat "$VERSION_FILE")"
-  echo "[claude-desktop] ERROR: 'electron' binary not found in PATH." >&2
-  echo "  Required version: ${REQUIRED_VER:-unknown}" >&2
-  echo "  Install with:  sudo dnf install electron" >&2
-  echo "                 # or from the Electron project RPM repo" >&2
-  exit 1
+if [[ -n "${DEBUG:-}" ]]; then
+    export ELECTRON_ENABLE_LOGGING=1
 fi
 
-ELECTRON="$(command -v electron)"
+# ---------------------------------------------------------------------------
+# Locate Electron — bundled copy first, then system PATH.
+# A bundled copy lives next to the asar when packaged inside an AppImage.
+# ---------------------------------------------------------------------------
+ELECTRON=""
+
+# Bundled: same lib directory as the asar, or an explicit sub-directory.
+for candidate in \
+    "$(dirname "$ASAR")/electron/electron" \
+    "/usr/lib/electron/electron" \
+    "/usr/lib64/electron/electron"; do
+    if [[ -x "$candidate" ]]; then
+        ELECTRON="$candidate"
+        break
+    fi
+done
+
+# Fall back to whatever is on PATH.
+if [[ -z "$ELECTRON" ]]; then
+    if command -v electron &>/dev/null; then
+        ELECTRON="$(command -v electron)"
+    else
+        REQUIRED_VER=""
+        [[ -f "$VERSION_FILE" ]] && REQUIRED_VER="$(cat "$VERSION_FILE")"
+        echo "[claude-desktop] ERROR: 'electron' binary not found." >&2
+        echo "  Required version: ${REQUIRED_VER:-unknown}" >&2
+        echo "  Install with:  sudo dnf install electron" >&2
+        exit 1
+    fi
+fi
 
 # ---------------------------------------------------------------------------
-# Cowork backend.
+# Cowork backend selection.
 # ---------------------------------------------------------------------------
 COWORK_BACKEND="${COWORK_BACKEND:-bubblewrap}"
 export COWORK_BACKEND
 
 if [[ "$COWORK_BACKEND" == "bubblewrap" ]] && ! command -v bwrap &>/dev/null; then
-  echo "[claude-desktop] WARNING: bwrap not found. Falling back to COWORK_BACKEND=host." >&2
-  echo "  Install: sudo dnf install bubblewrap" >&2
-  export COWORK_BACKEND=host
+    echo "[claude-desktop] WARNING: bwrap not found. Falling back to COWORK_BACKEND=host." >&2
+    echo "  Install: sudo dnf install bubblewrap" >&2
+    export COWORK_BACKEND=host
 fi
 
 # ---------------------------------------------------------------------------
 # Ensure the /sessions symlink exists.
+# The path translator requires /sessions/<uuid>/mnt/… to resolve to real paths.
 # ---------------------------------------------------------------------------
 SESSION_TARGET="$HOME/.local/share/claude-linux/sessions"
 mkdir -p "$SESSION_TARGET"
 
 if [[ ! -L /sessions ]]; then
-  echo "[claude-desktop] INFO: /sessions symlink missing. Attempting to create..." >&2
-  sudo ln -sf "$SESSION_TARGET" /sessions 2>/dev/null || \
-    echo "[claude-desktop] WARNING: Could not create /sessions. Run: sudo ln -sf $SESSION_TARGET /sessions" >&2
+    echo "[claude-desktop] INFO: /sessions symlink missing." >&2
+    if sudo ln -sf "$SESSION_TARGET" /sessions 2>/dev/null; then
+        echo "[claude-desktop] INFO: Created /sessions → $SESSION_TARGET" >&2
+    else
+        echo "[claude-desktop] WARNING: Could not create /sessions automatically." >&2
+        echo "  Run: sudo ln -sf $SESSION_TARGET /sessions" >&2
+    fi
 fi
 
 # ---------------------------------------------------------------------------
 # Launch.
-# --no-sandbox keeps parity with the AppImage (Electron needs it when
-# chrome-sandbox is not setuid, which is common on hardened systems).
+# --no-sandbox is required:
+#   • AppImage: FUSE nosuid prevents chrome-sandbox setuid.
+#   • Hardened systems: chrome-sandbox may lack the setuid bit.
 # ---------------------------------------------------------------------------
-exec "$ELECTRON" "$ASAR" --no-sandbox "$@"
+exec "$ELECTRON" --no-sandbox "$ASAR" "$@"

@@ -1,24 +1,33 @@
+# Version may be passed via --define "_version <ver>".
+# Falls back to reading %{_builddir}/VERSION at spec-parse time.
+%{!?_version: %global _version %(cat %{_builddir}/VERSION 2>/dev/null || echo 0.0.0)}
+
 Name:           claude-desktop
 Version:        %{_version}
 Release:        1%{?dist}
-Summary:        Claude Desktop (unofficial Linux repackage)
+Summary:        Claude Desktop for Linux (unofficial rebuild)
 License:        Proprietary
-URL:            https://claude.ai
+URL:            https://github.com/your-org/claude-desktop-linux
 BuildArch:      x86_64
-AutoReqProv:    no
-
-# build-packages.sh injects --define "_version <ver>" and --define "_buildroot <dir>"
-# so we work directly with a pre-populated BUILDROOT and skip the prep/build phases.
 
 Requires:       electron
 Requires:       xdg-utils
 Requires:       bash
 
+# Source0: patched app.asar (produced by build-rpm.sh)
+# Source1: launcher script
+# Source2: freedesktop .desktop file
+# Source3: icon PNGs tarball (icons/<size>x<size>/claude-desktop.png)
+Source0:        app-patched.asar
+Source1:        claude-desktop
+Source2:        claude-desktop.desktop
+Source3:        icons.tar.gz
+
 %description
 Unofficial repackage of the macOS Claude Desktop application for Linux.
 Extracts app.asar from the official macOS DMG, replaces macOS-native Node
 addons with pure-JS stubs, and patches the Cowork platform gate so Claude
-Code runs directly on Linux (no VM).
+Code runs directly on Linux without a virtual machine.
 
 Cowork isolation uses bubblewrap by default (COWORK_BACKEND=bubblewrap).
 Set COWORK_BACKEND=host to disable the sandbox.
@@ -27,39 +36,70 @@ This package requires a system-installed `electron` binary.
 See /usr/lib/claude-desktop/ELECTRON_VERSION for the required version.
 
 %prep
-# No-op: build-packages.sh pre-populates %{buildroot}.
+# Create build directory and extract icon tarball into it.
+mkdir -p %{_builddir}/%{name}-%{version}
+cd %{_builddir}/%{name}-%{version}
+tar -xf %{SOURCE3} 2>/dev/null || true
 
 %build
-# No-op.
+# Nothing to compile.
 
 %install
-# The BUILDROOT is pre-populated by build-packages.sh.
-# rpmbuild owns the directory; nothing to copy here.
+# App ASAR
+install -D -m 644 %{SOURCE0} %{buildroot}/usr/lib/claude-desktop/app.asar
+
+# Launcher script
+install -D -m 755 %{SOURCE1} %{buildroot}/usr/bin/claude-desktop
+
+# Desktop entry
+install -D -m 644 %{SOURCE2} %{buildroot}/usr/share/applications/claude-desktop.desktop
+
+# Icons — iterate over what was extracted from icons.tar.gz
+for png in %{_builddir}/%{name}-%{version}/icons/*.png; do
+    [ -f "$png" ] || continue
+    size=$(basename "$png" | grep -oP '\d+x\d+' | head -1)
+    [ -z "$size" ] && continue
+    install -D -m 644 "$png" \
+        %{buildroot}/usr/share/icons/hicolor/$size/apps/claude-desktop.png
+done
 
 %post
 # Register the claude:// URI scheme.
 if command -v xdg-mime &>/dev/null; then
-  xdg-mime default claude-desktop.desktop x-scheme-handler/claude || true
+    xdg-mime default claude-desktop.desktop x-scheme-handler/claude || true
 fi
 
-# Update desktop database.
+# Refresh the desktop database so the MIME registration takes effect.
 if command -v update-desktop-database &>/dev/null; then
-  update-desktop-database -q /usr/share/applications || true
+    update-desktop-database -q /usr/share/applications || true
 fi
 
 # Create the /sessions symlink required by the path translator.
-# We create it at the system level so it persists across reboots.
-if [[ ! -L /sessions ]]; then
-  SESSION_TARGET="$HOME/.local/share/claude-linux/sessions"
-  mkdir -p "$SESSION_TARGET"
-  ln -sf "$SESSION_TARGET" /sessions 2>/dev/null || \
-    echo "claude-desktop: could not create /sessions symlink — run as root or create it manually:"
-    echo "  sudo ln -sf ~/.local/share/claude-linux/sessions /sessions"
+# Using a fixed system path is correct here because the scriptlet runs as root.
+SESSION_TARGET=/var/lib/claude-desktop/sessions
+if [ ! -L /sessions ] && [ ! -e /sessions ]; then
+    mkdir -p "$SESSION_TARGET"
+    ln -sf "$SESSION_TARGET" /sessions 2>/dev/null || \
+        echo "claude-desktop: could not create /sessions — run manually:" \
+        && echo "  sudo mkdir -p $SESSION_TARGET && sudo ln -sf $SESSION_TARGET /sessions"
 fi
 
-%preun
+# Conditional GPG verification message (signing performed by build-rpm.sh).
+%{?gpg_sign:echo "claude-desktop: package is GPG-signed."}
+
+%postun
+# Remove the /sessions symlink only if it still points to our directory.
+if [ -L /sessions ]; then
+    target="$(readlink /sessions)"
+    case "$target" in
+        /var/lib/claude-desktop/sessions*)
+            rm -f /sessions ;;
+    esac
+fi
+
+# Refresh desktop database after removal.
 if command -v update-desktop-database &>/dev/null; then
-  update-desktop-database -q /usr/share/applications || true
+    update-desktop-database -q /usr/share/applications || true
 fi
 
 %files
@@ -70,4 +110,4 @@ fi
 /usr/share/icons/hicolor/
 
 %changelog
-# Changelog is auto-generated by build-packages.sh from the upstream version.
+# Changelog is auto-generated by build-rpm.sh from the upstream version.
