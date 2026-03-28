@@ -28,8 +28,13 @@ jobs:
           echo "Fetching $RELEASES_URL ..."
           RELEASES_JSON="$(curl -sSf "$RELEASES_URL" 2>/dev/null || true)"
           if [[ -n "$RELEASES_JSON" ]]; then
+            echo "RELEASES.json (first 500 chars): ${RELEASES_JSON:0:500}"
             # URL pattern: .../1.1.9310/Claude-<hash>.zip — extract version from path.
-            VERSION="$(echo "$RELEASES_JSON" | grep -oP '"/\K[0-9]+\.[0-9]+\.[0-9]+(?=/)' | head -1 || true)"
+            VERSION="$(echo "$RELEASES_JSON" | grep -oP '/\K[0-9]+\.[0-9]+\.[0-9]+(?=/Claude)' | head -1 || true)"
+            # Broader fallback: any X.Y.Z in a path segment.
+            if [[ -z "$VERSION" ]]; then
+              VERSION="$(echo "$RELEASES_JSON" | grep -oP '/\K[0-9]+\.[0-9]+\.[0-9]+(?=/)' | head -1 || true)"
+            fi
             echo "Version from RELEASES.json: ${VERSION:-empty}"
           else
             echo "RELEASES.json not available"
