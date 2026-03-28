@@ -1,93 +1,203 @@
 # Claude Desktop Linux
 
-> Unofficial repackage of the macOS Claude Desktop application for Linux.
+> Unofficial Linux repackager for the macOS Claude Desktop application.
 > Produces RPM and AppImage packages from the official macOS DMG.
 
-![Build](https://github.com/YOUR_ORG/claude-desktop-linux/actions/workflows/build.yml/badge.svg)
-![Latest Release](https://img.shields.io/github/v/release/YOUR_ORG/claude-desktop-linux)
-![License](https://img.shields.io/badge/scripts-MIT-blue)
+[![Build](https://github.com/stslex/claude-desktop-linux/actions/workflows/build.yml/badge.svg)](https://github.com/stslex/claude-desktop-linux/actions/workflows/build.yml)
+[![Latest Release](https://img.shields.io/github/v/release/stslex/claude-desktop-linux)](https://github.com/stslex/claude-desktop-linux/releases/latest)
+[![License](https://img.shields.io/badge/scripts-MIT-blue)](LICENSE)
 
 ---
 
-## What This Does
+## What It Does
 
-Anthropic ships Claude Desktop for macOS and Windows only. This project:
+Anthropic ships Claude Desktop for macOS and Windows only. This project
+downloads the official macOS DMG from Anthropic's CDN, extracts the
+cross-platform Electron app bundle (`app.asar`), replaces the two
+macOS-native Node addons with pure-JS stubs, and patches the platform gate
+that hides the Cowork (Claude Code) feature on non-macOS systems. The result
+is repackaged as an **RPM** (using the system Electron) and a self-contained
+**AppImage**.
 
-1. Downloads the official macOS DMG from Anthropic's CDN and verifies its SHA256.
-2. Extracts `app.asar` — the cross-platform Electron app bundle.
-3. Replaces the two macOS-native Node addons (`@ant/claude-native`, `@ant/claude-swift`) with pure-JS stubs.
-4. Patches the Cowork platform gate so the Claude Code integration works on Linux.
-5. Repackages the result as an **RPM** (system Electron) and an **AppImage** (bundled Electron).
+The key insight: the VM that Cowork boots on macOS already runs a Linux
+x86_64 rootfs. On Linux we skip the VM entirely and run `claude-code`
+directly — the macOS app is already 90% a Linux app.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for design decisions and [CLAUDE.md](CLAUDE.md) for the full specification.
+See [ARCHITECTURE.MD](ARCHITECTURE.MD) for design decisions and trade-offs.
 
 ---
 
-## Quick Start
+## Features
 
-### Download a pre-built release
+- **Chat** — full Claude Desktop chat interface on Linux
+- **MCP** — Model Context Protocol support works as-is (it is pure JS)
+- **Cowork (Claude Code)** — unlocked and functional via `bubblewrap` sandbox
+  or direct host execution
+- **Auto-update pipeline** — GitHub Actions polls for new DMG every 6 hours
+  and publishes a new release automatically
+
+---
+
+## What Is NOT Supported
+
+| Feature | Reason |
+|---|---|
+| **Dispatch** | Requires APNs/FCM push notification registration; protocol not fully reversed |
+| **Computer Use** | macOS implementation uses `AXUIElement`; an `xdotool`/`scrot` replacement would be fragile across desktop environments |
+| **ARM64** | Electron binary selection and AppImage build are x86_64 only; ARM64 is a future milestone |
+
+---
+
+## Installation
+
+### AppImage (any distro)
 
 ```sh
-# RPM (Fedora / RHEL / Silverblue)
-sudo rpm-ostree install electron
-sudo rpm -i https://github.com/YOUR_ORG/claude-desktop-linux/releases/latest/download/claude-desktop-<version>-x86_64.rpm
-
-# AppImage (any distro)
+# Download from the latest release
 chmod +x claude-desktop-<version>-x86_64.AppImage
-./claude-desktop-<version>-x86_64.AppImage
+./claude-desktop-<version>-x86_64.AppImage --no-sandbox
 ```
 
-### Build from source
+> `--no-sandbox` is required: the AppImage FUSE mount sets `nosuid`, which
+> prevents the `chrome-sandbox` setuid bit from taking effect.
+
+### RPM (Fedora / Silverblue / RHEL)
 
 ```sh
-# Install build dependencies (Fedora)
-sudo dnf install dmg2img p7zip node rpmbuild
+# Install system Electron first
+sudo dnf install electron
 
-# Clone and build
-git clone https://github.com/YOUR_ORG/claude-desktop-linux
-cd claude-desktop-linux
-npm install   # installs @electron/asar, acorn, acorn-walk
-
-./scripts/fetch-and-extract.sh
-./scripts/inject-stubs.sh
-./scripts/patch-cowork.sh
-./scripts/build-packages.sh
-
-ls output/
+# Install Claude Desktop
+sudo rpm -i https://github.com/stslex/claude-desktop-linux/releases/latest/download/claude-desktop-<version>-x86_64.rpm
 ```
+
+On **Silverblue** use `rpm-ostree install electron claude-desktop-<version>-x86_64.rpm` and reboot.
+
+### First Run
+
+1. On first launch the app prompts to create the `/sessions` symlink
+   (`sudo ln -sf ~/.local/share/claude-linux/sessions /sessions`).
+   The RPM `%post` scriptlet creates this automatically.
+2. Complete the OAuth flow in your browser — the `claude://` URI scheme is
+   registered by the `.desktop` file and `xdg-mime`.
 
 ---
 
-## Environment Variables
+## Building from Source
+
+### Prerequisites
+
+```sh
+# Fedora
+sudo dnf install dmg2img p7zip rpm-build ImageMagick nodejs
+node --version  # must be ≥ 20
+```
+
+Also required at build time (fetched automatically if missing):
+`appimagetool`, `@electron/asar` (via npm).
+
+### Build
+
+```sh
+git clone https://github.com/stslex/claude-desktop-linux
+cd claude-desktop-linux
+npm install
+
+./scripts/fetch-dmg.sh          # download + SHA256-verify the DMG
+./scripts/extract-asar.sh       # DMG → app.asar, detect versions
+./scripts/inject-stubs.sh       # replace native modules with JS stubs
+./scripts/patch-cowork.sh       # unlock Cowork on Linux
+./scripts/build-packages.sh     # produce RPM + AppImage in ./output/
+```
+
+Or trigger the **build.yml** GitHub Action manually — it runs the same
+steps on `ubuntu-latest` and publishes a GitHub Release with both packages
+and their `.sha256` files.
+
+**Useful env vars:**
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `BUILD_DIR` | `/tmp/claude-build` | Scratch space |
-| `OUTPUT_DIR` | `./output` | Final packages |
+| `SKIP_DOWNLOAD` | *(unset)* | Set to `1` to reuse an existing DMG |
 | `COWORK_BACKEND` | `bubblewrap` | `bubblewrap` or `host` |
-| `SKIP_DOWNLOAD` | *(unset)* | Set to `1` to reuse existing DMG |
 | `ELECTRON_OVERRIDE` | *(unset)* | Force a specific Electron version |
 
 ---
 
-## Build Dependencies
+## How Cowork Works on Linux
 
-| Tool | Used for |
-|---|---|
-| `dmg2img` | Convert DMG to raw image |
-| `7z` (p7zip) | Extract raw image |
-| `npx asar` / `@electron/asar` | Pack/unpack app.asar |
-| `node` ≥ 20 | Patch scripts (ESM) |
-| `rpmbuild` | Build RPM |
-| `appimagetool` | Build AppImage |
-| `icns2png` or `magick` | Convert macOS icon |
-| `bubblewrap` (`bwrap`) | Cowork sandbox (runtime) |
-| `electron` | Runtime (RPM); bundled in AppImage |
+On macOS, Cowork runs `claude-code` inside an Apple Virtualization Framework
+VM. Our approach collapses the VM layer entirely:
+
+```
+macOS:  Electron → @ant/claude-swift (native) → VZVirtualMachine → Linux VM → claude-code
+Linux:  Electron → @ant/claude-swift (JS stub) → child_process.spawn()      → claude-code
+```
+
+Two JS stubs do the work:
+
+- **`@ant/claude-native`** — spoofs `getPlatform()` → `"darwin"` and
+  `getOSVersion()` → `"14.0.0"` to pass the Cowork availability check.
+  `AuthRequest` calls `xdg-open` for the OAuth deep-link.
+- **`@ant/claude-swift`** — implements the `vm.spawn()` / `vm.kill()` /
+  `vm.writeStdin()` interface via `child_process.spawn`. VM filesystem paths
+  (`/sessions/<id>/mnt/<name>/…`) are translated to real host paths
+  (`~/.local/share/claude-linux/sessions/…`).
+
+The platform gate in `app.asar` (a minified function that checks
+`process.platform`) is patched at build time using an AST rewrite (acorn)
+to unconditionally return `{ status: "supported" }`.
+
+With `COWORK_BACKEND=bubblewrap` (default), `claude-code` runs inside a
+bubblewrap namespace sandbox: home directory read-only, only the session
+working directory writable, network access preserved.
 
 ---
 
-## License
+## Security
+
+This project downloads a proprietary application from Anthropic's CDN and
+modifies it locally. Key points from [ARCHITECTURE.MD](ARCHITECTURE.MD):
+
+- DMG SHA256 is verified on download (transport integrity via HTTPS; no
+  trusted out-of-band checksum source).
+- The injected stubs are ~100 lines of plain JS each — auditable in minutes.
+  They make no outbound network requests and do not read your files.
+- The Cowork patch is a single function-body replacement. The diff ships in
+  each release.
+- RPM packages are not GPG-signed in the initial release (planned follow-up).
+- AppImage has no signature (standard AppImage limitation).
+- `claude-code` runs as your user. With `bubblewrap` it cannot write outside
+  the session directory. With `COWORK_BACKEND=host` it has full filesystem
+  access.
+
+**Threat model:** we trust Anthropic's CDN. If you do not, do not use this
+project.
+
+---
+
+## Contributing
+
+[CLAUDE.MD](CLAUDE.MD) is the authoritative spec: invariants, script
+contracts, stub interfaces, patch strategy, and update procedure.
+
+When `patch-cowork.sh` breaks after a Claude Desktop update, run:
+
+```sh
+node patches/find-platform-gate.mjs --dump-candidates
+```
+
+Update the AST pattern, commit, and push — the next `check-update.yml` run
+picks it up automatically.
+
+---
+
+## License / Disclaimer
 
 Build scripts: **MIT**.
-Claude Desktop application: **Anthropic proprietary**. This project downloads it
-directly from Anthropic's CDN and does not redistribute it.
+
+Claude Desktop application: **Anthropic proprietary**. This project downloads
+it directly from Anthropic's CDN at build time and does not redistribute it.
+
+This project is **unofficial** and is not affiliated with, endorsed by, or
+supported by Anthropic.
