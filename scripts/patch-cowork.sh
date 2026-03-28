@@ -217,10 +217,18 @@ fi
 # ---------------------------------------------------------------------------
 # Patch 2 — Prepend import of path-translator (idempotent)
 # ---------------------------------------------------------------------------
-TRANSLATOR_PATH="$PATCHES_DIR/path-translator.mjs"
+TRANSLATOR_SRC="$PATCHES_DIR/path-translator.mjs"
 # path-translator.mjs is an ESM module (uses import/export); require() on a
 # .mjs file throws ERR_REQUIRE_ESM in Node.js.  Use top-level import instead.
-PREPEND_LINE="import '$TRANSLATOR_PATH';"
+#
+# Copy the file into the same directory as the main entry so the import uses a
+# relative path.  This avoids baking an absolute CI build path into the asar
+# (which would fail at runtime on the user's machine).
+MAIN_ENTRY_DIR="$(dirname "$MAIN_ENTRY")"
+TRANSLATOR_DEST="$MAIN_ENTRY_DIR/path-translator.mjs"
+cp "$TRANSLATOR_SRC" "$TRANSLATOR_DEST"
+log "Copied path-translator.mjs to $TRANSLATOR_DEST"
+PREPEND_LINE="import './path-translator.mjs';"
 
 if head -1 "$MAIN_ENTRY" | grep -qF 'path-translator'; then
   log "path-translator already injected into $MAIN_ENTRY — skipping prepend."

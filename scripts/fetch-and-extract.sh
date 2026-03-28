@@ -77,8 +77,12 @@ DOWNLOAD_URL=""
 log "Querying Anthropic RELEASES.json for latest version..."
 RELEASES_JSON="$(curl -sSf "$RELEASES_URL" 2>/dev/null || true)"
 if [[ -n "$RELEASES_JSON" ]]; then
-  # Extract ZIP download URL from RELEASES.json.
-  ZIP_URL="$(echo "$RELEASES_JSON" | grep -oP '"url"\s*:\s*"\K[^"]+' | head -1 || true)"
+  # Extract ZIP download URL from RELEASES.json (use node since it's already required).
+  ZIP_URL="$(echo "$RELEASES_JSON" | node -e "
+    const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+    const u = (Array.isArray(d) ? d[0]?.url : d.url) || '';
+    if (u) process.stdout.write(u);
+  " 2>/dev/null || true)"
   if [[ -n "$ZIP_URL" && "$ZIP_URL" == *.zip ]]; then
     DOWNLOAD_URL="$ZIP_URL"
     DOWNLOAD_FORMAT="zip"
