@@ -4,11 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Claude Desktop version to build'
+        description: 'Claude Desktop version to build (blank = auto-detect)'
         required: false
+      release:
+        description: 'Upload to GitHub Releases'
+        type: boolean
+        default: false
   push:
-    tags: ['v*']
-    branches: ['dev', 'main']
+    branches: ['main', 'dev']
   pull_request:
     branches: ['dev', 'main']
 
@@ -57,8 +60,8 @@ jobs:
       - name: Read version
         id: ver
         run: |
-          echo "version=$(cat $BUILD_DIR/VERSION)" >> "$GITHUB_OUTPUT"
-          echo "electron=$(cat $BUILD_DIR/ELECTRON_VERSION)" >> "$GITHUB_OUTPUT"
+          echo "version=$(cat "$BUILD_DIR/VERSION")"         >> "$GITHUB_OUTPUT"
+          echo "electron=$(cat "$BUILD_DIR/ELECTRON_VERSION")" >> "$GITHUB_OUTPUT"
 
       - name: Cache Electron binary
         uses: actions/cache@v4
@@ -83,11 +86,11 @@ jobs:
 
       - name: build-packages
         env:
-          KEEP_BUILD_DIR: '1'   # preserve BUILD_DIR so electron-cache can be saved above
+          KEEP_BUILD_DIR: '1'   # preserve BUILD_DIR so electron-cache can be saved
         run: bash scripts/build-packages.sh
 
       # -----------------------------------------------------------------------
-      # Artifacts
+      # CI artifact (always — useful for dev/PR builds too)
       # -----------------------------------------------------------------------
       - name: Upload build artifacts
         if: always()
@@ -98,53 +101,99 @@ jobs:
           if-no-files-found: warn
 
       # -----------------------------------------------------------------------
-      # GitHub Release (tag push or workflow_dispatch with explicit version)
+      # GitHub Release
+      #   • push to main  → always release
+      #   • workflow_dispatch with release=true  → release
+      #   • push to dev / PR  → skip
       # -----------------------------------------------------------------------
-      - name: Compute checksums for release body
-        id: sums
-        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.version != '')
-        run: |
-          VERSION="${{ steps.ver.outputs.version }}"
-          RPM_SHA="$(cat output/claude-desktop-${VERSION}-x86_64.rpm.sha256       2>/dev/null || echo n/a)"
-          AI_SHA="$(cat  output/claude-desktop-${VERSION}-x86_64.AppImage.sha256  2>/dev/null || echo n/a)"
-          echo "rpm=$RPM_SHA"      >> "$GITHUB_OUTPUT"
-          echo "appimage=$AI_SHA"  >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.version != '')
+      - name: Compute repack number and release tag
+        id: repack
+        if: >
+          github.ref == 'refs/heads/main' ||
+          (github.event_name == 'workflow_dispatch' && inputs.release == true)
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION:  ${{ steps.ver.outputs.version }}
-          ELECTRON: ${{ steps.ver.outputs.electron }}
-          RPM_SHA:  ${{ steps.sums.outputs.rpm }}
-          AI_SHA:   ${{ steps.sums.outputs.appimage }}
         run: |
-          NOTES=$(cat <<EOF
-          ## Claude Desktop Linux v${VERSION}
+          # Count existing repacks for this exact Claude version.
+          REPACK=0
+          EXISTING="$(gh release list --repo "${{ github.repository }}" \
+            --limit 200 --json tagName --jq '.[].tagName' 2>/dev/null || true)"
+          while IFS= read -r tag; do
+            if [[ "$tag" =~ ^v${VERSION}-repack-([0-9]+)$ ]]; then
+              N="${BASH_REMATCH[1]}"
+              (( N + 1 > REPACK )) && REPACK=$(( N + 1 ))
+            fi
+          done <<< "$EXISTING"
+          RELEASE_TAG="v${VERSION}-repack-${REPACK}"
+          echo "num=${REPACK}"          >> "$GITHUB_OUTPUT"
+          echo "tag=${RELEASE_TAG}"     >> "$GITHUB_OUTPUT"
+          echo "Computed release tag: ${RELEASE_TAG}"
 
-          Unofficial Linux repackage of the official macOS Claude Desktop.
+      - name: Rename assets to include repack suffix
+        if: steps.repack.outcome == 'success'
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          REPACK:  ${{ steps.repack.outputs.num }}
+        run: |
+          for ext in rpm AppImage; do
+            src="output/claude-desktop-${VERSION}-x86_64.${ext}"
+            dst="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.${ext}"
+            [[ -f "$src" ]] || continue
+            mv "$src" "$dst"
+            sha256sum "$dst" | awk '{print $1}' > "${dst}.sha256"
+            rm -f "${src}.sha256"
+          done
+
+      - name: Compute checksums for release notes
+        id: sums
+        if: steps.repack.outcome == 'success'
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          REPACK:  ${{ steps.repack.outputs.num }}
+        run: |
+          BASE="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64"
+          RPM_SHA="$(cat "${BASE}.rpm.sha256"       2>/dev/null || echo n/a)"
+          AI_SHA="$(cat  "${BASE}.AppImage.sha256"  2>/dev/null || echo n/a)"
+          echo "rpm=${RPM_SHA}"       >> "$GITHUB_OUTPUT"
+          echo "appimage=${AI_SHA}"   >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        if: steps.repack.outcome == 'success'
+        env:
+          GH_TOKEN:  ${{ github.token }}
+          VERSION:   ${{ steps.ver.outputs.version }}
+          ELECTRON:  ${{ steps.ver.outputs.electron }}
+          REPACK:    ${{ steps.repack.outputs.num }}
+          TAG:       ${{ steps.repack.outputs.tag }}
+          RPM_SHA:   ${{ steps.sums.outputs.rpm }}
+          AI_SHA:    ${{ steps.sums.outputs.appimage }}
+        run: |
+          BASE="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64"
+          NOTES=$(cat <<'NOTES_EOF'
+          ## Claude Desktop Linux v${VERSION} (repack-${REPACK})
+
+          Unofficial Linux repackage of the official macOS Claude Desktop v${VERSION}.
 
           | Asset | SHA256 |
           |---|---|
-          | RPM | \`${RPM_SHA}\` |
-          | AppImage | \`${AI_SHA}\` |
+          | RPM | `${RPM_SHA}` |
+          | AppImage | `${AI_SHA}` |
 
           **Electron version (AppImage bundled / RPM required):** ${ELECTRON}
 
-          > This release was built automatically from the official macOS DMG.
+          > Built automatically from the official macOS DMG.
           > Claude Desktop is Anthropic's proprietary software.
-          EOF
+          NOTES_EOF
           )
+          # Expand only our known vars (prevents leaking runner env into notes).
+          NOTES="$(echo "$NOTES" | envsubst '${VERSION} ${REPACK} ${RPM_SHA} ${AI_SHA} ${ELECTRON}')"
 
-          gh release create "v${VERSION}" \
+          gh release create "${TAG}" \
             --repo "${{ github.repository }}" \
-            --title "Claude Desktop Linux v${VERSION}" \
+            --title "Claude Desktop Linux v${VERSION} (repack-${REPACK})" \
             --notes "$NOTES" \
-            output/claude-desktop-${VERSION}-x86_64.rpm \
-            output/claude-desktop-${VERSION}-x86_64.rpm.sha256 \
-            output/claude-desktop-${VERSION}-x86_64.AppImage \
-            output/claude-desktop-${VERSION}-x86_64.AppImage.sha256 \
-            2>/dev/null || \
-          gh release edit "v${VERSION}" \
-            --repo "${{ github.repository }}" \
-            --notes "$NOTES"
+            "${BASE}.rpm" \
+            "${BASE}.rpm.sha256" \
+            "${BASE}.AppImage" \
+            "${BASE}.AppImage.sha256"
