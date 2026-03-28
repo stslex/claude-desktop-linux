@@ -71,9 +71,10 @@ class AuthRequest {
 
   constructor(url) {
     this._url = url;
+    this._callback = null;
   }
 
-  open() {
+  start() {
     try {
       const child = spawn('xdg-open', [this._url], {
         detached: true,
@@ -84,6 +85,9 @@ class AuthRequest {
       process.stderr.write(`[claude-native stub] xdg-open unavailable. Open manually:\n  ${this._url}\n`);
     }
   }
+
+  // Legacy alias
+  open() { return this.start(); }
 }
 
 // ---------------------------------------------------------------------------
