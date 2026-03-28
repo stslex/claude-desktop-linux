@@ -69,9 +69,15 @@ function getPlatform()  { return 'darwin'; }   // must stay "darwin"
 class AuthRequest {
   static isAvailable() { return true; }
 
-  constructor(url, callbackURLScheme) {
-    this._url = url;
-    this._callbackURLScheme = callbackURLScheme || 'claude';
+  constructor(...args) {
+    // Log all args so we can identify the native API shape.
+    process.stderr.write(`[claude-native stub] AuthRequest constructor args: ${
+      JSON.stringify(args.map(a => typeof a === 'function' ? '<function>' : a))
+    }\n`);
+    this._url              = args[0];
+    this._callbackURLScheme = (typeof args[1] === 'string' ? args[1] : null) || 'claude';
+    this._completionCb     = typeof args[1] === 'function' ? args[1]
+                           : typeof args[2] === 'function' ? args[2] : null;
   }
 
   /**
