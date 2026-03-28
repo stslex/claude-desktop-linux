@@ -69,9 +69,18 @@ function getPlatform()  { return 'darwin'; }   // must stay "darwin"
 class AuthRequest {
   static isAvailable() { return true; }
 
-  constructor(url) {
+  constructor(url, callbackURLScheme) {
     this._url = url;
+    this._callbackURLScheme = callbackURLScheme || 'claude';
     this._callback = null;
+
+    // Extract the redirect_uri / callback URL from the authorization URL.
+    try {
+      const parsed = new URL(url);
+      this.callbackUrl = parsed.searchParams.get('redirect_uri') || `${this._callbackURLScheme}://`;
+    } catch {
+      this.callbackUrl = `${this._callbackURLScheme}://`;
+    }
   }
 
   start() {
@@ -84,6 +93,7 @@ class AuthRequest {
     } catch {
       process.stderr.write(`[claude-native stub] xdg-open unavailable. Open manually:\n  ${this._url}\n`);
     }
+    return this;
   }
 
   // Legacy alias
