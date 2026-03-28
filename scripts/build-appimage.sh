@@ -146,11 +146,13 @@ if [[ -d "$ICONS_DIR" ]] && ls "$ICONS_DIR"/*.png &>/dev/null; then
     LARGEST_ICON="$(find "$ICONS_DIR" -maxdepth 1 -name '*.png' | sort -V | tail -1)"
     cp "$LARGEST_ICON" "$APPDIR/claude-desktop.png"
 
-    # Install into hicolor theme tree for desktop environments
+    # Install into hicolor theme tree for desktop environments.
+    # Icons are named claude-<N>.png (e.g. claude-256.png); convert to <N>x<N>
+    # directory name required by the freedesktop hicolor spec.
     for PNG in "$ICONS_DIR"/*.png; do
-        SIZE="$(basename "$PNG" | grep -oP '\d+x\d+' | head -1 || true)"
-        [[ -z "$SIZE" ]] && continue
-        ICON_DEST="$APPDIR/usr/share/icons/hicolor/$SIZE/apps"
+        N="$(basename "$PNG" | grep -oP '(?<=claude-)\d+(?=\.png)' || true)"
+        [[ -z "$N" ]] && continue
+        ICON_DEST="$APPDIR/usr/share/icons/hicolor/${N}x${N}/apps"
         mkdir -p "$ICON_DEST"
         cp "$PNG" "$ICON_DEST/claude-desktop.png"
     done

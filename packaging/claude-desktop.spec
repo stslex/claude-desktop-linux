@@ -54,13 +54,14 @@ install -D -m 755 %{SOURCE1} %{buildroot}/usr/bin/claude-desktop
 # Desktop entry
 install -D -m 644 %{SOURCE2} %{buildroot}/usr/share/applications/claude-desktop.desktop
 
-# Icons — iterate over what was extracted from icons.tar.gz
+# Icons — iterate over what was extracted from icons.tar.gz.
+# Files are named claude-<N>.png; map to hicolor/<N>x<N>/apps/.
 for png in %{_builddir}/%{name}-%{version}/icons/*.png; do
     [ -f "$png" ] || continue
-    size=$(basename "$png" | grep -oP '\d+x\d+' | head -1)
-    [ -z "$size" ] && continue
+    n=$(basename "$png" | grep -oP '(?<=claude-)\d+(?=\.png)')
+    [ -z "$n" ] && continue
     install -D -m 644 "$png" \
-        %{buildroot}/usr/share/icons/hicolor/$size/apps/claude-desktop.png
+        %{buildroot}/usr/share/icons/hicolor/${n}x${n}/apps/claude-desktop.png
 done
 
 %post
