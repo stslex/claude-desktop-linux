@@ -30,6 +30,57 @@ if (!global[INIT_SYM] && process.type === 'browser') {
     process.stderr.write(`[open-url-bridge] setAsDefaultProtocolClient('claude') => ${registered}\n`);
     process.stderr.write(`[open-url-bridge] execPath: ${process.execPath}\n`);
 
+    // On Linux AppImages, setAsDefaultProtocolClient fails because process.execPath
+    // points to a temporary mount path (/tmp/.mount_xxx/...) that the OS cannot
+    // use to re-launch the app.  Work around this by manually writing a .desktop
+    // file that points to $APPIMAGE (the real AppImage path) and registering it
+    // as the x-scheme-handler/claude via xdg-mime.
+    if (!registered && process.platform === 'linux' && process.env.APPIMAGE) {
+      try {
+        const { execFileSync } = require('child_process');
+        const path = require('path');
+        const fs   = require('fs');
+        const os   = require('os');
+
+        const appImagePath = process.env.APPIMAGE;
+        const appsDir = path.join(os.homedir(), '.local', 'share', 'applications');
+        fs.mkdirSync(appsDir, { recursive: true });
+
+        const desktopPath = path.join(appsDir, 'claude-desktop.desktop');
+        const desktopContent = [
+          '[Desktop Entry]',
+          'Name=Claude',
+          'Exec=' + appImagePath + ' %u',
+          'Terminal=false',
+          'Type=Application',
+          'Categories=Network;',
+          'MimeType=x-scheme-handler/claude;',
+          'StartupWMClass=Claude',
+          '',
+        ].join('\n');
+
+        fs.writeFileSync(desktopPath, desktopContent, { mode: 0o644 });
+        process.stderr.write(`[open-url-bridge] Wrote .desktop file: ${desktopPath}\n`);
+
+        try {
+          execFileSync('xdg-mime', ['default', 'claude-desktop.desktop', 'x-scheme-handler/claude'],
+            { stdio: 'pipe' });
+          process.stderr.write(`[open-url-bridge] xdg-mime default registered x-scheme-handler/claude\n`);
+        } catch (e) {
+          process.stderr.write(`[open-url-bridge] xdg-mime failed: ${e.message}\n`);
+        }
+
+        try {
+          execFileSync('update-desktop-database', [appsDir], { stdio: 'pipe' });
+          process.stderr.write(`[open-url-bridge] update-desktop-database done\n`);
+        } catch (_) {
+          // update-desktop-database may not be available on all distros; non-fatal.
+        }
+      } catch (e) {
+        process.stderr.write(`[open-url-bridge] AppImage protocol registration failed: ${e.message}\n`);
+      }
+    }
+
     // Ensure the single-instance lock is held.  Without it, a second process
     // launched by the OS to handle claude:// will NOT trigger second-instance
     // on the first — it will just start a second window instead.
