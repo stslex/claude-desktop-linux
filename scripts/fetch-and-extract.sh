@@ -192,6 +192,50 @@ log "Unpacking app.asar with @electron/asar..."
 npx --yes @electron/asar extract "$ASAR_DEST" "$APP_DIR"
 
 # ---------------------------------------------------------------------------
+# Copy extra resources from the macOS bundle into app-extracted.
+# Some resources (e.g. i18n JSON files) live alongside app.asar in
+# Contents/Resources/ rather than inside the asar itself.  The app
+# loads them via app.getAppPath()-relative paths, so they must be
+# present in the repacked asar.
+# ---------------------------------------------------------------------------
+RESOURCES_SRC_DIR="$(dirname "$ASAR_SRC")"
+COPIED_EXTRA=0
+for extra_dir in "resources" "i18n"; do
+  if [[ -d "$RESOURCES_SRC_DIR/$extra_dir" ]]; then
+    cp -a "$RESOURCES_SRC_DIR/$extra_dir" "$APP_DIR/"
+    log "Copied extra resource dir: $extra_dir/"
+    COPIED_EXTRA=$((COPIED_EXTRA + 1))
+  fi
+done
+# Also check for loose i18n files at a deeper path (some builds use resources/i18n/)
+if [[ -d "$RESOURCES_SRC_DIR/resources/i18n" && ! -d "$APP_DIR/resources/i18n" ]]; then
+  mkdir -p "$APP_DIR/resources"
+  cp -a "$RESOURCES_SRC_DIR/resources/i18n" "$APP_DIR/resources/"
+  log "Copied extra resource dir: resources/i18n/"
+  COPIED_EXTRA=$((COPIED_EXTRA + 1))
+fi
+# Check app.asar.unpacked/ too — Electron stores some files there
+ASAR_UNPACKED_DIR="${ASAR_SRC}.unpacked"
+if [[ -d "$ASAR_UNPACKED_DIR" ]]; then
+  for extra_dir in "resources" "i18n"; do
+    if [[ -d "$ASAR_UNPACKED_DIR/$extra_dir" && ! -d "$APP_DIR/$extra_dir" ]]; then
+      cp -a "$ASAR_UNPACKED_DIR/$extra_dir" "$APP_DIR/"
+      log "Copied from asar.unpacked: $extra_dir/"
+      COPIED_EXTRA=$((COPIED_EXTRA + 1))
+    fi
+  done
+  if [[ -d "$ASAR_UNPACKED_DIR/resources/i18n" && ! -d "$APP_DIR/resources/i18n" ]]; then
+    mkdir -p "$APP_DIR/resources"
+    cp -a "$ASAR_UNPACKED_DIR/resources/i18n" "$APP_DIR/resources/"
+    log "Copied from asar.unpacked: resources/i18n/"
+    COPIED_EXTRA=$((COPIED_EXTRA + 1))
+  fi
+fi
+if [[ "$COPIED_EXTRA" -eq 0 ]]; then
+  log "No extra resource directories found alongside asar (this may be fine)."
+fi
+
+# ---------------------------------------------------------------------------
 # App version from package.json
 # ---------------------------------------------------------------------------
 PKG_JSON="$APP_DIR/package.json"
