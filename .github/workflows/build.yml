@@ -189,11 +189,20 @@ jobs:
           # Expand only our known vars (prevents leaking runner env into notes).
           NOTES="$(echo "$NOTES" | envsubst '${VERSION} ${REPACK} ${RPM_SHA} ${AI_SHA} ${ELECTRON}')"
 
+          # Build asset list — only include files that actually exist.
+          ASSETS=()
+          for f in "${BASE}.rpm" "${BASE}.rpm.sha256" \
+                   "${BASE}.AppImage" "${BASE}.AppImage.sha256"; do
+            [[ -f "$f" ]] && ASSETS+=("$f")
+          done
+
+          if [[ ${#ASSETS[@]} -eq 0 ]]; then
+            echo "ERROR: no release assets found — nothing to upload." >&2
+            exit 1
+          fi
+
           gh release create "${TAG}" \
             --repo "${{ github.repository }}" \
             --title "Claude Desktop Linux v${VERSION} (repack-${REPACK})" \
             --notes "$NOTES" \
-            "${BASE}.rpm" \
-            "${BASE}.rpm.sha256" \
-            "${BASE}.AppImage" \
-            "${BASE}.AppImage.sha256"
+            "${ASSETS[@]}"
