@@ -215,16 +215,19 @@ if [[ -z "$MAIN_ENTRY" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Patch 2 — Prepend import of path-translator (idempotent)
+# Patch 2 — Prepend path-translator and open-url-bridge (idempotent)
 # ---------------------------------------------------------------------------
-TRANSLATOR_SRC="$PATCHES_DIR/path-translator.mjs"
 # The main bundle is CJS (uses require()).  Prepending an `import` statement
 # would force Node to reparse the file as ESM, breaking every require() call.
 # So we convert path-translator from ESM to CJS on the fly and use require().
 #
-# Copy into the same directory as the main entry so the require uses a relative
-# path — avoids baking an absolute CI build path into the asar.
+# Both helper files are copied into the same directory as the main entry so
+# the require() uses a relative path — avoids baking an absolute CI build
+# path into the asar.
 MAIN_ENTRY_DIR="$(dirname "$MAIN_ENTRY")"
+
+# -- path-translator ---------------------------------------------------------
+TRANSLATOR_SRC="$PATCHES_DIR/path-translator.mjs"
 TRANSLATOR_DEST="$MAIN_ENTRY_DIR/path-translator.js"
 sed \
   -e "s/^import path from 'path';/const path = require('path');/" \
@@ -232,16 +235,26 @@ sed \
   -e "s/^import os   from 'os';/const os   = require('os');/" \
   -e "s/^export function translatePath/module.exports.translatePath = function translatePath/" \
   "$TRANSLATOR_SRC" > "$TRANSLATOR_DEST"
-log "Converted path-translator to CJS at $TRANSLATOR_DEST"
-PREPEND_LINE="require('./path-translator.js');"
+log "Copied path-translator to $TRANSLATOR_DEST"
 
-if head -1 "$MAIN_ENTRY" | grep -qF 'path-translator'; then
-  log "path-translator already injected into $MAIN_ENTRY — skipping prepend."
+# -- open-url-bridge (already CJS, just copy) --------------------------------
+BRIDGE_SRC="$PATCHES_DIR/open-url-bridge.js"
+BRIDGE_DEST="$MAIN_ENTRY_DIR/open-url-bridge.js"
+cp "$BRIDGE_SRC" "$BRIDGE_DEST"
+log "Copied open-url-bridge to $BRIDGE_DEST"
+
+# -- Prepend both requires (idempotent: skip if already present) -------------
+if head -1 "$MAIN_ENTRY" | grep -qF 'open-url-bridge'; then
+  log "Patches already injected into $MAIN_ENTRY — skipping prepend."
 else
   TMPFILE="$(mktemp)"
-  { echo "$PREPEND_LINE"; cat "$MAIN_ENTRY"; } > "$TMPFILE"
+  {
+    echo "require('./open-url-bridge.js');"
+    echo "require('./path-translator.js');"
+    cat "$MAIN_ENTRY"
+  } > "$TMPFILE"
   mv "$TMPFILE" "$MAIN_ENTRY"
-  log "Prepended path-translator import to $MAIN_ENTRY"
+  log "Prepended open-url-bridge + path-translator to $MAIN_ENTRY"
 fi
 
 # ---------------------------------------------------------------------------
@@ -260,6 +273,8 @@ log "------------------------------------------------------------"
 log "Patch summary"
 log "  Gate-patched file   : $GATE_FILE"
 log "  Gate location       : start=$GATE_START  end=$GATE_END"
-log "  Translator injected : $MAIN_ENTRY"
+log "  Patches injected    : $MAIN_ENTRY"
+log "    open-url-bridge.js (second-instance → open-url bridge for Linux OAuth)"
+log "    path-translator.js (/sessions/… path remapping)"
 log "------------------------------------------------------------"
 log "Done."
