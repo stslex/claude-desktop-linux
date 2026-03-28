@@ -67,21 +67,71 @@ function getPlatform()  { return 'darwin'; }   // must stay "darwin"
 // Uses detached+stdio:ignore+unref so the opener does not block Electron.
 // ---------------------------------------------------------------------------
 class AuthRequest {
-  constructor(url) {
-    this._url = url;
+  static isAvailable() { return true; }
+
+  constructor() {
+    this._callbackURLScheme = 'claude';
   }
 
-  open() {
+  /**
+   * Open the system browser for OAuth and return a Promise that resolves
+   * with { callbackUrl: string } when the claude:// redirect arrives.
+   *
+   * The app calls: new AuthRequest(); then await request.start(url)
+   * The URL is passed to start(), not the constructor.
+   *
+   * On Linux, open-url-bridge.js forwards the second-instance event to
+   * app.emit('open-url', ...) which we listen for here.
+   */
+  start(url) {
+    const scheme = this._callbackURLScheme;
+    const authUrl = url;
+
+    // Open the browser immediately (fire-and-forget).
     try {
-      const child = spawn('xdg-open', [this._url], {
-        detached: true,
-        stdio: 'ignore',
-      });
+      const child = spawn('xdg-open', [authUrl], { detached: true, stdio: 'ignore' });
       child.unref();
+      process.stderr.write(`[claude-native stub] Opened browser for OAuth: ${authUrl}\n`);
     } catch {
-      process.stderr.write(`[claude-native stub] xdg-open unavailable. Open manually:\n  ${this._url}\n`);
+      process.stderr.write(`[claude-native stub] xdg-open unavailable. Open manually:\n  ${authUrl}\n`);
     }
+
+    // Return a Promise that resolves when the claude:// callback arrives.
+    // open-url-bridge.js emits 'open-url' on the Electron app when a
+    // second instance is launched with the callback URL in its argv.
+    let app;
+    try {
+      app = require('electron').app;
+    } catch {
+      // Not running inside Electron — resolve immediately with a stub URL.
+      process.stderr.write(`[claude-native stub] Not in Electron context; resolving stub callbackUrl.\n`);
+      return Promise.resolve({ callbackUrl: `${scheme}://` });
+    }
+
+    return new Promise((resolve) => {
+      const onOpenUrl = (event, cbUrl) => {
+        if (typeof cbUrl === 'string' && cbUrl.toLowerCase().startsWith(`${scheme}://`)) {
+          process.stderr.write(`[claude-native stub] OAuth callback received: ${cbUrl}\n`);
+          app.removeListener('open-url', onOpenUrl);
+          resolve({ callbackUrl: cbUrl });
+        }
+      };
+      app.on('open-url', onOpenUrl);
+
+      // Safety timeout: after 5 minutes give up so the UI can show an error.
+      const timer = setTimeout(() => {
+        app.removeListener('open-url', onOpenUrl);
+        process.stderr.write(`[claude-native stub] OAuth timeout — no ${scheme}:// callback received.\n`);
+        resolve({ callbackUrl: `${scheme}://timeout` });
+      }, 5 * 60 * 1000);
+
+      // Don't keep the Node event loop alive just for the timeout.
+      if (timer.unref) timer.unref();
+    });
   }
+
+  // Legacy alias
+  open(...args) { return this.start(...args); }
 }
 
 // ---------------------------------------------------------------------------

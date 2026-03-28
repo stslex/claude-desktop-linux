@@ -98,12 +98,15 @@ function findJsFiles(dir) {
 //   }
 //
 // After minification the name changes; string literals are stable.
+// Some versions use "available"/"unavailable" instead of
+// "supported"/"unsupported", and may include extra properties like
+// { status: "unsupported", reason: ... }.
 //
 //   1. Function body contains a conditional chain (if / ternary / switch)
 //   2. Function body references the string literal "darwin"
 //   3. Function body references the string literal "win32"
-//   4. At least one ReturnStatement returns { status: "supported" }
-//   5. At least one ReturnStatement returns { status: "unsupported" }
+//   4. At least one ObjectExpression contains { status: "supported"|"available" }
+//   5. At least one ObjectExpression contains { status: "unsupported"|"unavailable" }
 // ---------------------------------------------------------------------------
 const MAX_SCORE = 5;
 
@@ -118,12 +121,13 @@ function collectStrings(node) {
   return out;
 }
 
-/** True if node is an ObjectExpression { status: <value> }. */
+/** True if node is an ObjectExpression containing a status: <value> property. */
 function isStatusObject(node, value) {
-  if (!node || node.type !== 'ObjectExpression' || node.properties.length !== 1) return false;
-  const prop    = node.properties[0];
-  const keyName = prop.key?.name ?? prop.key?.value;
-  return keyName === 'status' && prop.value?.value === value;
+  if (!node || node.type !== 'ObjectExpression' || node.properties.length === 0) return false;
+  return node.properties.some(prop => {
+    const keyName = prop.key?.name ?? prop.key?.value;
+    return keyName === 'status' && prop.value?.value === value;
+  });
 }
 
 /**
@@ -170,8 +174,12 @@ function scoreBody(body) {
   const strings = collectStrings(body);
   if (strings.has('darwin'))                       score++; // criterion 2: "darwin" literal
   if (strings.has('win32'))                        score++; // criterion 3: "win32" literal
-  if (hasStatusValueAnywhere(body, 'supported'))   score++; // criterion 4: { status:"supported" }
-  if (hasStatusValueAnywhere(body, 'unsupported')) score++; // criterion 5: { status:"unsupported" }
+  // criterion 4: return-like { status: "supported" } or { status: "available" }
+  if (hasStatusValueAnywhere(body, 'supported') ||
+      hasStatusValueAnywhere(body, 'available'))   score++;
+  // criterion 5: return-like { status: "unsupported" } or { status: "unavailable" }
+  if (hasStatusValueAnywhere(body, 'unsupported') ||
+      hasStatusValueAnywhere(body, 'unavailable')) score++;
 
   return score;
 }
@@ -297,15 +305,18 @@ if (topMatches.length === 0) {
   process.exit(1);
 }
 
-// --- ambiguous ---
+// --- ambiguous: pick the shortest function body (most likely the concise gate) ---
 if (topMatches.length > 1) {
+  topMatches.sort((a, b) => (a.end - a.start) - (b.end - b.start));
   process.stderr.write(
-    `[find-platform-gate] ERROR: Ambiguous: multiple matches at score ${MAX_SCORE}/${MAX_SCORE}.\n`
+    `[find-platform-gate] Multiple matches at score ${MAX_SCORE}/${MAX_SCORE}; ` +
+    `selecting shortest body (${topMatches[0].end - topMatches[0].start} chars).\n`
   );
   for (const c of topMatches) {
-    process.stderr.write(`  ${c.file}:[${c.start}..${c.end}]  ${c.preview}\n`);
+    process.stderr.write(
+      `  ${c.end - c.start} chars  ${c.file}:[${c.start}..${c.end}]  ${c.preview}\n`
+    );
   }
-  process.exit(1);
 }
 
 // --- exactly one ---

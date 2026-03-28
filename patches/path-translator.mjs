@@ -1,122 +1,115 @@
 /**
  * path-translator.mjs
  *
- * Injected as the first require/import in the main-process bundle.
- * Monkey-patches Node.js `path` and `fs.promises` to redirect Cowork VM paths
- * to real host paths.
+ * Injected as `import '<path>'` at the top of the main-process bundle by
+ * patch-cowork.sh.  Self-activates only when process.type === "browser"
+ * (Electron main process).
  *
  * Translation rule:
  *   /sessions/<uuid>/mnt/<mount-name>/…
  *     → ~/.local/share/claude-linux/sessions/<uuid>/<mount-name>/…
  *
- * The mount table is populated by the claude-swift stub via
- * globalThis.__claudeRegisterMounts(sessionId, mounts).
- *
- * Set COWORK_DEBUG=1 to log intercepted paths to stderr.
+ * Set COWORK_DEBUG=1 to log every translated path to stderr.
  */
 
 import path from 'path';
 import fs   from 'fs';
 import os   from 'os';
 
-const DEBUG       = process.env.COWORK_DEBUG === '1';
-const SESSION_BASE = path.join(os.homedir(), '.local', 'share', 'claude-linux', 'sessions');
-
 // ---------------------------------------------------------------------------
-// Mount table: Map<sessionId, Map<mountName, hostPath>>
+// Double-init guard  (ESM modules are cached by URL, but guard anyway in case
+// the bundle is concatenated or the module URL changes between builds)
 // ---------------------------------------------------------------------------
-/** @type {Map<string, Map<string, string>>} */
-const mountTable = new Map();
+const INIT_SYM      = Symbol.for('__claudePathTranslatorInitialised');
+const TRANSLATE_SYM = Symbol.for('__claudeTranslatePath');
 
-/**
- * Called by the claude-swift stub before spawning a Cowork session.
- * @param {string} sessionId
- * @param {Array<{name: string, hostPath: string}>} mounts
- */
-globalThis.__claudeRegisterMounts = function registerMounts(sessionId, mounts) {
-  const m = new Map();
-  for (const { name, hostPath } of mounts) {
-    m.set(name, hostPath);
-    if (DEBUG) process.stderr.write(`[path-translator] register mount [${sessionId}] ${name} → ${hostPath}\n`);
-  }
-  mountTable.set(sessionId, m);
-};
+if (!global[INIT_SYM] && process.type === 'browser') {
+  global[INIT_SYM] = true;
 
-// ---------------------------------------------------------------------------
-// Translation logic
-// ---------------------------------------------------------------------------
-const SESSION_RE = /^\/sessions\/([^/]+)\/mnt\/([^/]+)(\/.*)?$/;
+  const DEBUG = process.env.COWORK_DEBUG === '1';
 
-/**
- * Translate a /sessions/… path to its host equivalent.
- * Returns the original path if it does not match the pattern.
- * @param {string} p
- * @returns {string}
- */
-function translate(p) {
-  if (typeof p !== 'string') return p;
-  const m = SESSION_RE.exec(p);
-  if (!m) return p;
+  // -------------------------------------------------------------------------
+  // Session base directory
+  // -------------------------------------------------------------------------
+  const SESSION_BASE = path.join(
+    os.homedir(), '.local', 'share', 'claude-linux', 'sessions'
+  );
 
-  const [, sessionId, mountName, rest = ''] = m;
-  const mounts = mountTable.get(sessionId);
+  // Create eagerly so callers can write without additional checks.
+  fs.mkdirSync(SESSION_BASE, { recursive: true });
 
-  let hostBase;
-  if (mounts && mounts.has(mountName)) {
-    hostBase = mounts.get(mountName);
-  } else {
-    // Fallback: map to the session directory under SESSION_BASE.
-    hostBase = path.join(SESSION_BASE, sessionId, mountName);
+  // -------------------------------------------------------------------------
+  // Translation
+  // -------------------------------------------------------------------------
+  const SESSION_RE = /^\/sessions\/([^/]+)\/mnt\/([^/]+)(\/.*)?$/;
+
+  // Save originals before patching so translatePath itself is not recursive.
+  const _origJoin    = path.join.bind(path);
+  const _origResolve = path.resolve.bind(path);
+
+  function translatePath(inputPath) {
+    if (typeof inputPath !== 'string') return inputPath;
+    const m = SESSION_RE.exec(inputPath);
+    if (!m) return inputPath;
+
+    const [, uuid, mountName, rest = ''] = m;
+    const translated = _origJoin(SESSION_BASE, uuid, mountName) + rest;
+
+    if (DEBUG) {
+      process.stderr.write(`[path-translator] ${inputPath} → ${translated}\n`);
+    }
+    return translated;
   }
 
-  const translated = hostBase + rest;
-  if (DEBUG) process.stderr.write(`[path-translator] ${p} → ${translated}\n`);
-  return translated;
+  // Expose via global symbol so the exported wrapper below can reach it.
+  global[TRANSLATE_SYM] = translatePath;
+
+  // -------------------------------------------------------------------------
+  // Monkey-patch path.join and path.resolve
+  // -------------------------------------------------------------------------
+  path.join    = (...segments) => translatePath(_origJoin(...segments));
+  path.resolve = (...segments) => translatePath(_origResolve(...segments));
+
+  // -------------------------------------------------------------------------
+  // Monkey-patch fs.promises methods
+  // -------------------------------------------------------------------------
+  for (const method of ['open', 'readFile', 'writeFile', 'stat', 'readdir']) {
+    if (typeof fs.promises[method] !== 'function') continue;
+    const _orig = fs.promises[method].bind(fs.promises);
+    fs.promises[method] = (p, ...rest) => _orig(translatePath(p), ...rest);
+  }
+
+  // -------------------------------------------------------------------------
+  // Monkey-patch fs.realpathSync and fs.realpath
+  // -------------------------------------------------------------------------
+  if (typeof fs.realpathSync === 'function') {
+    const _origSync = fs.realpathSync.bind(fs);
+    const _origNative = typeof fs.realpathSync.native === 'function'
+      ? fs.realpathSync.native.bind(fs.realpathSync)
+      : null;
+    fs.realpathSync = (p, ...rest) => _origSync(translatePath(p), ...rest);
+    if (_origNative) {
+      fs.realpathSync.native = (p, ...rest) => _origNative(translatePath(p), ...rest);
+    }
+  }
+
+  if (typeof fs.realpath === 'function') {
+    const _origRealpath = fs.realpath.bind(fs);
+    const _origNative = typeof fs.realpath.native === 'function'
+      ? fs.realpath.native.bind(fs.realpath)
+      : null;
+    fs.realpath = (p, ...rest) => _origRealpath(translatePath(p), ...rest);
+    if (_origNative) {
+      fs.realpath.native = (p, ...rest) => _origNative(translatePath(p), ...rest);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Patch path.join and path.resolve
+// Export translatePath for use by the claude-swift stub's spawn().
+// Delegates to the global so it works whether or not we initialised above.
 // ---------------------------------------------------------------------------
-const origJoin    = path.join.bind(path);
-const origResolve = path.resolve.bind(path);
-
-path.join = (...segments) => {
-  const result = origJoin(...segments);
-  return translate(result);
-};
-
-path.resolve = (...segments) => {
-  const result = origResolve(...segments);
-  return translate(result);
-};
-
-// ---------------------------------------------------------------------------
-// Wrap fs.promises methods that take a path as their first argument.
-// ---------------------------------------------------------------------------
-const FS_METHODS = [
-  'open', 'readFile', 'writeFile', 'appendFile',
-  'stat', 'lstat', 'access', 'chmod', 'chown',
-  'mkdir', 'readdir', 'rmdir', 'rm', 'rename',
-  'copyFile', 'symlink', 'readlink', 'unlink',
-  'truncate', 'utimes',
-];
-
-for (const method of FS_METHODS) {
-  if (typeof fs.promises[method] !== 'function') continue;
-  const original = fs.promises[method].bind(fs.promises);
-  fs.promises[method] = (p, ...rest) => original(translate(p), ...rest);
-}
-
-// Also patch the synchronous variants for completeness.
-const FS_SYNC_METHODS = [
-  'readFileSync', 'writeFileSync', 'statSync', 'lstatSync',
-  'accessSync', 'mkdirSync', 'readdirSync', 'rmdirSync',
-  'rmSync', 'renameSync', 'copyFileSync', 'symlinkSync',
-  'readlinkSync', 'unlinkSync', 'openSync', 'chmodSync',
-];
-
-for (const method of FS_SYNC_METHODS) {
-  if (typeof fs[method] !== 'function') continue;
-  const original = fs[method].bind(fs);
-  fs[method] = (p, ...rest) => original(translate(p), ...rest);
+export function translatePath(inputPath) {
+  const fn = global[TRANSLATE_SYM];
+  return fn ? fn(inputPath) : (typeof inputPath === 'string' ? inputPath : inputPath);
 }

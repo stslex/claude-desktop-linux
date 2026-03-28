@@ -4,6 +4,10 @@ on:
   schedule:
     - cron: '0 */6 * * *'   # every 6 hours
   workflow_dispatch:          # allow manual trigger
+  push:
+    branches: ['dev', 'main']
+  pull_request:
+    branches: ['dev', 'main']
 
 jobs:
   check:
@@ -13,23 +17,68 @@ jobs:
       actions: write          # needed to trigger build.yml via workflow_dispatch
 
     steps:
-      - name: Resolve latest DMG version
+      - name: Resolve latest Claude Desktop version
         id: version
         run: |
-          LATEST_URL="https://storage.googleapis.com/osprey-downloads-c02f6a0d-347c-492b-a752-3e0651722e97/nest-apple/Claude-latest.dmg"
-          # Follow the redirect to get the versioned filename.
-          RESOLVED="$(curl -sSL --head -o /dev/null -w '%{url_effective}' "$LATEST_URL")"
-          echo "Resolved URL: $RESOLVED"
-          # Extract version from filename, e.g. Claude-1.1.8629.dmg → 1.1.8629
-          VERSION="$(basename "$RESOLVED" .dmg | sed 's/^Claude-//')"
-          if [[ -z "$VERSION" || "$VERSION" == "latest" ]]; then
-            echo "ERROR: Could not extract version from redirect URL: $RESOLVED"
+          VERSION=""
+
+          # Strategy 1 (primary): Query Anthropic's official RELEASES.json
+          # Same endpoint used by Homebrew Cask for livecheck.
+          RELEASES_URL="https://downloads.claude.ai/releases/darwin/universal/RELEASES.json"
+          echo "Fetching $RELEASES_URL ..."
+          RELEASES_JSON="$(curl -sSf "$RELEASES_URL" 2>/dev/null || true)"
+          if [[ -n "$RELEASES_JSON" ]]; then
+            echo "RELEASES.json (first 500 chars): ${RELEASES_JSON:0:500}"
+            # URL pattern: .../1.1.9310/Claude-<hash>.zip — extract version from path.
+            VERSION="$(echo "$RELEASES_JSON" | grep -oP '/\K[0-9]+\.[0-9]+\.[0-9]+(?=/Claude)' | head -1 || true)"
+            # Broader fallback: any X.Y.Z in a path segment.
+            if [[ -z "$VERSION" ]]; then
+              VERSION="$(echo "$RELEASES_JSON" | grep -oP '/\K[0-9]+\.[0-9]+\.[0-9]+(?=/)' | head -1 || true)"
+            fi
+            echo "Version from RELEASES.json: ${VERSION:-empty}"
+          else
+            echo "RELEASES.json not available"
+          fi
+
+          # Strategy 2 (fallback): Follow GCS redirect with a GET range request.
+          if [[ -z "$VERSION" || ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            GCS_URL="https://storage.googleapis.com/osprey-downloads-c02f6a0d-347c-492b-a752-3e0651722e97/nest-apple/Claude-latest.dmg"
+            RESOLVED="$(curl -sSL -o /dev/null -w '%{url_effective}' -r 0-0 "$GCS_URL" 2>/dev/null || true)"
+            echo "GCS resolved URL: ${RESOLVED:-empty}"
+            if [[ -n "$RESOLVED" ]]; then
+              CANDIDATE="$(basename "$RESOLVED" .dmg | sed 's/^Claude-//')"
+              if [[ "$CANDIDATE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                VERSION="$CANDIDATE"
+              fi
+            fi
+          fi
+
+          # Strategy 3 (fallback): Parse Location header from GCS redirect.
+          if [[ -z "$VERSION" || ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            GCS_URL="https://storage.googleapis.com/osprey-downloads-c02f6a0d-347c-492b-a752-3e0651722e97/nest-apple/Claude-latest.dmg"
+            HEADERS="$(curl -sIL "$GCS_URL" 2>/dev/null || true)"
+            LOCATION="$(echo "$HEADERS" | grep -i '^location:' | tail -1 | tr -d '\r' | awk '{print $2}')"
+            echo "Location header: ${LOCATION:-empty}"
+            if [[ -n "$LOCATION" ]]; then
+              CANDIDATE="$(basename "$LOCATION" .dmg | sed 's/^Claude-//')"
+              if [[ "$CANDIDATE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                VERSION="$CANDIDATE"
+              fi
+            fi
+          fi
+
+          # Validate version format.
+          if [[ -z "$VERSION" || ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: Could not resolve a valid version."
+            echo "  Last resolved version string: '${VERSION:-}'"
             exit 1
           fi
+
           echo "Upstream version: $VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Get latest release tag
+      - name: Get latest released Claude version
+        if: github.event_name != 'pull_request'
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -37,10 +86,14 @@ jobs:
           LATEST_TAG="$(gh release view --repo "${{ github.repository }}" \
             --json tagName --jq '.tagName' 2>/dev/null || echo '')"
           echo "Latest release tag: ${LATEST_TAG:-none}"
-          # Strip leading 'v' for comparison.
-          echo "tag=${LATEST_TAG#v}" >> "$GITHUB_OUTPUT"
+          # Strip leading 'v' and trailing '-repack-N' to get the base Claude version.
+          BASE="${LATEST_TAG#v}"
+          BASE="${BASE%%-repack-*}"
+          echo "Base Claude version from latest release: ${BASE:-none}"
+          echo "tag=${BASE}" >> "$GITHUB_OUTPUT"
 
       - name: Trigger build if version is newer
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           UPSTREAM: ${{ steps.version.outputs.version }}
@@ -50,9 +103,9 @@ jobs:
             echo "Already at latest version ($UPSTREAM). No build needed."
             exit 0
           fi
-          echo "New version found: $UPSTREAM (released: ${RELEASED:-none})"
+          echo "New version found: $UPSTREAM (released base: ${RELEASED:-none})"
           gh workflow run build.yml \
             --repo "${{ github.repository }}" \
-            --ref "${{ github.ref_name }}" \
+            --ref main \
             --field version="$UPSTREAM"
           echo "Triggered build.yml for version $UPSTREAM."

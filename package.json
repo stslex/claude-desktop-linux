@@ -11,7 +11,7 @@
     "package": "bash scripts/build-packages.sh",
     "build":   "bash scripts/fetch-and-extract.sh && bash scripts/inject-stubs.sh && bash scripts/patch-cowork.sh && bash scripts/build-packages.sh"
   },
-  "dependencies": {
+  "devDependencies": {
     "@electron/asar": "^3.3.0",
     "acorn":          "^8.14.0",
     "acorn-walk":     "^8.3.4"

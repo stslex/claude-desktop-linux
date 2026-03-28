@@ -6,56 +6,66 @@
  * replacing it with an unconditional `return { status: "supported" }`.
  *
  * Usage:
- *   node apply-platform-gate.mjs <bundle.js> <offsets-json>
+ *   node patches/apply-platform-gate.mjs [--input <gate-location.json>]
  *
- *   <offsets-json>  Path to a JSON file containing { start, end } (or the
- *                   legacy { bodyStart, bodyEnd } shape) as written by
- *                   find-platform-gate.mjs, OR "-" to read from stdin.
- *                   The "file" field in the JSON is ignored here; the bundle
- *                   path must be supplied explicitly as the first argument.
+ *   --input   Path to gate-location.json written by find-platform-gate.mjs.
+ *             Default: $BUILD_DIR/gate-location.json, or ./gate-location.json.
  *
- * The bundle is patched in-place. A backup is written to <bundle.js>.orig
- * before any modification.
+ * The JSON must contain { file, start, end }.
+ * The bundle at `file` is patched in-place.
  *
- * Exit 1 on any error.
+ * Exit 0 on success. Exit 1 if the file doesn't exist, JSON is malformed,
+ * or the character range is out of bounds.
  */
 
-import { readFileSync, writeFileSync, copyFileSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { join } from 'path';
 
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
-const [, , bundlePath, offsetsArg] = process.argv;
+const args = process.argv.slice(2);
 
-if (!bundlePath || !offsetsArg) {
-  process.stderr.write(
-    'Usage: apply-platform-gate.mjs <bundle.js> <offsets.json|->\n'
-  );
-  process.exit(1);
+let inputPath = null;
+const inputIdx = args.indexOf('--input');
+if (inputIdx !== -1 && inputIdx + 1 < args.length) {
+  inputPath = args[inputIdx + 1];
+}
+
+// Also accept a plain positional path argument (first non-flag arg)
+if (!inputPath) {
+  const skipIdx = new Set(inputIdx !== -1 ? [inputIdx, inputIdx + 1] : []);
+  const positional = args.find((a, i) => !skipIdx.has(i) && !a.startsWith('--'));
+  if (positional) inputPath = positional;
+}
+
+if (!inputPath) {
+  inputPath = process.env.BUILD_DIR
+    ? join(process.env.BUILD_DIR, 'gate-location.json')
+    : './gate-location.json';
 }
 
 // ---------------------------------------------------------------------------
-// Load offsets
+// Load gate-location.json
 // ---------------------------------------------------------------------------
-let offsets;
+let gateInfo;
 try {
-  const raw = offsetsArg === '-'
-    ? readFileSync('/dev/stdin', 'utf8')
-    : readFileSync(offsetsArg, 'utf8');
-  offsets = JSON.parse(raw);
+  if (!existsSync(inputPath)) {
+    process.stderr.write(`[apply-platform-gate] File not found: ${inputPath}\n`);
+    process.exit(1);
+  }
+  const raw = readFileSync(inputPath, 'utf8');
+  gateInfo = JSON.parse(raw);
 } catch (err) {
-  process.stderr.write(`[apply-platform-gate] Cannot read offsets: ${err.message}\n`);
+  process.stderr.write(`[apply-platform-gate] Cannot read/parse ${inputPath}: ${err.message}\n`);
   process.exit(1);
 }
 
-// Accept both the new { start, end } shape and the legacy { bodyStart, bodyEnd } shape.
-const bodyStart = offsets.start    ?? offsets.bodyStart;
-const bodyEnd   = offsets.end      ?? offsets.bodyEnd;
+const { file: bundlePath, start, end } = gateInfo;
 
-if (typeof bodyStart !== 'number' || typeof bodyEnd !== 'number') {
+if (typeof bundlePath !== 'string' || typeof start !== 'number' || typeof end !== 'number') {
   process.stderr.write(
-    '[apply-platform-gate] offsets JSON must contain numeric start/end ' +
-    '(or legacy bodyStart/bodyEnd)\n'
+    '[apply-platform-gate] JSON must contain { file: string, start: number, end: number }\n'
   );
   process.exit(1);
 }
@@ -63,48 +73,62 @@ if (typeof bodyStart !== 'number' || typeof bodyEnd !== 'number') {
 // ---------------------------------------------------------------------------
 // Load bundle
 // ---------------------------------------------------------------------------
-const src = readFileSync(bundlePath, 'utf8');
+let src;
+try {
+  if (!existsSync(bundlePath)) {
+    process.stderr.write(`[apply-platform-gate] Bundle not found: ${bundlePath}\n`);
+    process.exit(1);
+  }
+  src = readFileSync(bundlePath, 'utf8');
+} catch (err) {
+  process.stderr.write(`[apply-platform-gate] Cannot read ${bundlePath}: ${err.message}\n`);
+  process.exit(1);
+}
 
-// Sanity: offsets must be within the file.
-if (bodyStart < 0 || bodyEnd > src.length || bodyStart >= bodyEnd) {
+// ---------------------------------------------------------------------------
+// Bounds check
+// ---------------------------------------------------------------------------
+if (start < 0 || end > src.length || start >= end) {
   process.stderr.write(
-    `[apply-platform-gate] Offsets [${bodyStart}..${bodyEnd}] are out of range ` +
-    `for file of length ${src.length}. Was the file modified between find and apply?\n`
+    `[apply-platform-gate] Character range [${start}..${end}] is out of bounds ` +
+    `for file of length ${src.length}.\n`
   );
   process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
-// Verify we're replacing the right thing — the existing body should contain
-// the string "unsupported" (a quick sanity check before we clobber it).
+// Sanity: verify the range looks like a function body
 // ---------------------------------------------------------------------------
-const existingBody = src.slice(bodyStart, bodyEnd);
-if (!existingBody.includes('unsupported')) {
+const originalBody = src.slice(start, end);
+
+if (originalBody[0] !== '{' || originalBody[originalBody.length - 1] !== '}') {
   process.stderr.write(
-    `[apply-platform-gate] WARNING: existing body at [${bodyStart}..${bodyEnd}] ` +
-    `does not contain "unsupported". Offsets may be stale.\n` +
-    `  Existing body: ${existingBody.slice(0, 200)}\n`
+    `[apply-platform-gate] Range [${start}..${end}] does not look like a function body ` +
+    `(expected to start with '{' and end with '}').\n` +
+    `  Starts with: ${JSON.stringify(originalBody.slice(0, 20))}\n` +
+    `  Ends with:   ${JSON.stringify(originalBody.slice(-20))}\n`
   );
   process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
-// Patch — string splice, no re-parsing.
+// Patch — string splice, no regex, no re-parsing
 // ---------------------------------------------------------------------------
 const REPLACEMENT = '{return{status:"supported"}}';
 
 const patched =
-  src.slice(0, bodyStart) +
+  src.slice(0, start) +
   REPLACEMENT +
-  src.slice(bodyEnd);
+  src.slice(end);
 
-// Write backup first.
-copyFileSync(bundlePath, bundlePath + '.orig');
 writeFileSync(bundlePath, patched, 'utf8');
 
+// ---------------------------------------------------------------------------
+// Log
+// ---------------------------------------------------------------------------
 process.stderr.write(
   `[apply-platform-gate] Patched ${bundlePath}\n` +
-  `  Replaced [${bodyStart}..${bodyEnd}] (${bodyEnd - bodyStart} chars) ` +
-  `with "${REPLACEMENT}" (${REPLACEMENT.length} chars)\n` +
-  `  Backup: ${bundlePath}.orig\n`
+  `  Original body length : ${originalBody.length}\n` +
+  `  Patched body length  : ${REPLACEMENT.length}\n` +
+  `  Original body preview: ${originalBody.slice(0, 80)}\n`
 );

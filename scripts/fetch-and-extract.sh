@@ -57,55 +57,69 @@ check_dep() {
 }
 
 check_dep curl    "Install with: sudo dnf install curl"
-check_dep dmg2img "Install with: sudo dnf install dmg2img"
-check_dep 7z      "Install with: sudo dnf install p7zip-plugins  # or apt install p7zip-full"
+check_dep unzip   "Install with: sudo dnf install unzip  # or apt install unzip"
 check_dep node    "Install Node.js >= 20 from https://nodejs.org"
 check_dep npx     "Comes with Node.js."
-check_dep convert "Install with: sudo dnf install ImageMagick  # or apt install imagemagick"
+
+# dmg2img and 7z are only needed for the legacy DMG path (fallback).
+# convert (ImageMagick) is only needed for icon extraction from .icns.
 
 # ---------------------------------------------------------------------------
-# Resolve versioned DMG URL via redirect headers.
+# Resolve download URL via Anthropic's RELEASES.json (primary)
+# or fall back to GCS DMG URL (legacy).
 # ---------------------------------------------------------------------------
-DMG_LATEST_URL="https://storage.googleapis.com/osprey-downloads-c02f6a0d-347c-492b-a752-3e0651722e97/nest-apple/Claude-latest.dmg"
-DMG_FILE="$BUILD_DIR/claude.dmg"
+RELEASES_URL="https://downloads.claude.ai/releases/darwin/universal/RELEASES.json"
+DOWNLOAD_FILE="$BUILD_DIR/claude-download"   # extension set later based on format
+DOWNLOAD_FORMAT=""  # "zip" or "dmg"
+DOWNLOAD_URL=""
 
-log "Resolving latest DMG URL (following redirects)..."
-REDIRECT_HEADERS=$(curl -sIL "$DMG_LATEST_URL")
+log "Querying Anthropic RELEASES.json for latest version..."
+RELEASES_JSON="$(curl -sSf --max-time 30 --retry 3 --retry-delay 5 "$RELEASES_URL" 2>/dev/null || true)"
+if [[ -n "$RELEASES_JSON" ]]; then
+  # Extract ZIP download URL from RELEASES.json (use node since it's already required).
+  # Structure: { releases: [{ updateTo: { url: "https://...zip" } }] }
+  ZIP_URL="$(echo "$RELEASES_JSON" | node -e "
+    const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+    const u = d?.releases?.[0]?.updateTo?.url || d?.url || '';
+    if (u) process.stdout.write(u);
+  " 2>/dev/null || true)"
+  if [[ -n "$ZIP_URL" && "$ZIP_URL" == *.zip ]]; then
+    DOWNLOAD_URL="$ZIP_URL"
+    DOWNLOAD_FORMAT="zip"
+    DOWNLOAD_FILE="$BUILD_DIR/claude.zip"
+    log "Download URL (from RELEASES.json): $DOWNLOAD_URL"
+  fi
+fi
 
-# Extract the last Location header value (the final redirect target).
-LOCATION_LINE=$(echo "$REDIRECT_HEADERS" | grep -i "^location:" | tail -1 | tr -d '\r')
-VERSIONED_FILENAME=$(echo "$LOCATION_LINE" | awk '{print $2}' | xargs -I{} basename {})
-
-# Pattern: Claude-X.X.XXXX.dmg
-DMG_VERSION=$(echo "$VERSIONED_FILENAME" | grep -oP '(?<=Claude-)[\d]+\.[\d]+\.[\d]+(?=\.dmg)' || true)
-
-if [[ -n "$VERSIONED_FILENAME" && "$VERSIONED_FILENAME" == Claude-*.dmg ]]; then
-  # Reconstruct versioned URL from the same bucket prefix.
-  DOWNLOAD_URL="${DMG_LATEST_URL%/*}/$VERSIONED_FILENAME"
-  log "Resolved filename : $VERSIONED_FILENAME"
-  log "Version from URL  : ${DMG_VERSION:-unknown}"
-  log "Download URL      : $DOWNLOAD_URL"
-else
-  log "WARNING: Could not extract versioned filename from Location headers — falling back to latest URL."
-  DOWNLOAD_URL="$DMG_LATEST_URL"
-  DMG_VERSION=""
+if [[ -z "$DOWNLOAD_URL" ]]; then
+  log "ERROR: Could not resolve download URL from RELEASES.json."
+  log "  URL tried: $RELEASES_URL"
+  if [[ -n "$RELEASES_JSON" ]]; then log "  Response: $RELEASES_JSON"; else log "  (empty response)"; fi
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------
-# Download DMG — skip if file exists and stored checksum matches.
+# Download — skip if file exists and stored checksum matches.
 # ---------------------------------------------------------------------------
 _do_download() {
-  log "Downloading DMG..."
-  curl -L --progress-bar -o "$DMG_FILE" "$DOWNLOAD_URL"
+  log "Downloading ($DOWNLOAD_FORMAT)..."
+  curl -fSL --progress-bar -o "$DOWNLOAD_FILE" "$DOWNLOAD_URL"
+  local file_size
+  file_size="$(stat -c%s "$DOWNLOAD_FILE" 2>/dev/null || echo 0)"
+  if [[ "$file_size" -lt 1000000 ]]; then
+    log "ERROR: Downloaded file is only ${file_size} bytes — likely an error page."
+    head -c 500 "$DOWNLOAD_FILE" || true
+    exit 1
+  fi
 }
 
-if [[ "${SKIP_DOWNLOAD:-}" == "1" && -f "$DMG_FILE" ]]; then
-  log "SKIP_DOWNLOAD=1 — reusing $DMG_FILE"
-elif [[ -f "$DMG_FILE" && -f "${DMG_FILE}.sha256" ]]; then
-  STORED_SHA=$(cat "${DMG_FILE}.sha256")
-  ACTUAL_SHA=$(sha256sum "$DMG_FILE" | awk '{print $1}')
+if [[ "${SKIP_DOWNLOAD:-}" == "1" && -f "$DOWNLOAD_FILE" ]]; then
+  log "SKIP_DOWNLOAD=1 — reusing $DOWNLOAD_FILE"
+elif [[ -f "$DOWNLOAD_FILE" && -f "${DOWNLOAD_FILE}.sha256" ]]; then
+  STORED_SHA=$(cat "${DOWNLOAD_FILE}.sha256")
+  ACTUAL_SHA=$(sha256sum "$DOWNLOAD_FILE" | awk '{print $1}')
   if [[ "$STORED_SHA" == "$ACTUAL_SHA" ]]; then
-    log "DMG already present and checksum matches — skipping download."
+    log "File already present and checksum matches — skipping download."
   else
     log "Checksum mismatch (stored: $STORED_SHA, actual: $ACTUAL_SHA) — re-downloading."
     _do_download
@@ -118,24 +132,27 @@ fi
 # SHA256 — always recompute and write after (potential) download.
 # ---------------------------------------------------------------------------
 log "Computing SHA256..."
-sha256sum "$DMG_FILE" | awk '{print $1}' > "${DMG_FILE}.sha256"
-log "SHA256: $(cat "${DMG_FILE}.sha256")"
+sha256sum "$DOWNLOAD_FILE" | awk '{print $1}' > "${DOWNLOAD_FILE}.sha256"
+log "SHA256: $(cat "${DOWNLOAD_FILE}.sha256")"
 
 # ---------------------------------------------------------------------------
-# Convert DMG → raw image
-# ---------------------------------------------------------------------------
-IMG_FILE="$BUILD_DIR/claude.img"
-log "Converting DMG to raw image with dmg2img..."
-dmg2img -i "$DMG_FILE" -o "$IMG_FILE"
-
-# ---------------------------------------------------------------------------
-# Extract raw image with 7z
+# Extract application contents
 # ---------------------------------------------------------------------------
 EXTRACT_DIR="$BUILD_DIR/dmg-contents"
 rm -rf "$EXTRACT_DIR"
 mkdir -p "$EXTRACT_DIR"
-log "Extracting raw image with 7z..."
-7z x -o"$EXTRACT_DIR" "$IMG_FILE" -y -bd 2>/dev/null || true
+
+if [[ "$DOWNLOAD_FORMAT" == "zip" ]]; then
+  log "Extracting ZIP archive..."
+  unzip -q -o "$DOWNLOAD_FILE" -d "$EXTRACT_DIR"
+else
+  # Legacy DMG path: convert to raw image, then extract with 7z.
+  IMG_FILE="$BUILD_DIR/claude.img"
+  log "Converting DMG to raw image with dmg2img..."
+  dmg2img -i "$DOWNLOAD_FILE" -o "$IMG_FILE"
+  log "Extracting raw image with 7z..."
+  7z x -o"$EXTRACT_DIR" "$IMG_FILE" -y -bd 2>/dev/null || true
+fi
 
 # ---------------------------------------------------------------------------
 # Locate app.asar inside Claude.app/Contents/Resources/
@@ -147,7 +164,7 @@ if [[ -z "$ASAR_SRC" ]]; then
 fi
 if [[ -z "$ASAR_SRC" ]]; then
   log "ERROR: app.asar not found inside extracted image."
-  ls -R "$EXTRACT_DIR" | head -60
+  find "$EXTRACT_DIR" | head -60
   exit 1
 fi
 log "Found app.asar: $ASAR_SRC"
@@ -171,6 +188,52 @@ APP_DIR="$BUILD_DIR/app-extracted"
 rm -rf "$APP_DIR"
 log "Unpacking app.asar with @electron/asar..."
 npx --yes @electron/asar extract "$ASAR_DEST" "$APP_DIR"
+
+# ---------------------------------------------------------------------------
+# Copy extra resources (i18n, etc.) into app-extracted so they are in the
+# repacked asar.  The app loads resources/i18n/en-US.json relative to
+# app.getAppPath(), which resolves inside the asar.
+# ---------------------------------------------------------------------------
+log "Searching for i18n / resource files in extracted bundle..."
+# Diagnostic: show where any i18n files live in the full extraction.
+find "$EXTRACT_DIR" -name "*.json" -path "*/i18n/*" 2>/dev/null | head -20 | while read -r f; do
+  log "  found: $f"
+done
+
+RESOURCES_SRC_DIR="$(dirname "$ASAR_SRC")"
+COPIED_EXTRA=0
+
+# Search several candidate locations where i18n files may reside.
+I18N_CANDIDATES=(
+  "$RESOURCES_SRC_DIR/resources/i18n"
+  "$RESOURCES_SRC_DIR/i18n"
+  "${ASAR_SRC}.unpacked/resources/i18n"
+  "${ASAR_SRC}.unpacked/i18n"
+)
+# Also search the whole extracted tree for any i18n directory.
+while IFS= read -r candidate; do
+  I18N_CANDIDATES+=("$candidate")
+done < <(find "$EXTRACT_DIR" -type d -name "i18n" 2>/dev/null)
+
+for candidate in "${I18N_CANDIDATES[@]}"; do
+  if [[ -d "$candidate" ]] && ls "$candidate"/*.json &>/dev/null; then
+    mkdir -p "$APP_DIR/resources/i18n"
+    cp -a "$candidate"/*.json "$APP_DIR/resources/i18n/"
+    log "Copied i18n files from: $candidate"
+    COPIED_EXTRA=$((COPIED_EXTRA + 1))
+    break
+  fi
+done
+
+# Fallback: if no i18n files were found anywhere, create a minimal stub
+# so the app doesn't crash on launch.  The app uses i18n for UI strings
+# and falls back to English keys when a translation is missing.
+if [[ ! -f "$APP_DIR/resources/i18n/en-US.json" ]]; then
+  log "WARNING: en-US.json not found in bundle — creating minimal stub."
+  mkdir -p "$APP_DIR/resources/i18n"
+  echo '{}' > "$APP_DIR/resources/i18n/en-US.json"
+  COPIED_EXTRA=$((COPIED_EXTRA + 1))
+fi
 
 # ---------------------------------------------------------------------------
 # App version from package.json
