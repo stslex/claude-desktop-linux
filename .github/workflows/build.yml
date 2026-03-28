@@ -33,7 +33,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            dmg2img p7zip-full rpm imagemagick icnsutils fuse libfuse2 zsync
+            dmg2img p7zip-full rpm imagemagick icnsutils fuse libfuse2 zsync createrepo-c
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -215,3 +215,65 @@ jobs:
             --title "Claude Desktop Linux v${VERSION} (repack-${REPACK})" \
             --notes "$NOTES" \
             "${ASSETS[@]}"
+
+      # -----------------------------------------------------------------------
+      # DNF / RPM repository on GitHub Pages
+      #   Keeps the latest repack per Claude version; older repacks are pruned.
+      #   Users add the repo once via the .repo file at the Pages URL.
+      # -----------------------------------------------------------------------
+      - name: Update DNF repository on GitHub Pages
+        if: steps.repack.outcome == 'success'
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          REPACK:  ${{ steps.repack.outputs.num }}
+        run: |
+          REPO_USER="${GITHUB_REPOSITORY%%/*}"
+          REPO_NAME="${GITHUB_REPOSITORY##*/}"
+          PAGES_URL="https://${REPO_USER}.github.io/${REPO_NAME}"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Check out or create the gh-pages branch in a worktree.
+          git fetch origin gh-pages 2>/dev/null || true
+          if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
+            git worktree add /tmp/gh-pages origin/gh-pages
+          else
+            git worktree add --orphan -b gh-pages /tmp/gh-pages
+            git -C /tmp/gh-pages commit --allow-empty -m "Initialize gh-pages"
+          fi
+
+          RPM_DIR=/tmp/gh-pages/rpm
+          mkdir -p "$RPM_DIR"
+
+          # Copy new RPM into the repo tree.
+          RPM_SRC="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.rpm"
+          cp "$RPM_SRC" "$RPM_DIR/"
+
+          # Prune older repacks of the same Claude version (keep only latest).
+          find "$RPM_DIR" \
+            -name "claude-desktop-${VERSION}-repack-*-x86_64.rpm" \
+            ! -name "$(basename "$RPM_SRC")" \
+            -delete
+
+          # Regenerate RPM repo metadata.
+          createrepo_c "$RPM_DIR"
+
+          # Write a stable .repo file consumers can curl-install.
+          cat > /tmp/gh-pages/claude-desktop.repo <<REPO_EOF
+          [claude-desktop]
+          name=Claude Desktop Linux (unofficial)
+          baseurl=${PAGES_URL}/rpm/
+          enabled=1
+          gpgcheck=0
+          REPO_EOF
+
+          # Commit only if something changed.
+          git -C /tmp/gh-pages add -A
+          if git -C /tmp/gh-pages diff --cached --quiet; then
+            echo "gh-pages: no changes."
+          else
+            git -C /tmp/gh-pages commit \
+              -m "rpm-repo: claude-desktop ${VERSION}-repack-${REPACK}"
+            git -C /tmp/gh-pages push origin HEAD:gh-pages
+          fi

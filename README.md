@@ -73,14 +73,28 @@ AppImageUpdate claude-desktop-<version>-x86_64.AppImage
 
 Electron is bundled — no additional dependencies required.
 
+#### Via DNF repository (recommended — enables `dnf update`)
+
+```sh
+sudo curl -o /etc/yum.repos.d/claude-desktop.repo \
+  https://stslex.github.io/claude-desktop-linux/claude-desktop.repo
+sudo dnf install claude-desktop
+```
+
+Future updates: `sudo dnf update claude-desktop`
+
+#### Direct RPM download
+
 ```sh
 sudo dnf install claude-desktop-<version>-repack-<N>-x86_64.rpm
 ```
 
-On **Silverblue / Kinoite** (atomic desktops):
+#### Silverblue / Kinoite (atomic desktops)
 
 ```sh
-rpm-ostree install claude-desktop-<version>-repack-<N>-x86_64.rpm
+sudo curl -o /etc/yum.repos.d/claude-desktop.repo \
+  https://stslex.github.io/claude-desktop-linux/claude-desktop.repo
+rpm-ostree install claude-desktop
 # then reboot
 ```
 
