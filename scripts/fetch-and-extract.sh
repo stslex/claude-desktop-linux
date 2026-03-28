@@ -69,18 +69,18 @@ check_dep npx     "Comes with Node.js."
 # or fall back to GCS DMG URL (legacy).
 # ---------------------------------------------------------------------------
 RELEASES_URL="https://downloads.claude.ai/releases/darwin/universal/RELEASES.json"
-GCS_LATEST_URL="https://storage.googleapis.com/osprey-downloads-c02f6a0d-347c-492b-a752-3e0651722e97/nest-apple/Claude-latest.dmg"
 DOWNLOAD_FILE="$BUILD_DIR/claude-download"   # extension set later based on format
 DOWNLOAD_FORMAT=""  # "zip" or "dmg"
 DOWNLOAD_URL=""
 
 log "Querying Anthropic RELEASES.json for latest version..."
-RELEASES_JSON="$(curl -sSf "$RELEASES_URL" 2>/dev/null || true)"
+RELEASES_JSON="$(curl -sSf --max-time 30 --retry 3 --retry-delay 5 "$RELEASES_URL" 2>/dev/null || true)"
 if [[ -n "$RELEASES_JSON" ]]; then
   # Extract ZIP download URL from RELEASES.json (use node since it's already required).
+  # Structure: { releases: [{ updateTo: { url: "https://...zip" } }] }
   ZIP_URL="$(echo "$RELEASES_JSON" | node -e "
     const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
-    const u = (Array.isArray(d) ? d[0]?.url : d.url) || '';
+    const u = d?.releases?.[0]?.updateTo?.url || d?.url || '';
     if (u) process.stdout.write(u);
   " 2>/dev/null || true)"
   if [[ -n "$ZIP_URL" && "$ZIP_URL" == *.zip ]]; then
@@ -91,12 +91,11 @@ if [[ -n "$RELEASES_JSON" ]]; then
   fi
 fi
 
-# Fallback: GCS DMG URL (legacy — may no longer work).
 if [[ -z "$DOWNLOAD_URL" ]]; then
-  log "WARNING: RELEASES.json unavailable — falling back to GCS DMG URL."
-  DOWNLOAD_URL="$GCS_LATEST_URL"
-  DOWNLOAD_FORMAT="dmg"
-  DOWNLOAD_FILE="$BUILD_DIR/claude.dmg"
+  log "ERROR: Could not resolve download URL from RELEASES.json."
+  log "  URL tried: $RELEASES_URL"
+  [[ -n "$RELEASES_JSON" ]] && log "  Response: $RELEASES_JSON" || log "  (empty response)"
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------
@@ -189,6 +188,52 @@ APP_DIR="$BUILD_DIR/app-extracted"
 rm -rf "$APP_DIR"
 log "Unpacking app.asar with @electron/asar..."
 npx --yes @electron/asar extract "$ASAR_DEST" "$APP_DIR"
+
+# ---------------------------------------------------------------------------
+# Copy extra resources (i18n, etc.) into app-extracted so they are in the
+# repacked asar.  The app loads resources/i18n/en-US.json relative to
+# app.getAppPath(), which resolves inside the asar.
+# ---------------------------------------------------------------------------
+log "Searching for i18n / resource files in extracted bundle..."
+# Diagnostic: show where any i18n files live in the full extraction.
+find "$EXTRACT_DIR" -name "*.json" -path "*/i18n/*" 2>/dev/null | head -20 | while read -r f; do
+  log "  found: $f"
+done
+
+RESOURCES_SRC_DIR="$(dirname "$ASAR_SRC")"
+COPIED_EXTRA=0
+
+# Search several candidate locations where i18n files may reside.
+I18N_CANDIDATES=(
+  "$RESOURCES_SRC_DIR/resources/i18n"
+  "$RESOURCES_SRC_DIR/i18n"
+  "${ASAR_SRC}.unpacked/resources/i18n"
+  "${ASAR_SRC}.unpacked/i18n"
+)
+# Also search the whole extracted tree for any i18n directory.
+while IFS= read -r candidate; do
+  I18N_CANDIDATES+=("$candidate")
+done < <(find "$EXTRACT_DIR" -type d -name "i18n" 2>/dev/null)
+
+for candidate in "${I18N_CANDIDATES[@]}"; do
+  if [[ -d "$candidate" ]] && ls "$candidate"/*.json &>/dev/null; then
+    mkdir -p "$APP_DIR/resources/i18n"
+    cp -a "$candidate"/*.json "$APP_DIR/resources/i18n/"
+    log "Copied i18n files from: $candidate"
+    COPIED_EXTRA=$((COPIED_EXTRA + 1))
+    break
+  fi
+done
+
+# Fallback: if no i18n files were found anywhere, create a minimal stub
+# so the app doesn't crash on launch.  The app uses i18n for UI strings
+# and falls back to English keys when a translation is missing.
+if [[ ! -f "$APP_DIR/resources/i18n/en-US.json" ]]; then
+  log "WARNING: en-US.json not found in bundle — creating minimal stub."
+  mkdir -p "$APP_DIR/resources/i18n"
+  echo '{}' > "$APP_DIR/resources/i18n/en-US.json"
+  COPIED_EXTRA=$((COPIED_EXTRA + 1))
+fi
 
 # ---------------------------------------------------------------------------
 # App version from package.json
