@@ -148,6 +148,14 @@ jobs:
             sha256sum "$dst" | awk '{print $1}' > "${dst}.sha256"
             rm -f "${src}.sha256"
           done
+          # Create a pacman-compatible named copy (no "repack" — pacman requires
+          # {name}-{pkgver}-{pkgrel}-{arch}.pkg.tar.ext filename format).
+          REPACK_PKG="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.pkg.tar.zst"
+          PACMAN_PKG="output/claude-desktop-${VERSION}-${REPACK}-x86_64.pkg.tar.zst"
+          if [[ -f "$REPACK_PKG" ]]; then
+            cp "$REPACK_PKG" "$PACMAN_PKG"
+            cp "${REPACK_PKG}.sha256" "${PACMAN_PKG}.sha256"
+          fi
           # Rename the Nix tarball (different naming convention).
           NIX_SRC="output/claude-desktop-${VERSION}-x86_64-nix.tar.gz"
           NIX_DST="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64-nix.tar.gz"
@@ -227,9 +235,11 @@ jobs:
 
           # Build asset list — only include files that actually exist.
           ASSETS=()
+          PACMAN_BASE="output/claude-desktop-${VERSION}-${REPACK}-x86_64"
           for f in "${BASE}.rpm" "${BASE}.rpm.sha256" \
                    "${BASE}.deb" "${BASE}.deb.sha256" \
                    "${BASE}.pkg.tar.zst" "${BASE}.pkg.tar.zst.sha256" \
+                   "${PACMAN_BASE}.pkg.tar.zst" "${PACMAN_BASE}.pkg.tar.zst.sha256" \
                    "${BASE}-nix.tar.gz" "${BASE}-nix.tar.gz.sha256" \
                    "${BASE}.AppImage" "${BASE}.AppImage.sha256" \
                    "${BASE}.AppImage.zsync"; do
