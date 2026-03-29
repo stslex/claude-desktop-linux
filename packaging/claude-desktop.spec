@@ -83,7 +83,8 @@ install -D -m 644 %{SOURCE6} \
 %post
 # Register the claude:// URI scheme.
 if command -v xdg-mime &>/dev/null; then
-    xdg-mime default claude-desktop.desktop x-scheme-handler/claude || true
+    mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}"
+    xdg-mime default claude-desktop.desktop x-scheme-handler/claude 2>/dev/null || true
 fi
 
 # Refresh the desktop database so the MIME registration takes effect.
