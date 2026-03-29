@@ -110,23 +110,33 @@ fi
 # ---------------------------------------------------------------------------
 # Patch 1 — Find platform gate
 # ---------------------------------------------------------------------------
-log "Searching for platform-gate function in $VITE_BUILD_DIR..."
-
+# Scan the main build dir first; if not found, try the whole app-extracted/
+# tree (covers renderer bundles and alternative layouts).
 GATE_JSON="$BUILD_DIR/gate-location.json"
 FIND_LOG="$BUILD_DIR/patch-find.log"
+FIND_EXIT=1
 
-set +e
-node "$PATCHES_DIR/find-platform-gate.mjs" "$VITE_BUILD_DIR" \
-  --output "$GATE_JSON" \
-  2>"$FIND_LOG"
-FIND_EXIT=$?
-set -e
+for SCAN_DIR in "$VITE_BUILD_DIR" "$APP_DIR"; do
+  log "Searching for platform-gate function in $SCAN_DIR..."
+  set +e
+  node "$PATCHES_DIR/find-platform-gate.mjs" "$SCAN_DIR" \
+    --output "$GATE_JSON" \
+    2>"$FIND_LOG"
+  FIND_EXIT=$?
+  set -e
+
+  if [[ $FIND_EXIT -eq 0 ]]; then
+    break
+  fi
+
+  log "Not found in $SCAN_DIR (exit $FIND_EXIT) — trying next location..."
+  cat "$FIND_LOG" >&2
+done
 
 if [[ $FIND_EXIT -ne 0 ]]; then
-  log "ERROR: find-platform-gate.mjs failed (exit $FIND_EXIT). Log preserved at $FIND_LOG"
-  cat "$FIND_LOG" >&2
+  log "ERROR: find-platform-gate.mjs failed in all scan directories. Log preserved at $FIND_LOG"
   log "Re-running with --dump-candidates for additional diagnostics..."
-  node "$PATCHES_DIR/find-platform-gate.mjs" "$VITE_BUILD_DIR" \
+  node "$PATCHES_DIR/find-platform-gate.mjs" "$APP_DIR" \
     --dump-candidates >> "$FIND_LOG" 2>&1 || true
   exit 1
 fi
@@ -283,19 +293,26 @@ FRAME_DEST="$MAIN_ENTRY_DIR/native-frame.js"
 cp "$FRAME_SRC" "$FRAME_DEST"
 log "Copied native-frame to $FRAME_DEST"
 
+# -- platform-override (already CJS, just copy) -------------------------------
+PLAT_OVERRIDE_SRC="$PATCHES_DIR/platform-override.js"
+PLAT_OVERRIDE_DEST="$MAIN_ENTRY_DIR/platform-override.js"
+cp "$PLAT_OVERRIDE_SRC" "$PLAT_OVERRIDE_DEST"
+log "Copied platform-override to $PLAT_OVERRIDE_DEST"
+
 # -- Prepend all requires (idempotent: skip if already present) ---------------
 if head -1 "$MAIN_ENTRY" | grep -qF 'open-url-bridge'; then
   log "Patches already injected into $MAIN_ENTRY — skipping prepend."
 else
   TMPFILE="$(mktemp)"
   {
+    echo "require('./platform-override.js');"
     echo "require('./native-frame.js');"
     echo "require('./open-url-bridge.js');"
     echo "require('./path-translator.js');"
     cat "$MAIN_ENTRY"
   } > "$TMPFILE"
   mv "$TMPFILE" "$MAIN_ENTRY"
-  log "Prepended native-frame + open-url-bridge + path-translator to $MAIN_ENTRY"
+  log "Prepended platform-override + native-frame + open-url-bridge + path-translator to $MAIN_ENTRY"
 fi
 
 # ---------------------------------------------------------------------------
@@ -316,6 +333,7 @@ log "  Gate-patched file   : $GATE_FILE"
 log "  Gate location       : start=$GATE_START  end=$GATE_END"
 log "  CCD platform patch  : linux-x64/linux-arm64 added to getHostPlatform + getBinaryPathIfReady"
 log "  Patches injected    : $MAIN_ENTRY"
+log "    platform-override.js (runtime fallback for platform gate)"
 log "    native-frame.js    (force frame:true on all BrowserWindow instances)"
 log "    open-url-bridge.js (second-instance → open-url bridge for Linux OAuth)"
 log "    path-translator.js (/sessions/… path remapping)"

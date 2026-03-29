@@ -59,8 +59,12 @@ const KeyboardKey = {
 // Platform / version spoofs — required for the Cowork availability check.
 // The in-process JS gate does getPlatform() === "darwin"; we satisfy it here.
 // ---------------------------------------------------------------------------
-function getOSVersion() { return '14.0.0'; }  // macOS Sonoma spoof
-function getPlatform()  { return 'darwin'; }   // must stay "darwin"
+function getOSVersion()        { return '14.0.0'; }  // macOS Sonoma spoof
+function getPlatform()         { return 'darwin'; }   // must stay "darwin"
+function getPlatformName()     { return 'macOS'; }    // display name for UI
+function getPlatformInfo()     { return { platform: 'darwin', name: 'macOS', version: '14.0.0', arch: process.arch }; }
+function isCoworkSupported()   { return true; }
+function getCoworkAvailability() { return { status: 'supported' }; }
 
 // ---------------------------------------------------------------------------
 // AuthRequest — handles the claude:// OAuth deep-link callback.
@@ -140,7 +144,10 @@ class AuthRequest {
 // ---------------------------------------------------------------------------
 const _warned = new Set();
 
-const _base = { KeyboardKey, getOSVersion, getPlatform, AuthRequest };
+const _base = {
+  KeyboardKey, getOSVersion, getPlatform, getPlatformName, getPlatformInfo,
+  isCoworkSupported, getCoworkAvailability, AuthRequest,
+};
 
 module.exports = new Proxy(_base, {
   get(target, prop) {
