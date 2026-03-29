@@ -299,15 +299,17 @@ jobs:
           # -------------------------------------------------------------------
           # Pacman / Arch Linux repository
           #   A minimal custom repo database that pacman can consume.
-          #   The .pkg.tar.zst itself is served from GitHub Releases.
+          #   The .pkg.tar.zst is served alongside the DB from GitHub Pages.
           # -------------------------------------------------------------------
           PKG_SRC="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.pkg.tar.zst"
           if [[ -f "$PKG_SRC" ]]; then
             PACMAN_DIR="$PAGES_DIR/pacman"
             mkdir -p "$PACMAN_DIR"
 
-            # Copy pkg temporarily to generate the repo database.
-            cp "$PKG_SRC" "$PACMAN_DIR/"
+            # Pacman requires filenames to match {name}-{pkgver}-{pkgrel}-{arch}.pkg.tar.ext.
+            # The release asset uses "-repack-N" but pacman needs just "-N".
+            PACMAN_PKG="claude-desktop-${VERSION}-${REPACK}-x86_64.pkg.tar.zst"
+            cp "$PKG_SRC" "$PACMAN_DIR/${PACMAN_PKG}"
 
             # Generate pacman repo database.
             # repo-add is Arch-specific; on Ubuntu CI we build the DB manually.
@@ -315,7 +317,7 @@ jobs:
               repo-add "$PACMAN_DIR/claude-desktop.db.tar.gz" "$PACMAN_DIR"/*.pkg.tar.zst
             else
               # Minimal repo database: a tar containing a desc file.
-              PKG_FILENAME="claude-desktop-${VERSION}-repack-${REPACK}-x86_64.pkg.tar.zst"
+              PKG_FILENAME="${PACMAN_PKG}"
               PKG_SHA256="$(sha256sum "$PKG_SRC" | awk '{print $1}')"
               PKG_SIZE="$(stat -c%s "$PKG_SRC")"
               CSIZE="$PKG_SIZE"
@@ -327,11 +329,9 @@ jobs:
 
               ENTRY_DIR="$DB_STAGING/claude-desktop-${VERSION}-${REPACK}"
               mkdir -p "$ENTRY_DIR"
-              # %FILENAME% uses the GitHub Releases download URL so pacman
-              # fetches the actual package from Releases, not from Pages.
               cat > "$ENTRY_DIR/desc" <<DESC_EOF
           %FILENAME%
-          ${DOWNLOAD_PREFIX}/${PKG_FILENAME}
+          ${PKG_FILENAME}
 
           %NAME%
           claude-desktop
@@ -378,8 +378,8 @@ jobs:
             rm -f "$PACMAN_DIR/claude-desktop.db"
             cp "$PACMAN_DIR/claude-desktop.db.tar.gz" "$PACMAN_DIR/claude-desktop.db"
 
-            # Remove the .pkg.tar.zst binary — only repo DB stays on Pages.
-            rm -f "$PACMAN_DIR"/*.pkg.tar.zst
+            # Keep the .pkg.tar.zst on Pages so pacman can download it
+            # via the Server URL configured in pacman.conf.
 
             # Write a pacman repo config snippet users can append to pacman.conf.
             cat > "$PAGES_DIR/claude-desktop-pacman.conf" <<PACMAN_EOF
