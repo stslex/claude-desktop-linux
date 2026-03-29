@@ -63,6 +63,7 @@ function getOSVersion()        { return '14.0.0'; }  // macOS Sonoma spoof
 function getPlatform()         { return 'darwin'; }   // must stay "darwin"
 function getPlatformName()     { return 'macOS'; }    // display name for UI
 function getPlatformInfo()     { return { platform: 'darwin', name: 'macOS', version: '14.0.0', arch: process.arch }; }
+function isReady()               { return true; }
 function isCoworkSupported()   { return true; }
 function getCoworkAvailability() { return { status: 'supported' }; }
 function isDispatchSupported()   { return true; }
@@ -211,6 +212,7 @@ const _warned = new Set();
 
 const _base = {
   KeyboardKey, getOSVersion, getPlatform, getPlatformName, getPlatformInfo,
+  isReady,
   isCoworkSupported, getCoworkAvailability,
   isDispatchSupported, getDispatchAvailability, getFeatureAvailability,
   // Push notification stubs for Dispatch

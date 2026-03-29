@@ -167,6 +167,15 @@ const _vmBase = {
   isRunning() {
     return true;
   },
+
+  /**
+   * Report whether the VM is ready.
+   * On Linux there is no VM — always return true.
+   * @returns {boolean}
+   */
+  isReady() {
+    return true;
+  },
 };
 
 // Wrap vm in a Proxy so unknown method calls are logged to stderr.

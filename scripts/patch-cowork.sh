@@ -206,7 +206,41 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Patch 3 — Find main entry point
+# Patch 3 — VM download step: skip on Linux
+# ---------------------------------------------------------------------------
+log "Locating VM download step (download_and_sdk_prepare)..."
+
+VM_DL_FIND_LOG="$BUILD_DIR/patch-vm-dl-find.log"
+VM_DL_JSON="$BUILD_DIR/vm-download-location.json"
+
+set +e
+node "$PATCHES_DIR/find-vm-download.mjs" \
+  2>"$VM_DL_FIND_LOG"
+VM_DL_FIND_EXIT=$?
+set -e
+
+cat "$VM_DL_FIND_LOG" >&2
+
+if [[ $VM_DL_FIND_EXIT -ne 0 ]]; then
+  log "WARNING: find-vm-download.mjs failed — VM download step will not be skipped on Linux."
+else
+  VM_DL_APPLY_LOG="$BUILD_DIR/patch-vm-dl-apply.log"
+  set +e
+  node "$PATCHES_DIR/apply-vm-download.mjs" \
+    --input "$VM_DL_JSON" \
+    2>"$VM_DL_APPLY_LOG"
+  VM_DL_APPLY_EXIT=$?
+  set -e
+  cat "$VM_DL_APPLY_LOG" >&2
+  if [[ $VM_DL_APPLY_EXIT -ne 0 ]]; then
+    log "WARNING: apply-vm-download.mjs failed — VM download step will not be skipped on Linux."
+  else
+    log "VM download step patched (returns early on Linux)."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Patch 4 — Find main entry point
 # ---------------------------------------------------------------------------
 log "Locating main entry point..."
 
@@ -374,6 +408,7 @@ log "------------------------------------------------------------"
 log "Patch summary"
 log "  Platform-gate patch : $GATE_SUMMARY (all gates patched to return {status:\"supported\"})"
 log "  CCD platform patch  : linux-x64/linux-arm64 added to getHostPlatform + getBinaryPathIfReady"
+log "  VM download patch   : download_and_sdk_prepare returns early on Linux"
 log "  Patches injected    : $MAIN_ENTRY"
 log "    shell-env-patch.js (fix shell path worker not found on Linux)"
 log "    platform-override.js (runtime fallback for platform gate)"
