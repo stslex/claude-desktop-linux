@@ -202,8 +202,8 @@ if (!global[INIT_SYM] && process.type === 'browser') {
       process.stderr.write('[native-frame] Used Module._load Proxy fallback for patching\n');
     }
 
-    // Safety net: if BrowserWindow patching failed entirely, at least set the
-    // icon on windows as they are created.
+    // Safety net: if BrowserWindow was not patched via defineProperty, at least
+    // set the icon on windows as they are created.
     if (!bwPatched && appIcon) {
       const app = electron.app || electron.default?.app;
       if (app) {
