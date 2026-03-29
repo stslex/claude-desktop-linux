@@ -72,6 +72,66 @@ function getFeatureAvailability(feature) {
 }
 
 // ---------------------------------------------------------------------------
+// Push notification stubs — required for Dispatch message delivery.
+//
+// On macOS, Dispatch registers with APNs to receive a device token that is
+// used for mobile-to-desktop message routing.  On Linux there is no APNs;
+// we return a plausible-looking token so the registration path succeeds and
+// the app's Dispatch message handler is not gated behind a token check.
+//
+// When the app calls any of these:
+//   registerForPushNotifications()
+//   requestPushToken() / getPushToken()
+//   registerForRemoteNotifications(callback)
+//   getDeviceToken()
+//
+// We return a synthetic token that passes any string/non-null check but will
+// not deliver real APNs push messages (background delivery is a known
+// non-goal — the app must be running for Dispatch to function on Linux).
+// ---------------------------------------------------------------------------
+const LINUX_PUSH_TOKEN = (function() {
+  let machineId = '';
+  try {
+    machineId = require('fs').readFileSync('/etc/machine-id', 'utf8').trim();
+  } catch (_) {
+    try {
+      machineId = require('fs').readFileSync('/var/lib/dbus/machine-id', 'utf8').trim();
+    } catch (_) {
+      machineId = require('os').hostname().replace(/[^a-z0-9]/gi, '') || 'unknown';
+    }
+  }
+  return 'linux-dispatch-stub-' + machineId.slice(0, 32);
+})();
+
+function registerForPushNotifications(callback) {
+  process.stderr.write('[claude-native stub] registerForPushNotifications → synthetic token\n');
+  if (typeof callback === 'function') {
+    setImmediate(() => callback(null, LINUX_PUSH_TOKEN));
+  }
+  return Promise.resolve({ token: LINUX_PUSH_TOKEN, success: true, authorized: true });
+}
+
+function requestPushToken() {
+  process.stderr.write('[claude-native stub] requestPushToken → synthetic token\n');
+  return Promise.resolve({ token: LINUX_PUSH_TOKEN, success: true });
+}
+
+function getPushToken() {
+  return LINUX_PUSH_TOKEN;
+}
+
+function getDeviceToken() {
+  return Promise.resolve(LINUX_PUSH_TOKEN);
+}
+
+function requestNotificationAuthorization() {
+  return Promise.resolve({ authorized: true, granted: true });
+}
+
+function isPushNotificationsEnabled() { return true; }
+function isPushNotificationsRegistered() { return true; }
+
+// ---------------------------------------------------------------------------
 // AuthRequest — handles the claude:// OAuth deep-link callback.
 // Uses detached+stdio:ignore+unref so the opener does not block Electron.
 // ---------------------------------------------------------------------------
@@ -153,6 +213,10 @@ const _base = {
   KeyboardKey, getOSVersion, getPlatform, getPlatformName, getPlatformInfo,
   isCoworkSupported, getCoworkAvailability,
   isDispatchSupported, getDispatchAvailability, getFeatureAvailability,
+  // Push notification stubs for Dispatch
+  registerForPushNotifications, requestPushToken, getPushToken, getDeviceToken,
+  requestNotificationAuthorization,
+  isPushNotificationsEnabled, isPushNotificationsRegistered,
   AuthRequest,
 };
 

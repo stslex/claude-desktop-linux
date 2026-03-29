@@ -117,9 +117,10 @@ FIND_LOG="$BUILD_DIR/patch-find.log"
 FIND_EXIT=1
 
 for SCAN_DIR in "$VITE_BUILD_DIR" "$APP_DIR"; do
-  log "Searching for platform-gate function in $SCAN_DIR..."
+  log "Searching for platform-gate function(s) in $SCAN_DIR..."
   set +e
   node "$PATCHES_DIR/find-platform-gate.mjs" "$SCAN_DIR" \
+    --all \
     --output "$GATE_JSON" \
     2>"$FIND_LOG"
   FIND_EXIT=$?
@@ -141,23 +142,19 @@ if [[ $FIND_EXIT -ne 0 ]]; then
   exit 1
 fi
 
-log "Gate location: $(cat "$GATE_JSON")"
+log "Gate location(s): $(cat "$GATE_JSON")"
 
-# Extract fields for the summary (pass the path via argv to avoid quoting issues).
-GATE_FILE="$(node -e \
-  "const j=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));process.stdout.write(j.file);" \
-  -- "$GATE_JSON")"
-GATE_START="$(node -e \
-  "const j=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));process.stdout.write(String(j.start));" \
-  -- "$GATE_JSON")"
-GATE_END="$(node -e \
-  "const j=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));process.stdout.write(String(j.end));" \
-  -- "$GATE_JSON")"
+# Extract a summary of found gates (file + count) for the log message.
+GATE_SUMMARY="$(node -e \
+  "const j=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));
+   if(j.gates){process.stdout.write(j.gates.length+' gate(s) across '+[...new Set(j.gates.map(g=>g.file))].length+' file(s)');}
+   else{process.stdout.write('1 gate: '+j.file+' ['+j.start+'..'+j.end+']');}" \
+  -- "$GATE_JSON" 2>/dev/null || echo "unknown")"
 
 # ---------------------------------------------------------------------------
 # Patch 1 — Apply platform gate
 # ---------------------------------------------------------------------------
-log "Applying platform-gate patch to $GATE_FILE..."
+log "Applying platform-gate patch ($GATE_SUMMARY)..."
 
 APPLY_LOG="$BUILD_DIR/patch-apply.log"
 
@@ -375,8 +372,7 @@ touch "$GUARD"
 # ---------------------------------------------------------------------------
 log "------------------------------------------------------------"
 log "Patch summary"
-log "  Gate-patched file   : $GATE_FILE"
-log "  Gate location       : start=$GATE_START  end=$GATE_END"
+log "  Platform-gate patch : $GATE_SUMMARY (all gates patched to return {status:\"supported\"})"
 log "  CCD platform patch  : linux-x64/linux-arm64 added to getHostPlatform + getBinaryPathIfReady"
 log "  Patches injected    : $MAIN_ENTRY"
 log "    shell-env-patch.js (fix shell path worker not found on Linux)"
