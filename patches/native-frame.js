@@ -157,22 +157,16 @@ if (!global[INIT_SYM] && process.type === 'browser') {
     // Patch Tray
     // ---------------------------------------------------------------------
     function patchTrayIcon(icon) {
-      if (!trayIcon) return icon;
-      try {
-        const orig = (typeof icon === 'string')
-          ? electron.nativeImage.createFromPath(icon)
-          : icon;
-        if (!orig || orig.isEmpty()) {
-          return trayIcon;
-        }
-      } catch (_) {
-        return trayIcon;
-      }
-      return icon;
+      // Always use our pre-resolved, Linux-compatible tray icon when available.
+      // The macOS icon passed by the app (often a .icns resource path or an
+      // Electron-packaged ASAR resource) may load as non-empty on Linux but
+      // still renders as "three dots" in the system tray because it is a
+      // macOS-specific format not understood by Linux tray hosts.
+      return trayIcon || icon;
     }
 
     function addTrayClickHandler(tray) {
-      tray.on('click', () => {
+      const showWindow = () => {
         const wins = OrigBrowserWindow.getAllWindows();
         const mainWin = wins.find(w => !w.isDestroyed()) || null;
         if (mainWin) {
@@ -180,7 +174,11 @@ if (!global[INIT_SYM] && process.type === 'browser') {
           mainWin.show();
           mainWin.focus();
         }
-      });
+      };
+      // 'click' covers most Linux tray implementations; 'double-click' is
+      // needed on some desktop environments (e.g. KDE Plasma with SNI).
+      tray.on('click', showWindow);
+      tray.on('double-click', showWindow);
     }
 
     const PatchedTray = new Proxy(OrigTray, {
@@ -188,6 +186,13 @@ if (!global[INIT_SYM] && process.type === 'browser') {
         const resolvedIcon = patchTrayIcon(icon);
         log('Tray construct intercepted: icon=' + (resolvedIcon === trayIcon ? 'replaced' : 'original'));
         const tray = Reflect.construct(Target, [resolvedIcon, ...rest], newTarget);
+        // Intercept setImage() so that post-construction icon updates (e.g.
+        // notification badges) also use our Linux-compatible icon instead of
+        // reverting to the macOS resource.
+        const origSetImage = tray.setImage.bind(tray);
+        tray.setImage = function patchedSetImage(img) {
+          return origSetImage(patchTrayIcon(img));
+        };
         addTrayClickHandler(tray);
         log('Tray click handler added');
         return tray;
