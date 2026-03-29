@@ -134,7 +134,7 @@ for (const [bundlePath, locs] of byFile) {
     // Sanity: range must look like a function body
     const originalBody = src.slice(start, end);
     const trimmedBody  = originalBody.trim();
-    if (trimmedBody[0] !== '{' || trimmedBody[trimmedBody.length - 1] !== '}') {
+    if (!trimmedBody || trimmedBody[0] !== '{' || trimmedBody[trimmedBody.length - 1] !== '}') {
       process.stderr.write(
         `[apply-platform-gate] Range [${start}..${end}] does not look like a function body ` +
         `(expected '{' … '}') — skipping.\n` +
@@ -154,7 +154,12 @@ for (const [bundlePath, locs] of byFile) {
     totalPatched++;
   }
 
-  writeFileSync(bundlePath, src, 'utf8');
+  try {
+    writeFileSync(bundlePath, src, 'utf8');
+  } catch (err) {
+    process.stderr.write(`[apply-platform-gate] Cannot write ${bundlePath}: ${err.message}\n`);
+    process.exit(1);
+  }
 }
 
 if (totalPatched === 0) {
