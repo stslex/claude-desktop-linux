@@ -75,7 +75,7 @@ fi
 # ---------------------------------------------------------------------------
 log "--- DEB ---"
 DEB_OK=false
-if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" "$SCRIPT_DIR/build-deb.sh"; then
+if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" REPACK_NUM="${REPACK_NUM:-0}" "$SCRIPT_DIR/build-deb.sh"; then
     DEB_OK=true
     log "DEB build succeeded."
 else

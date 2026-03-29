@@ -174,7 +174,7 @@ fi
 # Installed-Size is in KB, computed from the actual installed tree.
 INSTALLED_SIZE="$(du -sk "$DEB_ROOT/usr" | cut -f1)"
 # Include repack number in Debian version so apt detects newer repacks.
-DEB_VERSION="${VERSION}+repack${REPACK:-1}"
+DEB_VERSION="${VERSION}+repack${REPACK_NUM:-0}"
 
 cat > "$DEB_ROOT/DEBIAN/control" <<CTRL_EOF
 Package: claude-desktop
