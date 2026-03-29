@@ -15,14 +15,13 @@ on:
   pull_request:
     branches: ['dev', 'main']
 
-permissions:
-  contents: write
-  pages: write
-  id-token: write
+permissions: {}
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       BUILD_DIR:  /tmp/claude-build
       OUTPUT_DIR: ${{ github.workspace }}/output
@@ -373,8 +372,10 @@ jobs:
               rm -rf "$DB_STAGING"
             fi
 
-            # Create claude-desktop.db as a copy (symlinks not supported on Pages).
-            cp -f "$PACMAN_DIR/claude-desktop.db.tar.gz" "$PACMAN_DIR/claude-desktop.db"
+            # Create claude-desktop.db as a regular file (symlinks not supported on Pages).
+            # rm first in case repo-add created it as a symlink (cp would fail on same-file).
+            rm -f "$PACMAN_DIR/claude-desktop.db"
+            cp "$PACMAN_DIR/claude-desktop.db.tar.gz" "$PACMAN_DIR/claude-desktop.db"
 
             # Remove the .pkg.tar.zst binary — only repo DB stays on Pages.
             rm -f "$PACMAN_DIR"/*.pkg.tar.zst
