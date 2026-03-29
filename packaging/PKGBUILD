@@ -1,0 +1,21 @@
+# Maintainer: Claude Desktop Linux <claude-desktop-linux@users.noreply.github.com>
+# AUR reference PKGBUILD — built by CI; for local builds see scripts/build-pacman.sh.
+
+pkgname=claude-desktop
+pkgver=0.0.0  # replaced by CI
+pkgrel=1
+pkgdesc='Claude Desktop for Linux (unofficial rebuild)'
+arch=('x86_64')
+url='https://github.com/stslex/claude-desktop-linux'
+license=('custom:proprietary')
+depends=('bash' 'xdg-utils' 'hicolor-icon-theme')
+optdepends=('bubblewrap: sandboxed Cowork sessions')
+
+# Source is the pre-built package from GitHub Releases.
+# For local builds, run: bash scripts/build-pacman.sh
+source=("${pkgname}-${pkgver}-x86_64.pkg.tar.zst::https://github.com/stslex/claude-desktop-linux/releases/latest/download/${pkgname}-${pkgver}-x86_64.pkg.tar.zst")
+sha256sums=('SKIP')
+
+package() {
+    cp -a "$srcdir/usr" "$pkgdir/usr"
+}
