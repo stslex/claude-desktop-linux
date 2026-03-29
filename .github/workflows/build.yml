@@ -306,8 +306,10 @@ jobs:
             PACMAN_DIR="$PAGES_DIR/pacman"
             mkdir -p "$PACMAN_DIR"
 
-            # Copy pkg to Pages so pacman can download it via the Server URL.
-            cp "$PKG_SRC" "$PACMAN_DIR/"
+            # Pacman requires filenames to match {name}-{pkgver}-{pkgrel}-{arch}.pkg.tar.ext.
+            # The release asset uses "-repack-N" but pacman needs just "-N".
+            PACMAN_PKG="claude-desktop-${VERSION}-${REPACK}-x86_64.pkg.tar.zst"
+            cp "$PKG_SRC" "$PACMAN_DIR/${PACMAN_PKG}"
 
             # Generate pacman repo database.
             # repo-add is Arch-specific; on Ubuntu CI we build the DB manually.
@@ -315,7 +317,7 @@ jobs:
               repo-add "$PACMAN_DIR/claude-desktop.db.tar.gz" "$PACMAN_DIR"/*.pkg.tar.zst
             else
               # Minimal repo database: a tar containing a desc file.
-              PKG_FILENAME="claude-desktop-${VERSION}-repack-${REPACK}-x86_64.pkg.tar.zst"
+              PKG_FILENAME="${PACMAN_PKG}"
               PKG_SHA256="$(sha256sum "$PKG_SRC" | awk '{print $1}')"
               PKG_SIZE="$(stat -c%s "$PKG_SRC")"
               CSIZE="$PKG_SIZE"
