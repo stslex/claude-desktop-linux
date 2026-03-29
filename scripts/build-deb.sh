@@ -165,7 +165,36 @@ if [[ -d "$ICONS_DIR" ]] && ls "$ICONS_DIR"/claude-*.png &>/dev/null; then
             "$DEB_ROOT/usr/share/icons/hicolor/${N}x${N}/apps/claude-desktop.png"
     done
 else
-    log "WARNING: No PNG icons found in $ICONS_DIR"
+    log "WARNING: No PNG icons found in $ICONS_DIR — generating from bundled SVG..."
+    SVG_ICON="$REPO_DIR/packaging/claude-desktop.svg"
+    if [[ -f "$SVG_ICON" ]]; then
+        mkdir -p "$ICONS_DIR"
+        if command -v rsvg-convert &>/dev/null; then
+            for SIZE in 16 32 48 64 128 256 512; do
+                rsvg-convert -w "$SIZE" -h "$SIZE" "$SVG_ICON" \
+                    -o "$ICONS_DIR/claude-${SIZE}.png" 2>/dev/null || true
+            done
+        elif command -v convert &>/dev/null; then
+            for SIZE in 16 32 48 64 128 256 512; do
+                convert -background none "$SVG_ICON" \
+                    -resize "${SIZE}x${SIZE}" "$ICONS_DIR/claude-${SIZE}.png" 2>/dev/null || true
+            done
+        fi
+        for PNG in "$ICONS_DIR"/claude-*.png; do
+            [ -f "$PNG" ] || continue
+            N="$(basename "$PNG" | grep -oP '(?<=claude-)\d+(?=\.png)' || true)"
+            [[ -z "$N" ]] && continue
+            install -D -m 644 "$PNG" \
+                "$DEB_ROOT/usr/share/icons/hicolor/${N}x${N}/apps/claude-desktop.png"
+        done
+    fi
+fi
+
+# Always install SVG icon for scalable resolution support
+SVG_ICON="$REPO_DIR/packaging/claude-desktop.svg"
+if [[ -f "$SVG_ICON" ]]; then
+    install -D -m 644 "$SVG_ICON" \
+        "$DEB_ROOT/usr/share/icons/hicolor/scalable/apps/claude-desktop.svg"
 fi
 
 # ---------------------------------------------------------------------------
