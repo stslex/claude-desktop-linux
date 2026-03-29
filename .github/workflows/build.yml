@@ -331,7 +331,7 @@ jobs:
             CSIZE="$PKG_SIZE"
 
             DB_STAGING="$(mktemp -d)"
-            ISIZE="$(bsdtar -xf "$PKG_SRC" .PKGINFO -O 2>/dev/null | grep '^size = ' | awk '{print $3}')"
+            ISIZE="$(bsdtar -xf "$PKG_SRC" -O .PKGINFO 2>/dev/null | grep '^size = ' | awk '{print $3}')"
             ISIZE="${ISIZE:-0}"
 
             ENTRY_DIR="$DB_STAGING/claude-desktop-${VERSION}-${REPACK}"

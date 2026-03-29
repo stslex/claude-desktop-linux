@@ -129,7 +129,7 @@ if [[ -d "$ICONS_DIR" ]] && ls "$ICONS_DIR"/claude-*.png &>/dev/null; then
             "$PKG_ROOT/usr/share/icons/hicolor/${N}x${N}/apps/claude-desktop.png"
     done
 else
-    log "WARNING: No PNG icons found in $ICONS_DIR — generating from bundled SVG..."
+    log "WARNING: No PNG icons found in $ICONS_DIR \u2014 generating from bundled SVG..."
     SVG_ICON="$REPO_DIR/packaging/claude-desktop.svg"
     if [[ -f "$SVG_ICON" ]]; then
         mkdir -p "$ICONS_DIR"
@@ -164,8 +164,10 @@ fi
 # ---------------------------------------------------------------------------
 # Generate .PKGINFO
 # ---------------------------------------------------------------------------
-# Compute installed size in bytes
-INSTALL_SIZE="$(du -sb "$PKG_ROOT" | awk '{print $1}')"
+# Compute installed size from usr/ only (files that consume filesystem space).
+# Package metadata files (.PKGINFO, .INSTALL, .MTREE) are stored in pacman's
+# database, not in /usr, so they must be excluded from the size calculation.
+INSTALL_SIZE="$(du -sb "$PKG_ROOT/usr" | awk '{print $1}')"
 
 cat > "$PKG_ROOT/.PKGINFO" <<PKGINFO_EOF
 pkgname = claude-desktop
@@ -240,7 +242,7 @@ post_install() {
     if [ ! -L /sessions ] && [ ! -e /sessions ]; then
         mkdir -p "$SESSION_TARGET"
         ln -sf "$SESSION_TARGET" /sessions 2>/dev/null || {
-            echo "claude-desktop: could not create /sessions — run manually:"
+            echo "claude-desktop: could not create /sessions \u2014 run manually:"
             echo "  sudo mkdir -p $SESSION_TARGET && sudo ln -sf $SESSION_TARGET /sessions"
         }
     fi
@@ -271,7 +273,7 @@ INSTALL_EOF
 # Generate .MTREE (file-level integrity metadata, used by pacman -Qk)
 # ---------------------------------------------------------------------------
 log "Generating .MTREE..."
-(cd "$PKG_ROOT" && LANG=C bsdtar -czf .MTREE --format=mtree \
+(cd "$PKG_ROOT" && LANG=C bsdtar --uid 0 --gid 0 -czf .MTREE --format=mtree \
     --options='!all,use-set,type,uid,gid,mode,time,size,md5,sha256,link' \
     .PKGINFO .INSTALL usr/)
 
@@ -286,6 +288,27 @@ log "Building pacman package..."
 (cd "$PKG_ROOT" && bsdtar --uid 0 --gid 0 -cf - .PKGINFO .INSTALL .MTREE usr/ | zstd -T0 -19 -o "$DEST_PKG")
 
 sha256sum "$DEST_PKG" | awk '{print $1}' > "${DEST_PKG}.sha256"
+
+# ---------------------------------------------------------------------------
+# Verify the package is a readable archive before publishing
+# ---------------------------------------------------------------------------
+log "Verifying package archive..."
+if ! bsdtar -tf "$DEST_PKG" > /dev/null 2>&1; then
+    log "ERROR: Built package is not a valid archive: $DEST_PKG"
+    exit 1
+fi
+PKGINFO_CHECK="$(bsdtar -xf "$DEST_PKG" -O .PKGINFO 2>/dev/null | grep '^pkgname = ' | head -1)"
+if [[ -z "$PKGINFO_CHECK" || "$PKGINFO_CHECK" != "pkgname = claude-desktop" ]]; then
+    log "ERROR: .PKGINFO missing or unreadable in built package (got: '${PKGINFO_CHECK}')"
+    exit 1
+fi
+MTREE_CHECK="$(bsdtar -xf "$DEST_PKG" -O .MTREE 2>/dev/null | head -c 64)"
+if [[ -z "$MTREE_CHECK" ]]; then
+    log "ERROR: .MTREE missing or unreadable in built package"
+    exit 1
+fi
+log "MTREE verification OK"
+log "Package verification OK"
 
 log "PKG          : $DEST_PKG"
 log "SHA256       : $(cat "${DEST_PKG}.sha256")"
