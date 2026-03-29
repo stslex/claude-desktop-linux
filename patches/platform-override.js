@@ -259,7 +259,7 @@ try {
                 window.dispatchEvent(new CustomEvent('dispatch-feature-ready', {
                   detail: { status: 'supported', supported: true }
                 }));
-              }, { passive: true });
+              });
             } catch(e) {}
           })();
         `).catch(() => {});

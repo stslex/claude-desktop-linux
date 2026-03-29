@@ -154,7 +154,7 @@ GATE_SUMMARY="$(node -e \
 # ---------------------------------------------------------------------------
 # Patch 1 — Apply platform gate
 # ---------------------------------------------------------------------------
-log "Applying platform-gate patch to $GATE_FILE..."
+log "Applying platform-gate patch ($GATE_SUMMARY)..."
 
 APPLY_LOG="$BUILD_DIR/patch-apply.log"
 
