@@ -192,7 +192,15 @@ cat > "$PKG_ROOT/.INSTALL" <<'INSTALL_EOF'
 post_install() {
     # Register the claude:// URI scheme.
     if command -v xdg-mime &>/dev/null; then
-        xdg-mime default claude-desktop.desktop x-scheme-handler/claude || true
+        if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+            config_home="$XDG_CONFIG_HOME"
+        elif [ -n "${HOME:-}" ]; then
+            config_home="$HOME/.config"
+        else
+            config_home="/root/.config"
+        fi
+        mkdir -p "$config_home"
+        xdg-mime default claude-desktop.desktop x-scheme-handler/claude 2>/dev/null || true
     fi
 
     # Refresh the desktop database.
