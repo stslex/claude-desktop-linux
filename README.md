@@ -126,15 +126,7 @@ Electron is bundled — no additional dependencies required.
 
 #### Via custom repository (recommended — enables `pacman -Syu`)
 
-```sh
-# Download and inspect the install script, then run it
-curl -fsSLo install-pacman-repo.sh https://stslex.github.io/claude-desktop-linux/install-pacman-repo.sh
-less install-pacman-repo.sh  # review before running
-sudo sh install-pacman-repo.sh
-sudo pacman -Sy claude-desktop
-```
-
-Or manually add to `/etc/pacman.conf`:
+Add to `/etc/pacman.conf`:
 
 ```ini
 [claude-desktop]
@@ -142,10 +134,21 @@ SigLevel = Optional TrustAll
 Server = https://github.com/stslex/claude-desktop-linux/releases/latest/download
 ```
 
-#### Direct package download
+Then install:
 
 ```sh
-sudo pacman -U claude-desktop-<version>-repack-<N>-x86_64.pkg.tar.zst
+sudo pacman -Sy claude-desktop
+```
+
+Future updates: `sudo pacman -Syu`
+
+#### Direct package download
+
+Download the `.pkg.tar.zst` from the [latest release](https://github.com/stslex/claude-desktop-linux/releases/latest), then:
+
+```sh
+curl -fLO https://github.com/stslex/claude-desktop-linux/releases/latest/download/claude-desktop-<version>-<repack>-x86_64.pkg.tar.zst
+sudo pacman -U claude-desktop-*-x86_64.pkg.tar.zst
 ```
 
 ### NixOS / Nix

@@ -35,9 +35,9 @@ fi
 
 # We build the package manually with bsdtar instead of requiring makepkg,
 # so this script works on any Linux distro (including ubuntu CI runners).
-for cmd in bsdtar zstd; do
+for cmd in bsdtar zstd unzip; do
     if ! command -v "$cmd" &>/dev/null; then
-        log "ERROR: $cmd not found. Install: sudo apt-get install libarchive-tools zstd"
+        log "ERROR: $cmd not found. Install: sudo apt-get install libarchive-tools zstd unzip"
         exit 1
     fi
 done
