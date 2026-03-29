@@ -65,6 +65,11 @@ function getPlatformName()     { return 'macOS'; }    // display name for UI
 function getPlatformInfo()     { return { platform: 'darwin', name: 'macOS', version: '14.0.0', arch: process.arch }; }
 function isCoworkSupported()   { return true; }
 function getCoworkAvailability() { return { status: 'supported' }; }
+function isDispatchSupported()   { return true; }
+function getDispatchAvailability() { return { status: 'supported' }; }
+function getFeatureAvailability(feature) {
+  return { status: 'supported', supported: true };
+}
 
 // ---------------------------------------------------------------------------
 // AuthRequest — handles the claude:// OAuth deep-link callback.
@@ -146,7 +151,9 @@ const _warned = new Set();
 
 const _base = {
   KeyboardKey, getOSVersion, getPlatform, getPlatformName, getPlatformInfo,
-  isCoworkSupported, getCoworkAvailability, AuthRequest,
+  isCoworkSupported, getCoworkAvailability,
+  isDispatchSupported, getDispatchAvailability, getFeatureAvailability,
+  AuthRequest,
 };
 
 module.exports = new Proxy(_base, {

@@ -234,8 +234,11 @@ version string. The DMG is never cached — always fetch fresh.
 
 ## What This Project Intentionally Does Not Do
 
-- **No Dispatch support.** Dispatch requires macOS/Windows native notification
-  APIs. The protocol is not fully reversed.
+- **Partial Dispatch support.** UI platform gates are bypassed via IPC
+  interception and `claude-native.js` stubs (`isDispatchSupported`,
+  `getDispatchAvailability`). Electron's Notification API is polyfilled.
+  Background delivery via APNs/FCM push notifications is not available —
+  the app must be running to process Dispatch tasks.
 - **No Computer Use.** Requires `xdotool`/`scrot` hacks that are fragile and
   version-sensitive. Out of scope for the initial release.
 - **No KVM isolation.** See Cowork Isolation Backends above.

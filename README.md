@@ -43,7 +43,7 @@ See [ARCHITECTURE.MD](ARCHITECTURE.MD) for design decisions and trade-offs.
 
 | Feature | Reason |
 |---|---|
-| **Dispatch** | Requires APNs/FCM push notification registration; protocol not fully reversed |
+| **Dispatch** | Partially supported — UI gates are bypassed and notifications polyfilled, but background delivery via APNs/FCM is not available; Dispatch tasks that rely on push notifications to wake the desktop app will not arrive when the app is closed |
 | **Computer Use** | macOS implementation uses `AXUIElement`; an `xdotool`/`scrot` replacement would be fragile across desktop environments |
 | **ARM64** | Electron binary selection and AppImage build are x86_64 only; ARM64 is a future milestone |
 
