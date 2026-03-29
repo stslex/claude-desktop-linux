@@ -1,7 +1,7 @@
 # Claude Desktop Linux
 
 > Unofficial Linux repackager for the macOS Claude Desktop application.
-> Produces self-contained RPM, DEB, and AppImage packages from Anthropic's official release.
+> Produces self-contained RPM, DEB, Pacman, Nix, and AppImage packages from Anthropic's official release.
 
 [![Build](https://github.com/stslex/claude-desktop-linux/actions/workflows/build.yml/badge.svg)](https://github.com/stslex/claude-desktop-linux/actions/workflows/build.yml)
 [![Latest Release](https://img.shields.io/github/v/release/stslex/claude-desktop-linux)](https://github.com/stslex/claude-desktop-linux/releases/latest)
@@ -16,8 +16,9 @@ downloads the official macOS release from Anthropic's CDN via `RELEASES.json`,
 extracts the cross-platform Electron app bundle (`app.asar`), replaces the two
 macOS-native Node addons with pure-JS stubs, and patches the platform gate
 that hides the Cowork (Claude Code) feature on non-macOS systems. The result
-is repackaged as a self-contained **RPM**, **DEB**, and **AppImage** — Electron is
-bundled in all three, no system-level Electron installation required.
+is repackaged as a self-contained **RPM**, **DEB**, **Pacman**, **Nix**, and
+**AppImage** — Electron is bundled in all packages, no system-level Electron
+installation required.
 
 The key insight: the VM that Cowork boots on macOS already runs a Linux
 x86_64 rootfs. On Linux we skip the VM entirely and run `claude-code`
@@ -119,6 +120,71 @@ Future updates: `sudo apt update && sudo apt upgrade claude-desktop`
 sudo apt install ./claude-desktop-<version>-repack-<N>-x86_64.deb
 ```
 
+### Pacman (Arch Linux / Manjaro / EndeavourOS)
+
+Electron is bundled — no additional dependencies required.
+
+#### Via custom repository (recommended — enables `pacman -Syu`)
+
+```sh
+# Add the repository to pacman.conf
+curl -fsSL https://stslex.github.io/claude-desktop-linux/install-pacman-repo.sh | sudo sh
+sudo pacman -Sy claude-desktop
+```
+
+Or manually add to `/etc/pacman.conf`:
+
+```ini
+[claude-desktop]
+SigLevel = Optional TrustAll
+Server = https://github.com/stslex/claude-desktop-linux/releases/latest/download
+```
+
+#### Direct package download
+
+```sh
+sudo pacman -U claude-desktop-<version>-repack-<N>-x86_64.pkg.tar.zst
+```
+
+### NixOS / Nix
+
+The repository includes a `flake.nix` for NixOS users.
+
+#### Via flake (recommended)
+
+```sh
+# Try it without installing
+nix run github:stslex/claude-desktop-linux
+
+# Install to profile
+nix profile install github:stslex/claude-desktop-linux
+```
+
+#### In NixOS configuration
+
+Add to your `flake.nix` inputs:
+
+```nix
+inputs.claude-desktop.url = "github:stslex/claude-desktop-linux";
+```
+
+Then add to `environment.systemPackages`:
+
+```nix
+environment.systemPackages = [
+  inputs.claude-desktop.packages.${pkgs.system}.default
+];
+```
+
+#### Direct tarball download
+
+Pre-built Nix-compatible tarballs are available in each GitHub Release:
+
+```sh
+# Download and extract
+curl -fLO https://github.com/stslex/claude-desktop-linux/releases/latest/download/claude-desktop-<version>-x86_64-nix.tar.gz
+```
+
 ### First Run
 
 1. On first launch the app prompts to create the `/sessions` symlink
@@ -152,7 +218,7 @@ npm ci --ignore-scripts
 ./scripts/fetch-and-extract.sh  # download release ZIP, extract app.asar, detect versions
 ./scripts/inject-stubs.sh       # replace native modules with JS stubs
 ./scripts/patch-cowork.sh       # unlock Cowork on Linux
-./scripts/build-packages.sh     # produce RPM + DEB + AppImage in ./output/
+./scripts/build-packages.sh     # produce RPM + DEB + Pacman + Nix + AppImage in ./output/
 ```
 
 Or trigger the **build.yml** GitHub Action manually — it runs the same

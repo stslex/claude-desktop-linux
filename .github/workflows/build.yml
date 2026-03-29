@@ -33,7 +33,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            dmg2img p7zip-full rpm imagemagick icnsutils fuse libfuse2 zsync createrepo-c dpkg-dev apt-utils
+            dmg2img p7zip-full rpm imagemagick icnsutils fuse libfuse2 zsync createrepo-c \
+            dpkg-dev apt-utils libarchive-tools zstd
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -138,7 +139,7 @@ jobs:
           VERSION: ${{ steps.ver.outputs.version }}
           REPACK:  ${{ steps.repack.outputs.num }}
         run: |
-          for ext in rpm deb AppImage; do
+          for ext in rpm deb pkg.tar.zst AppImage; do
             src="output/claude-desktop-${VERSION}-x86_64.${ext}"
             dst="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.${ext}"
             [[ -f "$src" ]] || continue
@@ -146,6 +147,14 @@ jobs:
             sha256sum "$dst" | awk '{print $1}' > "${dst}.sha256"
             rm -f "${src}.sha256"
           done
+          # Rename the Nix tarball (different naming convention).
+          NIX_SRC="output/claude-desktop-${VERSION}-x86_64-nix.tar.gz"
+          NIX_DST="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64-nix.tar.gz"
+          if [[ -f "$NIX_SRC" ]]; then
+            mv "$NIX_SRC" "$NIX_DST"
+            sha256sum "$NIX_DST" | awk '{print $1}' > "${NIX_DST}.sha256"
+            rm -f "${NIX_SRC}.sha256"
+          fi
           # Remove the stale zsync (it has the wrong embedded filename) and
           # regenerate it from the renamed AppImage so the internal URL matches.
           rm -f "output/claude-desktop-${VERSION}-x86_64.AppImage.zsync"
@@ -165,11 +174,15 @@ jobs:
           REPACK:  ${{ steps.repack.outputs.num }}
         run: |
           BASE="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64"
-          RPM_SHA="$(cat "${BASE}.rpm.sha256"       2>/dev/null || echo n/a)"
-          DEB_SHA="$(cat "${BASE}.deb.sha256"       2>/dev/null || echo n/a)"
-          AI_SHA="$(cat  "${BASE}.AppImage.sha256"  2>/dev/null || echo n/a)"
+          RPM_SHA="$(cat "${BASE}.rpm.sha256"              2>/dev/null || echo n/a)"
+          DEB_SHA="$(cat "${BASE}.deb.sha256"              2>/dev/null || echo n/a)"
+          PKG_SHA="$(cat "${BASE}.pkg.tar.zst.sha256"      2>/dev/null || echo n/a)"
+          NIX_SHA="$(cat "${BASE}-nix.tar.gz.sha256"       2>/dev/null || echo n/a)"
+          AI_SHA="$(cat  "${BASE}.AppImage.sha256"         2>/dev/null || echo n/a)"
           echo "rpm=${RPM_SHA}"       >> "$GITHUB_OUTPUT"
           echo "deb=${DEB_SHA}"       >> "$GITHUB_OUTPUT"
+          echo "pacman=${PKG_SHA}"    >> "$GITHUB_OUTPUT"
+          echo "nix=${NIX_SHA}"       >> "$GITHUB_OUTPUT"
           echo "appimage=${AI_SHA}"   >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
@@ -184,6 +197,8 @@ jobs:
           TAG:       ${{ steps.repack.outputs.tag }}
           RPM_SHA:   ${{ steps.sums.outputs.rpm }}
           DEB_SHA:   ${{ steps.sums.outputs.deb }}
+          PKG_SHA:   ${{ steps.sums.outputs.pacman }}
+          NIX_SHA:   ${{ steps.sums.outputs.nix }}
           AI_SHA:    ${{ steps.sums.outputs.appimage }}
         run: |
           BASE="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64"
@@ -196,6 +211,8 @@ jobs:
           |---|---|
           | RPM | `${RPM_SHA}` |
           | DEB | `${DEB_SHA}` |
+          | Pacman | `${PKG_SHA}` |
+          | Nix | `${NIX_SHA}` |
           | AppImage | `${AI_SHA}` |
 
           **Electron version (AppImage bundled / RPM required):** ${ELECTRON}
@@ -205,12 +222,14 @@ jobs:
           NOTES_EOF
           )
           # Expand only our known vars (prevents leaking runner env into notes).
-          NOTES="$(echo "$NOTES" | envsubst '${VERSION} ${REPACK} ${RPM_SHA} ${DEB_SHA} ${AI_SHA} ${ELECTRON}')"
+          NOTES="$(echo "$NOTES" | envsubst '${VERSION} ${REPACK} ${RPM_SHA} ${DEB_SHA} ${PKG_SHA} ${NIX_SHA} ${AI_SHA} ${ELECTRON}')"
 
           # Build asset list — only include files that actually exist.
           ASSETS=()
           for f in "${BASE}.rpm" "${BASE}.rpm.sha256" \
                    "${BASE}.deb" "${BASE}.deb.sha256" \
+                   "${BASE}.pkg.tar.zst" "${BASE}.pkg.tar.zst.sha256" \
+                   "${BASE}-nix.tar.gz" "${BASE}-nix.tar.gz.sha256" \
                    "${BASE}.AppImage" "${BASE}.AppImage.sha256" \
                    "${BASE}.AppImage.zsync"; do
             [[ -f "$f" ]] && ASSETS+=("$f")
@@ -232,7 +251,7 @@ jobs:
       #   Keeps the latest repack per Claude version; older repacks are pruned.
       #   Users add the repo once via the .repo file at the Pages URL.
       # -----------------------------------------------------------------------
-      - name: Update DNF repository on GitHub Pages
+      - name: Update package repositories on GitHub Pages
         if: >
           github.ref == 'refs/heads/main' ||
           (github.event_name == 'workflow_dispatch' && inputs.release == true)
@@ -244,6 +263,7 @@ jobs:
           REPO_USER="${GITHUB_REPOSITORY%%/*}"
           REPO_NAME="${GITHUB_REPOSITORY##*/}"
           PAGES_URL="https://${REPO_USER}.github.io/${REPO_NAME}"
+          DOWNLOAD_PREFIX="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -260,35 +280,160 @@ jobs:
           # Disable Jekyll so GitHub Pages serves files as-is (no HTML wrapping).
           touch /tmp/gh-pages/.nojekyll
 
-          # Generate repo metadata in a staging directory.
-          # The RPM itself is NOT stored in gh-pages (exceeds GitHub's 100 MB
-          # file-size limit).  Instead, --location-prefix tells dnf to fetch
-          # the package from the GitHub Releases download URL.
+          # -------------------------------------------------------------------
+          # DNF / RPM repository
+          # -------------------------------------------------------------------
           STAGING_DIR="$(mktemp -d)"
           RPM_SRC="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.rpm"
-          cp "$RPM_SRC" "$STAGING_DIR/"
+          if [[ -f "$RPM_SRC" ]]; then
+            cp "$RPM_SRC" "$STAGING_DIR/"
+            createrepo_c --location-prefix "$DOWNLOAD_PREFIX" "$STAGING_DIR"
 
-          DOWNLOAD_PREFIX="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
-          createrepo_c --location-prefix "$DOWNLOAD_PREFIX" "$STAGING_DIR"
+            RPM_DIR=/tmp/gh-pages/rpm
+            mkdir -p "$RPM_DIR"
+            rm -rf "$RPM_DIR/repodata"
+            cp -a "$STAGING_DIR/repodata" "$RPM_DIR/"
+            find "$RPM_DIR" -name "*.rpm" -delete
 
-          # Copy only repodata to gh-pages (not the RPM binary).
-          RPM_DIR=/tmp/gh-pages/rpm
-          mkdir -p "$RPM_DIR"
-          rm -rf "$RPM_DIR/repodata"
-          cp -a "$STAGING_DIR/repodata" "$RPM_DIR/"
-          rm -rf "$STAGING_DIR"
-
-          # Remove any RPM binaries left over from before this fix.
-          find "$RPM_DIR" -name "*.rpm" -delete
-
-          # Write a stable .repo file consumers can curl-install.
-          cat > /tmp/gh-pages/claude-desktop.repo <<REPO_EOF
+            cat > /tmp/gh-pages/claude-desktop.repo <<REPO_EOF
           [claude-desktop]
           name=Claude Desktop Linux (unofficial)
           baseurl=${PAGES_URL}/rpm/
           enabled=1
           gpgcheck=0
           REPO_EOF
+          else
+            echo "No RPM found — skipping DNF repo metadata."
+          fi
+          rm -rf "$STAGING_DIR"
+
+          # -------------------------------------------------------------------
+          # Pacman / Arch Linux repository
+          #   A minimal custom repo database that pacman can consume.
+          #   The .pkg.tar.zst itself is served from GitHub Releases.
+          # -------------------------------------------------------------------
+          PKG_SRC="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.pkg.tar.zst"
+          if [[ -f "$PKG_SRC" ]]; then
+            PACMAN_DIR=/tmp/gh-pages/pacman
+            mkdir -p "$PACMAN_DIR"
+
+            # Copy pkg temporarily to generate the repo database.
+            cp "$PKG_SRC" "$PACMAN_DIR/"
+
+            # Generate pacman repo database.
+            # repo-add is Arch-specific; on Ubuntu CI we build the DB manually.
+            if command -v repo-add &>/dev/null; then
+              repo-add "$PACMAN_DIR/claude-desktop.db.tar.gz" "$PACMAN_DIR"/*.pkg.tar.zst
+            else
+              # Minimal repo database: a tar containing a desc file.
+              PKG_FILENAME="claude-desktop-${VERSION}-repack-${REPACK}-x86_64.pkg.tar.zst"
+              PKG_SHA256="$(sha256sum "$PKG_SRC" | awk '{print $1}')"
+              PKG_SIZE="$(stat -c%s "$PKG_SRC")"
+              CSIZE="$PKG_SIZE"
+
+              DB_STAGING="$(mktemp -d)"
+              ENTRY_DIR="$DB_STAGING/claude-desktop-${VERSION}-1"
+              mkdir -p "$ENTRY_DIR"
+              cat > "$ENTRY_DIR/desc" <<DESC_EOF
+          %FILENAME%
+          ${PKG_FILENAME}
+
+          %NAME%
+          claude-desktop
+
+          %VERSION%
+          ${VERSION}-1
+
+          %DESC%
+          Claude Desktop for Linux (unofficial rebuild)
+
+          %CSIZE%
+          ${CSIZE}
+
+          %ISIZE%
+          0
+
+          %SHA256SUM%
+          ${PKG_SHA256}
+
+          %URL%
+          https://github.com/stslex/claude-desktop-linux
+
+          %LICENSE%
+          Proprietary
+
+          %ARCH%
+          x86_64
+
+          %DEPENDS%
+          bash
+          xdg-utils
+          hicolor-icon-theme
+
+          %OPTDEPENDS%
+          bubblewrap: sandboxed Cowork sessions
+          DESC_EOF
+
+              tar -czf "$PACMAN_DIR/claude-desktop.db.tar.gz" -C "$DB_STAGING" .
+              cp "$PACMAN_DIR/claude-desktop.db.tar.gz" "$PACMAN_DIR/claude-desktop.db"
+              rm -rf "$DB_STAGING"
+            fi
+
+            # Create symlinks expected by pacman.
+            cd "$PACMAN_DIR"
+            ln -sf claude-desktop.db.tar.gz claude-desktop.db 2>/dev/null || true
+            cd "$GITHUB_WORKSPACE"
+
+            # Remove the .pkg.tar.zst binary — only repo DB stays on gh-pages.
+            rm -f "$PACMAN_DIR"/*.pkg.tar.zst
+
+            # Write a pacman repo config snippet users can append to pacman.conf.
+            cat > /tmp/gh-pages/claude-desktop-pacman.conf <<PACMAN_EOF
+          [claude-desktop]
+          SigLevel = Optional TrustAll
+          Server = ${DOWNLOAD_PREFIX}
+          PACMAN_EOF
+
+            # Also provide an install helper script.
+            cat > /tmp/gh-pages/install-pacman-repo.sh <<'INSTALL_PACMAN_EOF'
+          #!/bin/sh
+          # Add the Claude Desktop repository to pacman.
+          # Usage: curl -fsSL https://stslex.github.io/claude-desktop-linux/install-pacman-repo.sh | sudo sh
+          set -e
+          if ! grep -q '\[claude-desktop\]' /etc/pacman.conf 2>/dev/null; then
+            printf '\n[claude-desktop]\nSigLevel = Optional TrustAll\nServer = https://github.com/stslex/claude-desktop-linux/releases/latest/download\n' >> /etc/pacman.conf
+            echo "claude-desktop repository added to /etc/pacman.conf"
+            echo "Run: sudo pacman -Sy claude-desktop"
+          else
+            echo "claude-desktop repository already configured."
+          fi
+          INSTALL_PACMAN_EOF
+          else
+            echo "No pacman package found — skipping Pacman repo metadata."
+          fi
+
+          # -------------------------------------------------------------------
+          # NixOS — install instructions page
+          #   NixOS users use the flake.nix directly; we publish a helper page.
+          # -------------------------------------------------------------------
+          NIX_SRC="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64-nix.tar.gz"
+          if [[ -f "$NIX_SRC" ]]; then
+            NIX_DIR=/tmp/gh-pages/nix
+            mkdir -p "$NIX_DIR"
+            NIX_SHA256="$(sha256sum "$NIX_SRC" | awk '{print $1}')"
+
+            cat > "$NIX_DIR/latest.json" <<NIX_EOF
+          {
+            "version": "${VERSION}",
+            "repack": ${REPACK},
+            "tag": "${TAG}",
+            "url": "${DOWNLOAD_PREFIX}/claude-desktop-${VERSION}-repack-${REPACK}-x86_64-nix.tar.gz",
+            "sha256": "${NIX_SHA256}"
+          }
+          NIX_EOF
+          else
+            echo "No Nix tarball found — skipping Nix metadata."
+          fi
 
           # -------------------------------------------------------------------
           # APT / DEB repository (alongside RPM on the same gh-pages branch)

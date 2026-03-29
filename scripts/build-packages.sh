@@ -4,7 +4,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # build-packages.sh
 #
-# Orchestrator: re-pack the patched ASAR, then build RPM, DEB, and AppImage.
+# Orchestrator: re-pack the patched ASAR, then build RPM, DEB, Pacman, Nix, and AppImage.
 #
 # Env vars:
 #   BUILD_DIR        default: /tmp/claude-build
@@ -83,6 +83,30 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Build Pacman package — continue on failure (bsdtar/zstd may not be available)
+# ---------------------------------------------------------------------------
+log "--- Pacman ---"
+PACMAN_OK=false
+if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" REPACK="${REPACK_NUM:-0}" "$SCRIPT_DIR/build-pacman.sh"; then
+    PACMAN_OK=true
+    log "Pacman build succeeded."
+else
+    log "Pacman build failed (bsdtar/zstd may not be available — skipping)."
+fi
+
+# ---------------------------------------------------------------------------
+# Build Nix tarball
+# ---------------------------------------------------------------------------
+log "--- Nix ---"
+NIX_OK=false
+if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" "$SCRIPT_DIR/build-nix.sh"; then
+    NIX_OK=true
+    log "Nix build succeeded."
+else
+    log "Nix build failed."
+fi
+
+# ---------------------------------------------------------------------------
 # Build AppImage
 # ---------------------------------------------------------------------------
 log "--- AppImage ---"
@@ -129,16 +153,20 @@ verify_sha256() {
 
 RPM_PKG="$OUTPUT_DIR/claude-desktop-${APP_VERSION}-x86_64.rpm"
 DEB_PKG="$OUTPUT_DIR/claude-desktop-${APP_VERSION}-x86_64.deb"
+PACMAN_PKG="$OUTPUT_DIR/claude-desktop-${APP_VERSION}-x86_64.pkg.tar.zst"
+NIX_PKG="$OUTPUT_DIR/claude-desktop-${APP_VERSION}-x86_64-nix.tar.gz"
 APPIMAGE_PKG="$OUTPUT_DIR/claude-desktop-${APP_VERSION}-x86_64.AppImage"
 
 [[ -f "$RPM_PKG"      ]] && verify_sha256 "$RPM_PKG"      || true
 [[ -f "$DEB_PKG"      ]] && verify_sha256 "$DEB_PKG"      || true
+[[ -f "$PACMAN_PKG"   ]] && verify_sha256 "$PACMAN_PKG"   || true
+[[ -f "$NIX_PKG"      ]] && verify_sha256 "$NIX_PKG"      || true
 [[ -f "$APPIMAGE_PKG" ]] && verify_sha256 "$APPIMAGE_PKG" || true
 
 # ---------------------------------------------------------------------------
 # Exit 0 only if at least one package was built successfully
 # ---------------------------------------------------------------------------
-if [[ "$RPM_OK" == "true" || "$DEB_OK" == "true" || "$APPIMAGE_OK" == "true" ]]; then
+if [[ "$RPM_OK" == "true" || "$DEB_OK" == "true" || "$PACMAN_OK" == "true" || "$NIX_OK" == "true" || "$APPIMAGE_OK" == "true" ]]; then
     log "Done."
     exit 0
 else
