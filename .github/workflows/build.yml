@@ -257,6 +257,7 @@ jobs:
           github.ref == 'refs/heads/main' ||
           (github.event_name == 'workflow_dispatch' && inputs.release == true)
         env:
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.ver.outputs.version }}
           REPACK:  ${{ steps.repack.outputs.num }}
           TAG:     ${{ steps.repack.outputs.tag }}
@@ -298,40 +299,36 @@ jobs:
 
           # -------------------------------------------------------------------
           # Pacman / Arch Linux repository
-          #   A minimal custom repo database that pacman can consume.
-          #   The .pkg.tar.zst is served alongside the DB from GitHub Pages.
+          #   Repo database and package are served from GitHub Releases to
+          #   avoid large-file corruption through the Pages artifact pipeline.
+          #   Config files and install helper remain on Pages.
           # -------------------------------------------------------------------
           PKG_SRC="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.pkg.tar.zst"
           if [[ -f "$PKG_SRC" ]]; then
-            PACMAN_DIR="$PAGES_DIR/pacman"
-            mkdir -p "$PACMAN_DIR"
+            PACMAN_DIR="$(mktemp -d)"
 
             # Pacman requires filenames to match {name}-{pkgver}-{pkgrel}-{arch}.pkg.tar.ext.
-            # The release asset uses "-repack-N" but pacman needs just "-N".
+            # The release asset uses "-repack-N"; create a pacman-compatible copy.
             PACMAN_PKG="claude-desktop-${VERSION}-${REPACK}-x86_64.pkg.tar.zst"
-            cp "$PKG_SRC" "$PACMAN_DIR/${PACMAN_PKG}"
 
-            # Generate pacman repo database.
-            # repo-add is Arch-specific; on Ubuntu CI we build the DB manually.
-            if command -v repo-add &>/dev/null; then
-              repo-add "$PACMAN_DIR/claude-desktop.db.tar.gz" "$PACMAN_DIR"/*.pkg.tar.zst
-            else
-              # Minimal repo database: a tar containing a desc file.
-              PKG_FILENAME="${PACMAN_PKG}"
-              PKG_SHA256="$(sha256sum "$PKG_SRC" | awk '{print $1}')"
-              PKG_SIZE="$(stat -c%s "$PKG_SRC")"
-              CSIZE="$PKG_SIZE"
+            # Serve from GitHub Releases — the /releases/latest/download/ URL
+            # always redirects to the most recent release's assets.
+            PACMAN_SERVER="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download"
 
-              DB_STAGING="$(mktemp -d)"
-              # Compute installed size from .PKGINFO inside the package.
-              ISIZE="$(bsdtar -xf "$PKG_SRC" .PKGINFO -O 2>/dev/null | grep '^size = ' | awk '{print $3}')"
-              ISIZE="${ISIZE:-0}"
+            # Build the repo database manually (repo-add is Arch-specific).
+            PKG_SHA256="$(sha256sum "$PKG_SRC" | awk '{print $1}')"
+            PKG_SIZE="$(stat -c%s "$PKG_SRC")"
+            CSIZE="$PKG_SIZE"
 
-              ENTRY_DIR="$DB_STAGING/claude-desktop-${VERSION}-${REPACK}"
-              mkdir -p "$ENTRY_DIR"
-              cat > "$ENTRY_DIR/desc" <<DESC_EOF
+            DB_STAGING="$(mktemp -d)"
+            ISIZE="$(bsdtar -xf "$PKG_SRC" .PKGINFO -O 2>/dev/null | grep '^size = ' | awk '{print $3}')"
+            ISIZE="${ISIZE:-0}"
+
+            ENTRY_DIR="$DB_STAGING/claude-desktop-${VERSION}-${REPACK}"
+            mkdir -p "$ENTRY_DIR"
+            cat > "$ENTRY_DIR/desc" <<DESC_EOF
           %FILENAME%
-          ${PKG_FILENAME}
+          ${PACMAN_PKG}
 
           %NAME%
           claude-desktop
@@ -369,26 +366,28 @@ jobs:
           bubblewrap: sandboxed Cowork sessions
           DESC_EOF
 
-              tar -czf "$PACMAN_DIR/claude-desktop.db.tar.gz" -C "$DB_STAGING" "claude-desktop-${VERSION}-${REPACK}"
-              rm -rf "$DB_STAGING"
-            fi
+            tar -czf "$PACMAN_DIR/claude-desktop.db.tar.gz" -C "$DB_STAGING" "claude-desktop-${VERSION}-${REPACK}"
+            rm -rf "$DB_STAGING"
 
-            # Create claude-desktop.db as a regular file (symlinks not supported on Pages).
-            # rm first in case repo-add created it as a symlink (cp would fail on same-file).
-            rm -f "$PACMAN_DIR/claude-desktop.db"
             cp "$PACMAN_DIR/claude-desktop.db.tar.gz" "$PACMAN_DIR/claude-desktop.db"
 
-            # Keep the .pkg.tar.zst on Pages so pacman can download it
-            # via the Server URL configured in pacman.conf.
+            # Upload the pacman-compatible package and database to the
+            # existing GitHub Release so everything lives at one URL.
+            cp "$PKG_SRC" "$PACMAN_DIR/${PACMAN_PKG}"
+            gh release upload "${TAG}" \
+              "$PACMAN_DIR/${PACMAN_PKG}" \
+              "$PACMAN_DIR/claude-desktop.db" \
+              "$PACMAN_DIR/claude-desktop.db.tar.gz" \
+              --repo "${GITHUB_REPOSITORY}" --clobber
+            rm -rf "$PACMAN_DIR"
 
-            # Write a pacman repo config snippet users can append to pacman.conf.
+            # Config files stay on Pages (small, no corruption risk).
             cat > "$PAGES_DIR/claude-desktop-pacman.conf" <<PACMAN_EOF
           [claude-desktop]
           SigLevel = Optional TrustAll
-          Server = ${PAGES_URL}/pacman
+          Server = ${PACMAN_SERVER}
           PACMAN_EOF
 
-            # Also provide an install helper script.
             cat > "$PAGES_DIR/install-pacman-repo.sh" <<INSTALL_PACMAN_EOF
           #!/bin/sh
           # Add the Claude Desktop repository to pacman.
@@ -398,7 +397,7 @@ jobs:
           #   sudo sh install-pacman-repo.sh
           set -e
           if ! grep -q '\[claude-desktop\]' /etc/pacman.conf 2>/dev/null; then
-            printf '\n[claude-desktop]\nSigLevel = Optional TrustAll\nServer = ${PAGES_URL}/pacman\n' >> /etc/pacman.conf
+            printf '\n[claude-desktop]\nSigLevel = Optional TrustAll\nServer = ${PACMAN_SERVER}\n' >> /etc/pacman.conf
             echo "claude-desktop repository added to /etc/pacman.conf"
             echo "Run: sudo pacman -Sy claude-desktop"
           else
