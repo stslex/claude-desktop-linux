@@ -24,6 +24,7 @@ Source2:        claude-desktop.desktop
 Source3:        icons.tar.gz
 Source4:        electron.tar.gz
 Source5:        ELECTRON_VERSION
+Source6:        claude-desktop.svg
 
 %description
 Unofficial repackage of the macOS Claude Desktop application for Linux.
@@ -74,6 +75,10 @@ for png in %{_builddir}/%{name}-%{version}/icons/claude-*.png; do
     install -D -m 644 "$png" \
         %{buildroot}%{_datadir}/icons/hicolor/${n}x${n}/apps/claude-desktop.png
 done
+
+# Install SVG icon for scalable resolution support
+install -D -m 644 %{SOURCE6} \
+    %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/claude-desktop.svg
 
 %post
 # Register the claude:// URI scheme.

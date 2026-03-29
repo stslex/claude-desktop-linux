@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#D4A574"/>
+      <stop offset="100%" style="stop-color:#C4956A"/>
+    </linearGradient>
+  </defs>
+  <!-- Background rounded rectangle -->
+  <rect width="512" height="512" rx="102" ry="102" fill="url(#bg)"/>
+  <!-- Claude icon - stylized sunburst/asterisk -->
+  <g transform="translate(256,256)" fill="#1A1A1A">
+    <!-- Center circle -->
+    <circle cx="0" cy="0" r="28"/>
+    <!-- Top ray -->
+    <ellipse cx="0" cy="-100" rx="22" ry="60"/>
+    <!-- Top-right ray -->
+    <ellipse cx="77" cy="-64" rx="22" ry="60" transform="rotate(54, 77, -64)"/>
+    <!-- Bottom-right upper ray -->
+    <ellipse cx="95" cy="31" rx="22" ry="60" transform="rotate(108, 95, 31)"/>
+    <!-- Bottom-right lower ray -->
+    <ellipse cx="59" cy="81" rx="22" ry="60" transform="rotate(162, 59, 81)"/>
+    <!-- Bottom-left lower ray -->
+    <ellipse cx="-59" cy="81" rx="22" ry="60" transform="rotate(-162, -59, 81)"/>
+    <!-- Bottom-left upper ray -->
+    <ellipse cx="-95" cy="31" rx="22" ry="60" transform="rotate(-108, -95, 31)"/>
+    <!-- Top-left ray -->
+    <ellipse cx="-77" cy="-64" rx="22" ry="60" transform="rotate(-54, -77, -64)"/>
+  </g>
+</svg>

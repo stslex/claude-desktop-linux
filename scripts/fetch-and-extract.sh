@@ -374,7 +374,32 @@ if [[ -n "$ICNS_FILE" ]]; then
     log "WARNING: could not extract any icons from $ICNS_FILE"
   fi
 else
-  log "WARNING: no .icns file found anywhere in extracted bundle — no icons extracted."
+  log "WARNING: no .icns file found — generating icons from bundled SVG..."
+  SVG_ICON="$REPO_DIR/packaging/claude-desktop.svg"
+  if [[ -f "$SVG_ICON" ]]; then
+    if command -v rsvg-convert &>/dev/null; then
+      for SIZE in 16 32 48 64 128 256 512; do
+        if rsvg-convert -w "$SIZE" -h "$SIZE" "$SVG_ICON" \
+            -o "$ICONS_DIR/claude-${SIZE}.png" 2>/dev/null; then
+          ICON_COUNT=$((ICON_COUNT + 1))
+        fi
+      done
+    elif command -v convert &>/dev/null; then
+      for SIZE in 16 32 48 64 128 256 512; do
+        if convert -background none "$SVG_ICON" \
+            -resize "${SIZE}x${SIZE}" "$ICONS_DIR/claude-${SIZE}.png" 2>/dev/null; then
+          ICON_COUNT=$((ICON_COUNT + 1))
+        fi
+      done
+    fi
+    if [[ $ICON_COUNT -gt 0 ]]; then
+      log "Generated $ICON_COUNT icons from SVG"
+    else
+      log "WARNING: could not generate icons from SVG (install rsvg-convert or ImageMagick)"
+    fi
+  else
+    log "WARNING: no SVG icon found at $SVG_ICON"
+  fi
 fi
 
 # ---------------------------------------------------------------------------

@@ -156,16 +156,54 @@ if [[ -d "$ICONS_DIR" ]] && ls "$ICONS_DIR"/*.png &>/dev/null; then
         mkdir -p "$ICON_DEST"
         cp "$PNG" "$ICON_DEST/claude-desktop.png"
     done
-else
-    log "WARNING: No PNG icons found in $ICONS_DIR — generating placeholder icon."
-    # appimagetool requires an icon file; generate a minimal 256x256 placeholder.
-    if command -v convert &>/dev/null; then
-        convert -size 256x256 xc:'#d97706' -fill white -gravity center \
-            -pointsize 120 -annotate 0 'C' "$APPDIR/claude-desktop.png" 2>/dev/null || true
+    # Also install the SVG icon for scalable resolution support
+    SVG_ICON="$REPO_DIR/packaging/claude-desktop.svg"
+    if [[ -f "$SVG_ICON" ]]; then
+        mkdir -p "$APPDIR/usr/share/icons/hicolor/scalable/apps"
+        cp "$SVG_ICON" "$APPDIR/usr/share/icons/hicolor/scalable/apps/claude-desktop.svg"
     fi
-    # Fallback: 1x1 transparent PNG if convert is unavailable or failed
+else
+    log "WARNING: No PNG icons found in $ICONS_DIR — using bundled SVG icon."
+    # Generate PNGs from the bundled SVG if rsvg-convert or convert is available.
+    SVG_ICON="$REPO_DIR/packaging/claude-desktop.svg"
+    if [[ -f "$SVG_ICON" ]]; then
+        mkdir -p "$ICONS_DIR"
+        if command -v rsvg-convert &>/dev/null; then
+            for SIZE in 16 32 48 64 128 256 512; do
+                rsvg-convert -w "$SIZE" -h "$SIZE" "$SVG_ICON" \
+                    -o "$ICONS_DIR/claude-${SIZE}.png" 2>/dev/null || true
+            done
+        elif command -v convert &>/dev/null; then
+            for SIZE in 16 32 48 64 128 256 512; do
+                convert -background none "$SVG_ICON" \
+                    -resize "${SIZE}x${SIZE}" "$ICONS_DIR/claude-${SIZE}.png" 2>/dev/null || true
+            done
+        fi
+        # Re-check: install any PNGs that were generated
+        if ls "$ICONS_DIR"/*.png &>/dev/null; then
+            LARGEST_ICON="$(find "$ICONS_DIR" -maxdepth 1 -name '*.png' | sort -V | tail -1)"
+            cp "$LARGEST_ICON" "$APPDIR/claude-desktop.png"
+            for PNG in "$ICONS_DIR"/*.png; do
+                N="$(basename "$PNG" | grep -oP '(?<=claude-)\d+(?=\.png)' || true)"
+                [[ -z "$N" ]] && continue
+                ICON_DEST="$APPDIR/usr/share/icons/hicolor/${N}x${N}/apps"
+                mkdir -p "$ICON_DEST"
+                cp "$PNG" "$ICON_DEST/claude-desktop.png"
+            done
+        fi
+    fi
+    # Install the SVG into the scalable icon directory
+    if [[ -f "$SVG_ICON" ]]; then
+        mkdir -p "$APPDIR/usr/share/icons/hicolor/scalable/apps"
+        cp "$SVG_ICON" "$APPDIR/usr/share/icons/hicolor/scalable/apps/claude-desktop.svg"
+    fi
+    # Fallback: appimagetool requires a root icon file
     if [[ ! -f "$APPDIR/claude-desktop.png" ]]; then
-        printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n\xb4\x00\x00\x00\x00IEND\xaeB`\x82' > "$APPDIR/claude-desktop.png"
+        if [[ -f "$SVG_ICON" ]]; then
+            cp "$SVG_ICON" "$APPDIR/claude-desktop.svg"
+        else
+            printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n\xb4\x00\x00\x00\x00IEND\xaeB`\x82' > "$APPDIR/claude-desktop.png"
+        fi
     fi
 fi
 
