@@ -244,6 +244,9 @@ jobs:
             git -C /tmp/gh-pages commit --allow-empty -m "Initialize gh-pages"
           fi
 
+          # Disable Jekyll so GitHub Pages serves files as-is (no HTML wrapping).
+          touch /tmp/gh-pages/.nojekyll
+
           # Generate repo metadata in a staging directory.
           # The RPM itself is NOT stored in gh-pages (exceeds GitHub's 100 MB
           # file-size limit).  Instead, --location-prefix tells dnf to fetch
