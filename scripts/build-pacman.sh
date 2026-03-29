@@ -268,6 +268,14 @@ post_remove() {
 INSTALL_EOF
 
 # ---------------------------------------------------------------------------
+# Generate .MTREE (file-level integrity metadata, used by pacman -Qk)
+# ---------------------------------------------------------------------------
+log "Generating .MTREE..."
+(cd "$PKG_ROOT" && LANG=C bsdtar -czf .MTREE --format=mtree \
+    --options='!all,use-set,type,uid,gid,mode,time,size,md5,sha256,link' \
+    .PKGINFO .INSTALL usr/)
+
+# ---------------------------------------------------------------------------
 # Build .pkg.tar.zst using bsdtar
 # ---------------------------------------------------------------------------
 mkdir -p "$OUTPUT_DIR"
@@ -275,7 +283,7 @@ DEST_PKG="$OUTPUT_DIR/claude-desktop-${VERSION}-x86_64.pkg.tar.zst"
 
 log "Building pacman package..."
 # bsdtar must run from the package root so paths are relative
-(cd "$PKG_ROOT" && bsdtar --uid 0 --gid 0 -cf - .PKGINFO .INSTALL usr/ | zstd -T0 -19 -o "$DEST_PKG")
+(cd "$PKG_ROOT" && bsdtar --uid 0 --gid 0 -cf - .PKGINFO .INSTALL .MTREE usr/ | zstd -T0 -19 -o "$DEST_PKG")
 
 sha256sum "$DEST_PKG" | awk '{print $1}' > "${DEST_PKG}.sha256"
 

@@ -139,7 +139,7 @@ Or manually add to `/etc/pacman.conf`:
 ```ini
 [claude-desktop]
 SigLevel = Optional TrustAll
-Server = https://stslex.github.io/claude-desktop-linux/pacman
+Server = https://github.com/stslex/claude-desktop-linux/releases/latest/download
 ```
 
 #### Direct package download
