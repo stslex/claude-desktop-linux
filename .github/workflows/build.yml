@@ -33,7 +33,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            dmg2img p7zip-full rpm imagemagick icnsutils fuse libfuse2 zsync createrepo-c
+            dmg2img p7zip-full rpm imagemagick icnsutils fuse libfuse2 zsync createrepo-c dpkg-dev apt-utils
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -138,7 +138,7 @@ jobs:
           VERSION: ${{ steps.ver.outputs.version }}
           REPACK:  ${{ steps.repack.outputs.num }}
         run: |
-          for ext in rpm AppImage; do
+          for ext in rpm deb AppImage; do
             src="output/claude-desktop-${VERSION}-x86_64.${ext}"
             dst="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.${ext}"
             [[ -f "$src" ]] || continue
@@ -166,8 +166,10 @@ jobs:
         run: |
           BASE="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64"
           RPM_SHA="$(cat "${BASE}.rpm.sha256"       2>/dev/null || echo n/a)"
+          DEB_SHA="$(cat "${BASE}.deb.sha256"       2>/dev/null || echo n/a)"
           AI_SHA="$(cat  "${BASE}.AppImage.sha256"  2>/dev/null || echo n/a)"
           echo "rpm=${RPM_SHA}"       >> "$GITHUB_OUTPUT"
+          echo "deb=${DEB_SHA}"       >> "$GITHUB_OUTPUT"
           echo "appimage=${AI_SHA}"   >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
@@ -181,6 +183,7 @@ jobs:
           REPACK:    ${{ steps.repack.outputs.num }}
           TAG:       ${{ steps.repack.outputs.tag }}
           RPM_SHA:   ${{ steps.sums.outputs.rpm }}
+          DEB_SHA:   ${{ steps.sums.outputs.deb }}
           AI_SHA:    ${{ steps.sums.outputs.appimage }}
         run: |
           BASE="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64"
@@ -192,6 +195,7 @@ jobs:
           | Asset | SHA256 |
           |---|---|
           | RPM | `${RPM_SHA}` |
+          | DEB | `${DEB_SHA}` |
           | AppImage | `${AI_SHA}` |
 
           **Electron version (AppImage bundled / RPM required):** ${ELECTRON}
@@ -201,11 +205,12 @@ jobs:
           NOTES_EOF
           )
           # Expand only our known vars (prevents leaking runner env into notes).
-          NOTES="$(echo "$NOTES" | envsubst '${VERSION} ${REPACK} ${RPM_SHA} ${AI_SHA} ${ELECTRON}')"
+          NOTES="$(echo "$NOTES" | envsubst '${VERSION} ${REPACK} ${RPM_SHA} ${DEB_SHA} ${AI_SHA} ${ELECTRON}')"
 
           # Build asset list — only include files that actually exist.
           ASSETS=()
           for f in "${BASE}.rpm" "${BASE}.rpm.sha256" \
+                   "${BASE}.deb" "${BASE}.deb.sha256" \
                    "${BASE}.AppImage" "${BASE}.AppImage.sha256" \
                    "${BASE}.AppImage.zsync"; do
             [[ -f "$f" ]] && ASSETS+=("$f")
@@ -285,12 +290,59 @@ jobs:
           gpgcheck=0
           REPO_EOF
 
+          # -------------------------------------------------------------------
+          # APT / DEB repository (alongside RPM on the same gh-pages branch)
+          #   Uses apt-ftparchive to generate Packages metadata.
+          #   Like RPM, only metadata lives on gh-pages; the .deb is in Releases.
+          # -------------------------------------------------------------------
+          DEB_SRC="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.deb"
+          if [[ -f "$DEB_SRC" ]]; then
+            APT_DIR=/tmp/gh-pages/deb
+            mkdir -p "$APT_DIR"
+
+            # Copy the .deb temporarily so apt-ftparchive can index it.
+            cp "$DEB_SRC" "$APT_DIR/"
+
+            # Generate Packages file with the GitHub Releases download URL
+            # so apt fetches the .deb from Releases, not from gh-pages.
+            cd "$APT_DIR"
+            apt-ftparchive packages . > Packages
+
+            # Rewrite the Filename field to point to the GitHub Releases URL.
+            DEB_FILENAME="claude-desktop-${VERSION}-repack-${REPACK}-x86_64.deb"
+            DOWNLOAD_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${DEB_FILENAME}"
+            sed -i "s|Filename: ./${DEB_FILENAME}|Filename: ${DOWNLOAD_URL}|" Packages
+
+            gzip -kf Packages
+
+            # Generate Release file.
+            apt-ftparchive release . > Release
+
+            # Remove the .deb binary — only metadata stays on gh-pages.
+            rm -f "$APT_DIR"/*.deb
+
+            cd "$GITHUB_WORKSPACE"
+
+            # Write a stable .sources file consumers can curl-install (DEB822 format).
+            cat > /tmp/gh-pages/claude-desktop.sources <<SOURCES_EOF
+          Types: deb
+          URIs: ${PAGES_URL}/deb
+          Suites: ./
+          Trusted: yes
+          SOURCES_EOF
+
+            # Also provide a traditional .list one-liner.
+            echo "deb [trusted=yes] ${PAGES_URL}/deb ./" > /tmp/gh-pages/claude-desktop.list
+          else
+            echo "No .deb found — skipping APT repo metadata."
+          fi
+
           # Commit only if something changed.
           git -C /tmp/gh-pages add -A
           if git -C /tmp/gh-pages diff --cached --quiet; then
             echo "gh-pages: no changes."
           else
             git -C /tmp/gh-pages commit \
-              -m "rpm-repo: claude-desktop ${VERSION}-repack-${REPACK}"
+              -m "repo: claude-desktop ${VERSION}-repack-${REPACK}"
             git -C /tmp/gh-pages push origin HEAD:gh-pages
           fi
