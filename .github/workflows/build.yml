@@ -369,7 +369,7 @@ jobs:
           bubblewrap: sandboxed Cowork sessions
           DESC_EOF
 
-              tar -czf "$PACMAN_DIR/claude-desktop.db.tar.gz" -C "$DB_STAGING" .
+              tar -czf "$PACMAN_DIR/claude-desktop.db.tar.gz" -C "$DB_STAGING" "claude-desktop-${VERSION}-${REPACK}"
               rm -rf "$DB_STAGING"
             fi
 
