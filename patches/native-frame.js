@@ -113,13 +113,6 @@ if (!global[INIT_SYM] && process.type === 'browser') {
       },
     });
 
-    Object.defineProperty(electron, 'BrowserWindow', {
-      value: PatchedBrowserWindow,
-      writable: true,
-      configurable: true,
-      enumerable: true,
-    });
-
     // -------------------------------------------------------------------------
     // Patch Tray
     // -------------------------------------------------------------------------
@@ -163,12 +156,62 @@ if (!global[INIT_SYM] && process.type === 'browser') {
       },
     });
 
-    Object.defineProperty(electron, 'Tray', {
-      value: PatchedTray,
-      writable: true,
-      configurable: true,
-      enumerable: true,
-    });
+    // -------------------------------------------------------------------------
+    // Apply patches to electron module
+    // -------------------------------------------------------------------------
+    // In newer Electron versions, properties on the electron module may be
+    // non-configurable, causing Object.defineProperty to throw.  Try direct
+    // property definition first; if that fails, replace the module-cache entry
+    // with a Proxy so all subsequent require('electron') calls return patched
+    // constructors.
+    let bwPatched = false;
+    let trayPatched = false;
+
+    try {
+      Object.defineProperty(electron, 'BrowserWindow', {
+        value: PatchedBrowserWindow, writable: true, configurable: true, enumerable: true,
+      });
+      bwPatched = true;
+    } catch (_) { /* non-configurable — will use fallback */ }
+
+    try {
+      Object.defineProperty(electron, 'Tray', {
+        value: PatchedTray, writable: true, configurable: true, enumerable: true,
+      });
+      trayPatched = true;
+    } catch (_) { /* non-configurable — will use fallback */ }
+
+    if (!bwPatched || !trayPatched) {
+      // Fallback: wrap the module-cache entry in a Proxy that intercepts
+      // property access for the constructors we need to patch.
+      const Module = require('module');
+      const electronId = require.resolve('electron');
+      const cached = Module._cache[electronId];
+      if (cached) {
+        const origExports = cached.exports;
+        cached.exports = new Proxy(origExports, {
+          get(target, prop, receiver) {
+            if (!bwPatched && prop === 'BrowserWindow') return PatchedBrowserWindow;
+            if (!trayPatched && prop === 'Tray') return PatchedTray;
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        process.stderr.write('[native-frame] Used module-cache Proxy fallback for patching\n');
+      } else {
+        process.stderr.write('[native-frame] WARNING: electron not in module cache; patches may not apply\n');
+      }
+    }
+
+    // Safety net: if BrowserWindow patching failed entirely, at least set the
+    // icon on windows as they are created.
+    if (!bwPatched && appIcon) {
+      const app = electron.app || electron.default?.app;
+      if (app) {
+        app.on('browser-window-created', (_event, win) => {
+          try { win.setIcon(appIcon); } catch (_) { /* best effort */ }
+        });
+      }
+    }
 
     if (debug) {
       process.stderr.write(`[native-frame] BrowserWindow patched: frame=true, icon=${appIcon ? 'set' : 'none'}\n`);
