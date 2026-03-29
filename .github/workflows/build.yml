@@ -226,6 +226,7 @@ jobs:
         env:
           VERSION: ${{ steps.ver.outputs.version }}
           REPACK:  ${{ steps.repack.outputs.num }}
+          TAG:     ${{ steps.repack.outputs.tag }}
         run: |
           REPO_USER="${GITHUB_REPOSITORY%%/*}"
           REPO_NAME="${GITHUB_REPOSITORY##*/}"
@@ -243,21 +244,26 @@ jobs:
             git -C /tmp/gh-pages commit --allow-empty -m "Initialize gh-pages"
           fi
 
+          # Generate repo metadata in a staging directory.
+          # The RPM itself is NOT stored in gh-pages (exceeds GitHub's 100 MB
+          # file-size limit).  Instead, --location-prefix tells dnf to fetch
+          # the package from the GitHub Releases download URL.
+          STAGING_DIR="$(mktemp -d)"
+          RPM_SRC="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.rpm"
+          cp "$RPM_SRC" "$STAGING_DIR/"
+
+          DOWNLOAD_PREFIX="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          createrepo_c --location-prefix "$DOWNLOAD_PREFIX" "$STAGING_DIR"
+
+          # Copy only repodata to gh-pages (not the RPM binary).
           RPM_DIR=/tmp/gh-pages/rpm
           mkdir -p "$RPM_DIR"
+          rm -rf "$RPM_DIR/repodata"
+          cp -a "$STAGING_DIR/repodata" "$RPM_DIR/"
+          rm -rf "$STAGING_DIR"
 
-          # Copy new RPM into the repo tree.
-          RPM_SRC="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.rpm"
-          cp "$RPM_SRC" "$RPM_DIR/"
-
-          # Prune older repacks of the same Claude version (keep only latest).
-          find "$RPM_DIR" \
-            -name "claude-desktop-${VERSION}-repack-*-x86_64.rpm" \
-            ! -name "$(basename "$RPM_SRC")" \
-            -delete
-
-          # Regenerate RPM repo metadata.
-          createrepo_c "$RPM_DIR"
+          # Remove any RPM binaries left over from before this fix.
+          find "$RPM_DIR" -name "*.rpm" -delete
 
           # Write a stable .repo file consumers can curl-install.
           cat > /tmp/gh-pages/claude-desktop.repo <<REPO_EOF
