@@ -113,13 +113,6 @@ if (!global[INIT_SYM] && process.type === 'browser') {
       },
     });
 
-    Object.defineProperty(electron, 'BrowserWindow', {
-      value: PatchedBrowserWindow,
-      writable: true,
-      configurable: true,
-      enumerable: true,
-    });
-
     // -------------------------------------------------------------------------
     // Patch Tray
     // -------------------------------------------------------------------------
@@ -163,12 +156,62 @@ if (!global[INIT_SYM] && process.type === 'browser') {
       },
     });
 
-    Object.defineProperty(electron, 'Tray', {
-      value: PatchedTray,
-      writable: true,
-      configurable: true,
-      enumerable: true,
-    });
+    // -------------------------------------------------------------------------
+    // Apply patches to electron module
+    // -------------------------------------------------------------------------
+    // In newer Electron versions, properties on the electron module may be
+    // non-configurable, causing Object.defineProperty to throw.  Try direct
+    // property definition first; if that fails, override Module._load to
+    // intercept all require('electron') calls and return a Proxy with
+    // patched constructors.
+    let bwPatched = false;
+    let trayPatched = false;
+
+    try {
+      Object.defineProperty(electron, 'BrowserWindow', {
+        value: PatchedBrowserWindow, writable: true, configurable: true, enumerable: true,
+      });
+      bwPatched = true;
+    } catch (_) { /* non-configurable — will use fallback */ }
+
+    try {
+      Object.defineProperty(electron, 'Tray', {
+        value: PatchedTray, writable: true, configurable: true, enumerable: true,
+      });
+      trayPatched = true;
+    } catch (_) { /* non-configurable — will use fallback */ }
+
+    if (!bwPatched || !trayPatched) {
+      // Fallback: override Module._load to intercept all require('electron')
+      // calls and return a Proxy with patched constructors.  This is more
+      // reliable than patching Module._cache because Electron's built-in
+      // modules may bypass the standard module cache entirely.
+      const Module = require('module');
+      const origLoad = Module._load;
+      const electronProxy = new Proxy(electron, {
+        get(target, prop, receiver) {
+          if (!bwPatched && prop === 'BrowserWindow') return PatchedBrowserWindow;
+          if (!trayPatched && prop === 'Tray') return PatchedTray;
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      Module._load = function(request, parent, isMain) {
+        if (request === 'electron') return electronProxy;
+        return origLoad.call(this, request, parent, isMain);
+      };
+      process.stderr.write('[native-frame] Used Module._load Proxy fallback for patching\n');
+    }
+
+    // Safety net: if BrowserWindow was not patched via defineProperty, at least
+    // set the icon on windows as they are created.
+    if (!bwPatched && appIcon) {
+      const app = electron.app || electron.default?.app;
+      if (app) {
+        app.on('browser-window-created', (_event, win) => {
+          try { win.setIcon(appIcon); } catch (_) { /* best effort */ }
+        });
+      }
+    }
 
     if (debug) {
       process.stderr.write(`[native-frame] BrowserWindow patched: frame=true, icon=${appIcon ? 'set' : 'none'}\n`);

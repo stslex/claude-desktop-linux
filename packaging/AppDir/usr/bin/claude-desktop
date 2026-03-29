@@ -17,6 +17,13 @@ if [[ -n "${DEBUG:-}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Kill any stale instances so the single-instance lock doesn't block startup.
+# Uses the ASAR path to avoid matching this launcher script itself.
+# ---------------------------------------------------------------------------
+pkill -f "$ASAR" 2>/dev/null || true
+sleep 0.2
+
+# ---------------------------------------------------------------------------
 # Locate Electron — bundled copy first, then system PATH.
 # A bundled copy lives next to the asar when packaged inside an AppImage.
 # ---------------------------------------------------------------------------
@@ -73,6 +80,26 @@ if [[ ! -L /sessions ]]; then
     else
         echo "[claude-desktop] WARNING: Could not create /sessions automatically." >&2
         echo "  Run: sudo ln -sf $SESSION_TARGET /sessions" >&2
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# D-Bus: start a temporary daemon when the system bus socket is missing.
+# Containers, distrobox, WSL, and minimal installs often lack a system bus,
+# which causes Chromium to spam stderr with harmless connection errors.
+# ---------------------------------------------------------------------------
+if [[ ! -S /run/dbus/system_bus_socket ]] && [[ -z "${DBUS_SYSTEM_BUS_ADDRESS:-}" ]]; then
+    if command -v dbus-daemon &>/dev/null; then
+        _dbus_tmp="$(mktemp -d "${TMPDIR:-/tmp}/claude-dbus.XXXXXX")"
+        _dbus_addr="unix:path=${_dbus_tmp}/bus"
+        _dbus_pid="$(dbus-daemon --fork --session --address="$_dbus_addr" --print-pid 2>/dev/null)" || true
+        if [[ -n "$_dbus_pid" ]]; then
+            export DBUS_SYSTEM_BUS_ADDRESS="$_dbus_addr"
+            trap 'kill $_dbus_pid 2>/dev/null; rm -rf "$_dbus_tmp"' EXIT
+            echo "[claude-desktop] INFO: Started temporary D-Bus daemon (system bus unavailable)" >&2
+        else
+            rm -rf "$_dbus_tmp"
+        fi
     fi
 fi
 
