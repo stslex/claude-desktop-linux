@@ -374,10 +374,14 @@ return `"darwin"` from `getPlatform()` because the in-process JS checks it, but
 we do not touch network-level headers. If Anthropic adds server-side platform
 checks that require macOS headers, Cowork will break and we will document it.
 
-**No Dispatch.** Dispatch's mobile-to-desktop protocol uses push notifications via
-APNs (Apple) and FCM (Google). Implementing this requires registering a real
-application identifier with both services or reverse-engineering the token exchange.
-Neither is in scope.
+**Partial Dispatch.** Dispatch's mobile-to-desktop protocol uses push notifications
+via APNs (Apple) and FCM (Google) for background delivery. We bypass the UI
+platform gates (via IPC interception in `platform-override.js` and Dispatch stubs
+in `claude-native.js`) and polyfill the Electron Notification API so the Dispatch
+UI is available. However, tasks that rely on APNs/FCM push notifications to wake
+the desktop app when it is closed will not be delivered — the app must be running.
+Registering a real application identifier with Apple/Google push services or
+reverse-engineering the token exchange is not in scope.
 
 **No Computer Use.** Requires capturing the screen and injecting mouse/keyboard
 events. The current Cowork architecture on macOS uses `AXUIElement` (macOS

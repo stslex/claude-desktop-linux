@@ -2,41 +2,79 @@
 /**
  * platform-override.js
  *
- * Last-resort fallback for the Cowork platform gate.
+ * Last-resort fallback for the Cowork and Dispatch platform gates.
  *
  * If the AST-based patch (apply-platform-gate.mjs) fails to locate or patch
  * the gate function, this module provides a runtime safety net.  It monkey-
  * patches Electron's ipcMain so that any IPC message returning a platform-
  * gate "unsupported" / "unavailable" status is rewritten to "supported".
  *
- * It also patches app.getLocale() to ensure platform display names resolve
- * correctly on Linux.
+ * Coverage:
+ *   - ipcMain.handle()      — request/response IPC (invoke/handle pattern)
+ *   - ipcMain.handleOnce()  — one-shot request/response IPC
+ *   - ipcMain.on()          — event-based IPC (intercepts event.reply / event.sender.send)
+ *   - webContents           — renderer-side navigator.platform + Notification API
  *
  * Injected via require() at the top of the main-process bundle by
  * patch-cowork.sh.
  */
 
 try {
-  const { ipcMain, app } = require('electron');
+  const { ipcMain, app, Notification: ElectronNotification } = require('electron');
 
   // -------------------------------------------------------------------------
-  // 1. Intercept IPC replies that contain platform-gate "unsupported" status
+  // Helpers
+  // -------------------------------------------------------------------------
+  const NEGATIVE_STATUSES = new Set(['unsupported', 'unavailable', 'disabled']);
+
+  /**
+   * Recursively rewrite any { status: "unsupported"|"unavailable"|"disabled" }
+   * to { status: "supported" } in an object tree.  Returns true if any
+   * rewrite was performed.
+   */
+  function rewriteStatus(obj, channel, depth) {
+    if (!obj || typeof obj !== 'object' || depth > 4) return false;
+    let changed = false;
+
+    // Direct status property
+    if (typeof obj.status === 'string' && NEGATIVE_STATUSES.has(obj.status.toLowerCase())) {
+      process.stderr.write(
+        `[platform-override] Rewriting IPC "${channel}" status ` +
+        `"${obj.status}" → "supported"\n`
+      );
+      obj.status = 'supported';
+      changed = true;
+    }
+
+    // Boolean support flags: { supported: false } → { supported: true }
+    if (obj.supported === false) {
+      process.stderr.write(
+        `[platform-override] Rewriting IPC "${channel}" supported: false → true\n`
+      );
+      obj.supported = true;
+      changed = true;
+    }
+
+    // Recurse into nested objects (but not arrays of primitives)
+    for (const key of Object.keys(obj)) {
+      const val = obj[key];
+      if (val && typeof val === 'object' && !Array.isArray(val)) {
+        if (rewriteStatus(val, channel + '.' + key, depth + 1)) changed = true;
+      }
+    }
+    return changed;
+  }
+
+  // -------------------------------------------------------------------------
+  // 1. Intercept ipcMain.handle() — request/response pattern
   // -------------------------------------------------------------------------
   if (ipcMain && typeof ipcMain.handle === 'function') {
     const origHandle = ipcMain.handle.bind(ipcMain);
     ipcMain.handle = function patchedHandle(channel, listener) {
       return origHandle(channel, async function wrappedListener(event, ...args) {
         const result = await listener(event, ...args);
-        // Rewrite gate responses: { status: "unsupported"|"unavailable" } → "supported"
-        if (result && typeof result === 'object' && typeof result.status === 'string') {
-          const s = result.status.toLowerCase();
-          if (s === 'unsupported' || s === 'unavailable' || s === 'disabled') {
-            process.stderr.write(
-              `[platform-override] Rewriting IPC "${channel}" status ` +
-              `"${result.status}" → "supported"\n`
-            );
-            result.status = 'supported';
-          }
+        if (result && typeof result === 'object') {
+          rewriteStatus(result, channel, 0);
         }
         return result;
       });
@@ -44,19 +82,74 @@ try {
   }
 
   // -------------------------------------------------------------------------
-  // 2. Patch webContents to intercept renderer-side platform checks via
-  //    preload or executeJavaScript — this ensures the renderer also sees
-  //    the platform as supported.
+  // 2. Intercept ipcMain.handleOnce() — one-shot request/response pattern
+  // -------------------------------------------------------------------------
+  if (ipcMain && typeof ipcMain.handleOnce === 'function') {
+    const origHandleOnce = ipcMain.handleOnce.bind(ipcMain);
+    ipcMain.handleOnce = function patchedHandleOnce(channel, listener) {
+      return origHandleOnce(channel, async function wrappedListener(event, ...args) {
+        const result = await listener(event, ...args);
+        if (result && typeof result === 'object') {
+          rewriteStatus(result, channel, 0);
+        }
+        return result;
+      });
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // 3. Intercept ipcMain.on() — event-based IPC
+  //    Wraps event.reply() and event.sender.send() so responses flowing back
+  //    to the renderer also get status rewriting.
+  // -------------------------------------------------------------------------
+  if (ipcMain && typeof ipcMain.on === 'function') {
+    const origOn = ipcMain.on.bind(ipcMain);
+    ipcMain.on = function patchedOn(channel, listener) {
+      return origOn(channel, function wrappedListener(event, ...args) {
+        // Wrap event.reply
+        if (typeof event.reply === 'function') {
+          const origReply = event.reply.bind(event);
+          event.reply = function patchedReply(replyChannel, ...replyArgs) {
+            for (const arg of replyArgs) {
+              if (arg && typeof arg === 'object') {
+                rewriteStatus(arg, replyChannel, 0);
+              }
+            }
+            return origReply(replyChannel, ...replyArgs);
+          };
+        }
+
+        // Wrap event.sender.send
+        if (event.sender && typeof event.sender.send === 'function') {
+          const origSend = event.sender.send.bind(event.sender);
+          event.sender.send = function patchedSend(sendChannel, ...sendArgs) {
+            for (const arg of sendArgs) {
+              if (arg && typeof arg === 'object') {
+                rewriteStatus(arg, sendChannel, 0);
+              }
+            }
+            return origSend(sendChannel, ...sendArgs);
+          };
+        }
+
+        return listener(event, ...args);
+      });
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // 4. Patch webContents to intercept renderer-side platform and feature
+  //    checks.  Covers: navigator.platform, Notification API (for Dispatch),
+  //    and any renderer-side feature gate objects.
   // -------------------------------------------------------------------------
   if (app) {
     app.on('web-contents-created', (_event, webContents) => {
-      // Inject a tiny override into every renderer's JS context.
-      // This runs after the page's preload scripts but before app code.
       webContents.on('dom-ready', () => {
         webContents.executeJavaScript(`
           (function() {
-            // Override navigator.platform to report macOS if needed
-            // (some renderer-side checks use navigator.platform)
+            // --- navigator.platform override ---
+            // Some renderer-side checks use navigator.platform to determine
+            // feature availability.
             try {
               if (typeof navigator !== 'undefined' && navigator.platform &&
                   navigator.platform.toLowerCase().startsWith('linux')) {
@@ -66,13 +159,89 @@ try {
                 });
               }
             } catch(e) {}
+
+            // --- Notification API polyfill for Dispatch ---
+            // Dispatch uses push notifications (APNs on macOS).  On Linux,
+            // Electron's Notification API works via libnotify/dbus but the
+            // app may check Notification.isSupported() which can return false
+            // on some Linux desktop environments.  Ensure it always reports
+            // as supported so the Dispatch UI is not gated.
+            try {
+              if (typeof window !== 'undefined') {
+                // Ensure Notification.permission is 'granted'
+                if (typeof Notification !== 'undefined') {
+                  if (Notification.permission !== 'granted') {
+                    Object.defineProperty(Notification, 'permission', {
+                      get: function() { return 'granted'; },
+                      configurable: true,
+                    });
+                  }
+                  // Override requestPermission to always resolve 'granted'
+                  Notification.requestPermission = function() {
+                    return Promise.resolve('granted');
+                  };
+                }
+              }
+            } catch(e) {}
+
+            // --- Feature gate object interception ---
+            // Some renderer-side code checks feature objects like
+            // { dispatch: { supported: false } } or { cowork: { status: "unsupported" } }.
+            // We intercept window.postMessage and MessagePort to catch these.
+            try {
+              var origPostMessage = window.postMessage;
+              window.postMessage = function(msg) {
+                if (msg && typeof msg === 'object') {
+                  (function rewrite(o, depth) {
+                    if (!o || typeof o !== 'object' || depth > 4) return;
+                    if (typeof o.status === 'string') {
+                      var s = o.status.toLowerCase();
+                      if (s === 'unsupported' || s === 'unavailable' || s === 'disabled') {
+                        o.status = 'supported';
+                      }
+                    }
+                    if (o.supported === false) o.supported = true;
+                    var keys = Object.keys(o);
+                    for (var i = 0; i < keys.length; i++) {
+                      var v = o[keys[i]];
+                      if (v && typeof v === 'object' && !Array.isArray(v)) rewrite(v, depth + 1);
+                    }
+                  })(msg, 0);
+                }
+                return origPostMessage.apply(this, arguments);
+              };
+            } catch(e) {}
           })();
         `).catch(() => {});
       });
     });
+
+    // -----------------------------------------------------------------------
+    // 5. Ensure Electron Notification.isSupported() returns true
+    //    (main-process side — the app may check this before enabling Dispatch)
+    // -----------------------------------------------------------------------
+    if (ElectronNotification && typeof ElectronNotification.isSupported === 'function') {
+      const origIsSupported = ElectronNotification.isSupported;
+      if (!origIsSupported()) {
+        try {
+          Object.defineProperty(ElectronNotification, 'isSupported', {
+            value: function() { return true; },
+            configurable: true,
+            writable: true,
+          });
+          process.stderr.write(
+            '[platform-override] Patched Notification.isSupported() → true\n'
+          );
+        } catch (e) {
+          process.stderr.write(
+            `[platform-override] Warning: could not patch Notification.isSupported: ${e.message}\n`
+          );
+        }
+      }
+    }
   }
 
-  process.stderr.write('[platform-override] Platform override hooks installed.\n');
+  process.stderr.write('[platform-override] Platform override hooks installed (handle + handleOnce + on + renderer).\n');
 } catch (e) {
   process.stderr.write(`[platform-override] Warning: ${e.message}\n`);
 }
