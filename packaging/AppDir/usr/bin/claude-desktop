@@ -17,6 +17,13 @@ if [[ -n "${DEBUG:-}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Kill any stale instances so the single-instance lock doesn't block startup.
+# Uses the ASAR path to avoid matching this launcher script itself.
+# ---------------------------------------------------------------------------
+pkill -f "$ASAR" 2>/dev/null || true
+sleep 0.2
+
+# ---------------------------------------------------------------------------
 # Locate Electron — bundled copy first, then system PATH.
 # A bundled copy lives next to the asar when packaged inside an AppImage.
 # ---------------------------------------------------------------------------
