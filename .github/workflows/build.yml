@@ -434,7 +434,7 @@ jobs:
           # -------------------------------------------------------------------
           # APT / DEB repository
           #   Uses apt-ftparchive to generate Packages metadata.
-          #   Like RPM, only metadata lives on Pages; the .deb is in Releases.
+          #   The .deb lives on Pages so APT can fetch it via relative Filename.
           # -------------------------------------------------------------------
           DEB_SRC="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.deb"
           if [[ -f "$DEB_SRC" ]]; then
@@ -445,17 +445,8 @@ jobs:
 
             cd "$APT_DIR"
             apt-ftparchive packages . > Packages
-
-            # Rewrite Filename to point to the GitHub Releases URL.
-            DEB_FILENAME="claude-desktop-${VERSION}-repack-${REPACK}-x86_64.deb"
-            DOWNLOAD_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${DEB_FILENAME}"
-            sed -i "s|Filename: ./${DEB_FILENAME}|Filename: ${DOWNLOAD_URL}|" Packages
-
             gzip -kf Packages
             apt-ftparchive release . > Release
-
-            # Remove the .deb binary — only metadata stays on Pages.
-            rm -f "$APT_DIR"/*.deb
 
             cd "$GITHUB_WORKSPACE"
 
