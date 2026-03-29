@@ -13,6 +13,28 @@ BuildArch:      x86_64
 
 Requires:       xdg-utils
 Requires:       bash
+Requires:       alsa-lib
+Requires:       at-spi2-atk
+Requires:       atk
+Requires:       cairo
+Requires:       cups-libs
+Requires:       dbus-libs
+Requires:       expat
+Requires:       libdrm
+Requires:       libX11
+Requires:       libxcb
+Requires:       libXcomposite
+Requires:       libXdamage
+Requires:       libXext
+Requires:       libXfixes
+Requires:       libxkbcommon
+Requires:       libXrandr
+Requires:       mesa-libgbm
+Requires:       nspr
+Requires:       nss
+Requires:       gtk3
+Requires:       glib2
+Requires:       pango
 
 # Source0: patched app.asar (produced by build-rpm.sh)
 # Source1: launcher script

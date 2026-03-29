@@ -8,7 +8,7 @@ pkgdesc='Claude Desktop for Linux (unofficial rebuild)'
 arch=('x86_64')
 url='https://github.com/stslex/claude-desktop-linux'
 license=('custom:proprietary')
-depends=('bash' 'xdg-utils' 'hicolor-icon-theme')
+depends=('bash' 'xdg-utils' 'hicolor-icon-theme' 'alsa-lib' 'at-spi2-atk' 'atk' 'cairo' 'libcups' 'dbus' 'expat' 'libdrm' 'libx11' 'libxcb' 'libxcomposite' 'libxdamage' 'libxext' 'libxfixes' 'libxkbcommon' 'libxrandr' 'mesa' 'nspr' 'nss' 'gtk3' 'glib2' 'pango')
 optdepends=('bubblewrap: sandboxed Cowork sessions')
 
 # Source is the pre-built package from GitHub Releases.
