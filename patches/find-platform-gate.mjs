@@ -387,8 +387,41 @@ let result;
 if (outputAll) {
   // --all mode: output every match above threshold so apply-platform-gate can patch all of them.
   // This is important when Cowork and Dispatch have separate gate functions in the same bundle.
+  // Deduplicate overlapping ranges: if one candidate is nested inside another
+  // (e.g. a gate function inside a module wrapper that also scores above
+  // threshold), keep only the more specific (shorter) one.  This prevents
+  // apply-platform-gate from aborting on overlapping ranges.
+  const deduped = [];
+  for (const c of topMatches) {
+    // Check if this candidate is a superset of an already-kept candidate
+    const containsExisting = deduped.some(
+      d => d.file === c.file && c.start <= d.start && c.end >= d.end
+    );
+    if (containsExisting) {
+      // c is an outer function that contains a more-specific match — skip it
+      continue;
+    }
+    // Check if an already-kept candidate is a superset of this one
+    const idx = deduped.findIndex(
+      d => d.file === c.file && d.start <= c.start && d.end >= c.end
+    );
+    if (idx !== -1) {
+      // Replace the broader match with this more-specific one
+      deduped[idx] = c;
+    } else {
+      deduped.push(c);
+    }
+  }
+
+  if (deduped.length < topMatches.length) {
+    process.stderr.write(
+      `[find-platform-gate] Deduplicated ${topMatches.length} → ${deduped.length} gate(s) ` +
+      `(removed nested/overlapping ranges).\n`
+    );
+  }
+
   result = {
-    gates: topMatches.map(c => ({
+    gates: deduped.map(c => ({
       file:    c.file,
       start:   c.start,
       end:     c.end,

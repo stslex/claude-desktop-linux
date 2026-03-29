@@ -124,19 +124,27 @@ for (const [bundlePath, locs] of byFile) {
   locs.sort((a, b) => b.start - a.start);
 
   // Overlap check: after sorting descending, each range's start must be >= the
-  // previous range's end to guarantee non-overlap.
-  for (let i = 0; i < locs.length - 1; i++) {
-    const cur  = locs[i];
-    const next = locs[i + 1];
-    // cur.start > next.start (sorted descending); overlap if next.end > cur.start
-    if (next.end > cur.start) {
-      process.stderr.write(
-        `[apply-platform-gate] ERROR: Overlapping gate ranges in ${bundlePath}: ` +
-        `[${next.start}..${next.end}] overlaps [${cur.start}..${cur.end}]. ` +
-        `Aborting to avoid bundle corruption.\n`
+  // previous range's end to guarantee non-overlap.  If overlapping ranges
+  // remain (e.g. nested functions), keep only the more specific (shorter) one.
+  {
+    const cleaned = [];
+    for (const loc of locs) {
+      // Check if this range contains (is a superset of) an already-kept range
+      const containsExisting = cleaned.some(
+        d => loc.start <= d.start && loc.end >= d.end
       );
-      process.exit(1);
+      if (containsExisting) {
+        process.stderr.write(
+          `[apply-platform-gate] Skipping broader overlapping range [${loc.start}..${loc.end}] in ${bundlePath}\n`
+        );
+        totalSkipped++;
+        continue;
+      }
+      cleaned.push(loc);
     }
+    locs.length = 0;
+    locs.push(...cleaned);
+    locs.sort((a, b) => b.start - a.start);
   }
 
   for (const { start, end } of locs) {
