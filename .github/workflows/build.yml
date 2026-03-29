@@ -35,7 +35,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             dmg2img p7zip-full rpm imagemagick icnsutils fuse libfuse2 zsync createrepo-c \
-            dpkg-dev apt-utils libarchive-tools zstd
+            dpkg-dev apt-utils libarchive-tools zstd unzip
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -371,6 +371,28 @@ jobs:
           bash
           xdg-utils
           hicolor-icon-theme
+          alsa-lib
+          at-spi2-atk
+          atk
+          cairo
+          libcups
+          dbus
+          expat
+          libdrm
+          libx11
+          libxcb
+          libxcomposite
+          libxdamage
+          libxext
+          libxfixes
+          libxkbcommon
+          libxrandr
+          mesa
+          nspr
+          nss
+          gtk3
+          glib2
+          pango
 
           %OPTDEPENDS%
           bubblewrap: sandboxed Cowork sessions
