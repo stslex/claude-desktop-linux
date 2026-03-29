@@ -2,21 +2,20 @@
 /**
  * native-frame.js
  *
- * Forces native OS window decorations (title bar + resize/move handles) on all
- * BrowserWindow instances and sets the window icon.
+ * Patches BrowserWindow and Tray for Linux compatibility:
  *
- * The macOS app requests frameless windows (frame:false, titleBarStyle:'hiddenInset')
- * to render its own custom title bar inside the web content.  On Linux this leaves
- * a borderless window the WM cannot decorate.  This patch intercepts every
- * BrowserWindow constructor call before the main bundle runs and forces frame:true.
+ * 1. BrowserWindow: forces native OS window decorations (frame:true) and sets
+ *    the window icon so it appears in title bars, taskbars, and alt-tab.
  *
- * It also sets the `icon` property on every BrowserWindow so the window and
- * taskbar show the Claude icon.  The icon is resolved in order: system-installed
- * icons (from RPM/DEB/pacman), then the PNG/SVG bundled inside the ASAR by
- * patch-cowork.sh as a fallback.
+ * 2. Tray: replaces the macOS-specific tray icon (which resolves to nothing on
+ *    Linux, showing three dots) with the Claude icon, and wires up a click
+ *    handler to show/focus the main window.
+ *
+ * Icons are resolved in order: system-installed (RPM/DEB/pacman), then the
+ * PNG/SVG bundled inside the ASAR by patch-cowork.sh as a fallback.
  *
  * Injected at the top of the main-process bundle by patch-cowork.sh so it runs
- * before the app's BrowserWindow creation code.
+ * before the app's BrowserWindow/Tray creation code.
  */
 
 const INIT_SYM = Symbol.for('__claudeNativeFrameInitialised');
@@ -28,6 +27,7 @@ if (!global[INIT_SYM] && process.type === 'browser') {
     const fs = require('fs');
     const electron = require('electron');
     const OrigBrowserWindow = electron.BrowserWindow;
+    const OrigTray = electron.Tray;
     const debug = process.env.DEBUG;
 
     // Helper: try to load a nativeImage from a path, return null on failure.
@@ -73,6 +73,28 @@ if (!global[INIT_SYM] && process.type === 'browser') {
       }
     }
 
+    // Tray icons should be smaller (typically 16-24px on Linux).
+    // Resize the app icon for the tray, or try to load a smaller system icon.
+    let trayIcon = null;
+    if (appIcon) {
+      const smallSystemPaths = [
+        '/usr/share/icons/hicolor/32x32/apps/claude-desktop.png',
+        '/usr/share/icons/hicolor/48x48/apps/claude-desktop.png',
+        '/usr/share/icons/hicolor/16x16/apps/claude-desktop.png',
+      ];
+      for (const iconPath of smallSystemPaths) {
+        trayIcon = tryLoadIcon(iconPath);
+        if (trayIcon) break;
+      }
+      if (!trayIcon) {
+        // Resize the app icon to a tray-appropriate size.
+        trayIcon = appIcon.resize({ width: 32, height: 32 });
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // Patch BrowserWindow
+    // -------------------------------------------------------------------------
     const PatchedBrowserWindow = new Proxy(OrigBrowserWindow, {
       construct(Target, [options = {}, ...rest]) {
         const patched = Object.assign({}, options, {
@@ -91,8 +113,6 @@ if (!global[INIT_SYM] && process.type === 'browser') {
       },
     });
 
-    // Replace BrowserWindow in the cached electron module so all downstream
-    // require('electron').BrowserWindow and destructured references get our proxy.
     Object.defineProperty(electron, 'BrowserWindow', {
       value: PatchedBrowserWindow,
       writable: true,
@@ -100,8 +120,59 @@ if (!global[INIT_SYM] && process.type === 'browser') {
       enumerable: true,
     });
 
+    // -------------------------------------------------------------------------
+    // Patch Tray
+    // -------------------------------------------------------------------------
+    // The macOS app creates a Tray with a template image that doesn't exist on
+    // Linux, resulting in three dots and no click behavior.  Replace the icon
+    // and add a click handler that shows/focuses the main window.
+    const PatchedTray = new Proxy(OrigTray, {
+      construct(Target, [icon, ...rest]) {
+        // Replace the icon if it's empty/broken or if we have a better one.
+        let resolvedIcon = icon;
+        if (trayIcon) {
+          try {
+            // Check if the original icon is a valid, non-empty nativeImage.
+            const orig = (typeof icon === 'string')
+              ? electron.nativeImage.createFromPath(icon)
+              : icon;
+            if (!orig || orig.isEmpty()) {
+              resolvedIcon = trayIcon;
+            }
+          } catch (_) {
+            resolvedIcon = trayIcon;
+          }
+        }
+
+        const tray = Reflect.construct(Target, [resolvedIcon, ...rest], Target);
+
+        // Wire up click to show/focus the main window (macOS handles this
+        // natively but Linux tray click does nothing by default).
+        tray.on('click', () => {
+          const wins = electron.BrowserWindow.getAllWindows();
+          const mainWin = wins.find(w => !w.isDestroyed()) || null;
+          if (mainWin) {
+            if (mainWin.isMinimized()) mainWin.restore();
+            mainWin.show();
+            mainWin.focus();
+          }
+        });
+
+        if (debug) process.stderr.write('[native-frame] Tray patched: icon replaced, click handler added\n');
+        return tray;
+      },
+    });
+
+    Object.defineProperty(electron, 'Tray', {
+      value: PatchedTray,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
+
     if (debug) {
       process.stderr.write(`[native-frame] BrowserWindow patched: frame=true, icon=${appIcon ? 'set' : 'none'}\n`);
+      process.stderr.write(`[native-frame] Tray patched: icon=${trayIcon ? 'set' : 'none'}\n`);
     }
   } catch (e) {
     process.stderr.write(`[native-frame] setup failed: ${e.message}\n`);
