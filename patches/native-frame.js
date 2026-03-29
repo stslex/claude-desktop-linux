@@ -4,8 +4,8 @@
  *
  * Patches BrowserWindow and Tray for Linux compatibility:
  *
- * 1. BrowserWindow: forces native OS window decorations (frame:true) and sets
- *    the window icon so it appears in title bars, taskbars, and alt-tab.
+ * 1. BrowserWindow: sets the window icon so it appears in title bars,
+ *    taskbars, and alt-tab.
  *
  * 2. Tray: replaces the macOS-specific tray icon (which resolves to nothing on
  *    Linux, showing three dots) with the Claude icon, and wires up a click
@@ -132,14 +132,7 @@ if (!global[INIT_SYM] && process.type === 'browser') {
     // Patch BrowserWindow
     // ---------------------------------------------------------------------
     function patchBrowserWindowOptions(options) {
-      const patched = Object.assign({}, options, {
-        frame: true,
-        transparent: false,
-      });
-      // titleBarStyle / titleBarOverlay are macOS-specific and conflict with
-      // frame:true on Linux — drop them so the WM draws a standard title bar.
-      delete patched.titleBarStyle;
-      delete patched.titleBarOverlay;
+      const patched = Object.assign({}, options);
       // Set the window icon if we have one and the caller didn't set one.
       if (appIcon && !patched.icon) {
         patched.icon = appIcon;
@@ -150,7 +143,7 @@ if (!global[INIT_SYM] && process.type === 'browser') {
     const PatchedBrowserWindow = new Proxy(OrigBrowserWindow, {
       construct(Target, [options = {}, ...rest]) {
         const patched = patchBrowserWindowOptions(options);
-        log('BrowserWindow construct intercepted: frame=true, icon=' + (patched.icon ? 'set' : 'none'));
+        log('BrowserWindow construct intercepted: icon=' + (patched.icon ? 'set' : 'none'));
         return Reflect.construct(Target, [patched, ...rest], Target);
       },
     });
@@ -261,10 +254,6 @@ if (!global[INIT_SYM] && process.type === 'browser') {
           if (appIcon) {
             win.setIcon(appIcon);
           }
-          // Remove any vibrancy/transparency that the macOS code sets.
-          if (typeof win.setVibrancy === 'function') {
-            try { win.setVibrancy(null); } catch (_) {}
-          }
         } catch (e) {
           log(`browser-window-created handler error: ${e.message}`);
         }
@@ -282,7 +271,7 @@ if (!global[INIT_SYM] && process.type === 'browser') {
       }
     }
 
-    log('Patches installed: BrowserWindow(frame=true, icon=' + (appIcon ? 'set' : 'none') +
+    log('Patches installed: BrowserWindow(icon=' + (appIcon ? 'set' : 'none') +
         '), Tray(icon=' + (trayIcon ? 'set' : 'none') + ', click=handler)');
   } catch (e) {
     process.stderr.write(`[native-frame] setup failed: ${e.message}\n${e.stack}\n`);
