@@ -11,16 +11,19 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
-        # The CI-built tarball from GitHub Releases.
-        # Users override src to point to the downloaded tarball or a local build.
         claude-desktop = pkgs.stdenv.mkDerivation rec {
           pname = "claude-desktop";
           version = "0.0.0"; # overridden by CI or user
 
-          # Default: build from the local repo output (after running build scripts).
-          # To use a pre-built release tarball, override with:
-          #   claude-desktop.override { src = ./claude-desktop-<ver>-x86_64-nix.tar.gz; }
-          src = ./output/claude-desktop-${version}-x86_64-nix.tar.gz;
+          # Fetch the pre-built release tarball from GitHub Releases.
+          # To use a locally built tarball instead, override with:
+          #   claude-desktop.overrideAttrs (_: { src = ./path/to/claude-desktop-x86_64-nix.tar.gz; })
+          src = pkgs.fetchurl {
+            url = "https://github.com/stslex/claude-desktop-linux/releases/latest/download/claude-desktop-${version}-x86_64-nix.tar.gz";
+            # TODO: replace with the actual sha256 of the release tarball.
+            # Run: nix-prefetch-url <url> to get the hash.
+            sha256 = pkgs.lib.fakeSha256;
+          };
 
           nativeBuildInputs = with pkgs; [
             autoPatchelfHook

@@ -332,17 +332,23 @@ jobs:
               CSIZE="$PKG_SIZE"
 
               DB_STAGING="$(mktemp -d)"
-              ENTRY_DIR="$DB_STAGING/claude-desktop-${VERSION}-1"
+              # Compute installed size from .PKGINFO inside the package.
+              ISIZE="$(bsdtar -xf "$PKG_SRC" .PKGINFO -O 2>/dev/null | grep '^size = ' | awk '{print $3}')"
+              ISIZE="${ISIZE:-0}"
+
+              ENTRY_DIR="$DB_STAGING/claude-desktop-${VERSION}-${REPACK}"
               mkdir -p "$ENTRY_DIR"
+              # %FILENAME% uses the GitHub Releases download URL so pacman
+              # fetches the actual package from Releases, not from Pages.
               cat > "$ENTRY_DIR/desc" <<DESC_EOF
           %FILENAME%
-          ${PKG_FILENAME}
+          ${DOWNLOAD_PREFIX}/${PKG_FILENAME}
 
           %NAME%
           claude-desktop
 
           %VERSION%
-          ${VERSION}-1
+          ${VERSION}-${REPACK}
 
           %DESC%
           Claude Desktop for Linux (unofficial rebuild)
@@ -351,7 +357,7 @@ jobs:
           ${CSIZE}
 
           %ISIZE%
-          0
+          ${ISIZE}
 
           %SHA256SUM%
           ${PKG_SHA256}
@@ -388,20 +394,26 @@ jobs:
             rm -f "$PACMAN_DIR"/*.pkg.tar.zst
 
             # Write a pacman repo config snippet users can append to pacman.conf.
+            # Server points to gh-pages where the DB lives; pacman follows the
+            # %FILENAME% field in the DB desc to download the .pkg.tar.zst from
+            # GitHub Releases (the filename contains the full release URL).
             cat > /tmp/gh-pages/claude-desktop-pacman.conf <<PACMAN_EOF
           [claude-desktop]
           SigLevel = Optional TrustAll
-          Server = ${DOWNLOAD_PREFIX}
+          Server = ${PAGES_URL}/pacman
           PACMAN_EOF
 
             # Also provide an install helper script.
-            cat > /tmp/gh-pages/install-pacman-repo.sh <<'INSTALL_PACMAN_EOF'
+            cat > /tmp/gh-pages/install-pacman-repo.sh <<INSTALL_PACMAN_EOF
           #!/bin/sh
           # Add the Claude Desktop repository to pacman.
-          # Usage: curl -fsSL https://stslex.github.io/claude-desktop-linux/install-pacman-repo.sh | sudo sh
+          # Usage:
+          #   curl -fsSLo install-pacman-repo.sh ${PAGES_URL}/install-pacman-repo.sh
+          #   less install-pacman-repo.sh  # inspect before running
+          #   sudo sh install-pacman-repo.sh
           set -e
           if ! grep -q '\[claude-desktop\]' /etc/pacman.conf 2>/dev/null; then
-            printf '\n[claude-desktop]\nSigLevel = Optional TrustAll\nServer = https://github.com/stslex/claude-desktop-linux/releases/latest/download\n' >> /etc/pacman.conf
+            printf '\n[claude-desktop]\nSigLevel = Optional TrustAll\nServer = ${PAGES_URL}/pacman\n' >> /etc/pacman.conf
             echo "claude-desktop repository added to /etc/pacman.conf"
             echo "Run: sudo pacman -Sy claude-desktop"
           else

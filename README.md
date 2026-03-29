@@ -127,8 +127,10 @@ Electron is bundled — no additional dependencies required.
 #### Via custom repository (recommended — enables `pacman -Syu`)
 
 ```sh
-# Add the repository to pacman.conf
-curl -fsSL https://stslex.github.io/claude-desktop-linux/install-pacman-repo.sh | sudo sh
+# Download and inspect the install script, then run it
+curl -fsSLo install-pacman-repo.sh https://stslex.github.io/claude-desktop-linux/install-pacman-repo.sh
+less install-pacman-repo.sh  # review before running
+sudo sh install-pacman-repo.sh
 sudo pacman -Sy claude-desktop
 ```
 
@@ -137,7 +139,7 @@ Or manually add to `/etc/pacman.conf`:
 ```ini
 [claude-desktop]
 SigLevel = Optional TrustAll
-Server = https://github.com/stslex/claude-desktop-linux/releases/latest/download
+Server = https://stslex.github.io/claude-desktop-linux/pacman
 ```
 
 #### Direct package download
@@ -150,21 +152,14 @@ sudo pacman -U claude-desktop-<version>-repack-<N>-x86_64.pkg.tar.zst
 
 The repository includes a `flake.nix` for NixOS users.
 
-#### Via flake (recommended)
+#### Via flake
 
-```sh
-# Try it without installing
-nix run github:stslex/claude-desktop-linux
-
-# Install to profile
-nix profile install github:stslex/claude-desktop-linux
-```
-
-#### In NixOS configuration
-
-Add to your `flake.nix` inputs:
+The `flake.nix` uses `fetchurl` to download the pre-built tarball from GitHub
+Releases. To use it, override `version` and `sha256` to match the release you
+want:
 
 ```nix
+# In your flake.nix inputs:
 inputs.claude-desktop.url = "github:stslex/claude-desktop-linux";
 ```
 
@@ -172,7 +167,13 @@ Then add to `environment.systemPackages`:
 
 ```nix
 environment.systemPackages = [
-  inputs.claude-desktop.packages.${pkgs.system}.default
+  (inputs.claude-desktop.packages.${pkgs.system}.default.overrideAttrs (_: {
+    version = "<version>";
+    src = pkgs.fetchurl {
+      url = "https://github.com/stslex/claude-desktop-linux/releases/download/v<version>-repack-<N>/claude-desktop-<version>-repack-<N>-x86_64-nix.tar.gz";
+      sha256 = "<sha256>";  # from release notes or nix-prefetch-url
+    };
+  }))
 ];
 ```
 
@@ -182,7 +183,7 @@ Pre-built Nix-compatible tarballs are available in each GitHub Release:
 
 ```sh
 # Download and extract
-curl -fLO https://github.com/stslex/claude-desktop-linux/releases/latest/download/claude-desktop-<version>-x86_64-nix.tar.gz
+curl -fLO https://github.com/stslex/claude-desktop-linux/releases/latest/download/claude-desktop-<version>-repack-<N>-x86_64-nix.tar.gz
 ```
 
 ### First Run

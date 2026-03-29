@@ -9,6 +9,7 @@ set -euo pipefail
 # Env vars:
 #   BUILD_DIR      default: /tmp/claude-build
 #   OUTPUT_DIR     default: ./output  (relative to repo root)
+#   REPACK         default: 1  (repack number, used as pkgrel)
 # ---------------------------------------------------------------------------
 
 log() { echo "[build-pacman] $*"; }
@@ -43,8 +44,10 @@ done
 
 VERSION="$(cat "$BUILD_DIR/VERSION")"
 ELECTRON_VERSION="${ELECTRON_OVERRIDE:-$(cat "$BUILD_DIR/ELECTRON_VERSION")}"
+PKGREL="${REPACK:-1}"
 log "Version      : $VERSION"
 log "Electron     : $ELECTRON_VERSION"
+log "Pkg release  : $PKGREL"
 
 # ---------------------------------------------------------------------------
 # Download / cache Electron binary (shared cache with other build scripts)
@@ -137,7 +140,9 @@ INSTALL_SIZE="$(du -sb "$PKG_ROOT" | awk '{print $1}')"
 
 cat > "$PKG_ROOT/.PKGINFO" <<PKGINFO_EOF
 pkgname = claude-desktop
-pkgver = ${VERSION}-1
+pkgbase = claude-desktop
+pkgver = ${VERSION}-${PKGREL}
+xdata = pkgtype=pkg
 pkgdesc = Claude Desktop for Linux (unofficial rebuild)
 url = https://github.com/stslex/claude-desktop-linux
 builddate = $(date +%s)
@@ -175,9 +180,10 @@ post_install() {
     SESSION_TARGET=/var/lib/claude-desktop/sessions
     if [ ! -L /sessions ] && [ ! -e /sessions ]; then
         mkdir -p "$SESSION_TARGET"
-        ln -sf "$SESSION_TARGET" /sessions 2>/dev/null || \
-            echo "claude-desktop: could not create /sessions — run manually:" \
-            && echo "  sudo mkdir -p $SESSION_TARGET && sudo ln -sf $SESSION_TARGET /sessions"
+        ln -sf "$SESSION_TARGET" /sessions 2>/dev/null || {
+            echo "claude-desktop: could not create /sessions — run manually:"
+            echo "  sudo mkdir -p $SESSION_TARGET && sudo ln -sf $SESSION_TARGET /sessions"
+        }
     fi
 }
 
@@ -210,7 +216,7 @@ DEST_PKG="$OUTPUT_DIR/claude-desktop-${VERSION}-x86_64.pkg.tar.zst"
 
 log "Building pacman package..."
 # bsdtar must run from the package root so paths are relative
-(cd "$PKG_ROOT" && bsdtar -cf - .PKGINFO .INSTALL usr/ | zstd -T0 -19 -o "$DEST_PKG")
+(cd "$PKG_ROOT" && bsdtar --uid 0 --gid 0 -cf - .PKGINFO .INSTALL usr/ | zstd -T0 -19 -o "$DEST_PKG")
 
 sha256sum "$DEST_PKG" | awk '{print $1}' > "${DEST_PKG}.sha256"
 

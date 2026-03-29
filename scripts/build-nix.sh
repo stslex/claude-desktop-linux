@@ -5,8 +5,8 @@ set -euo pipefail
 # build-nix.sh
 #
 # Build a NixOS-compatible package archive for Claude Desktop Linux.
-# Produces a tarball containing the Nix store layout that can be installed
-# via the bundled flake.nix or directly with nix-store --import.
+# Produces a gzip tarball with an FHS-style layout (bin/, lib/, share/)
+# that can be consumed via the bundled flake.nix or other Nix packaging steps.
 #
 # Env vars:
 #   BUILD_DIR      default: /tmp/claude-build
