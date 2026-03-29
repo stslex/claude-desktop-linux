@@ -129,7 +129,7 @@ if [[ -d "$ICONS_DIR" ]] && ls "$ICONS_DIR"/claude-*.png &>/dev/null; then
             "$PKG_ROOT/usr/share/icons/hicolor/${N}x${N}/apps/claude-desktop.png"
     done
 else
-    log "WARNING: No PNG icons found in $ICONS_DIR — generating from bundled SVG..."
+    log "WARNING: No PNG icons found in $ICONS_DIR \u2014 generating from bundled SVG..."
     SVG_ICON="$REPO_DIR/packaging/claude-desktop.svg"
     if [[ -f "$SVG_ICON" ]]; then
         mkdir -p "$ICONS_DIR"
@@ -242,7 +242,7 @@ post_install() {
     if [ ! -L /sessions ] && [ ! -e /sessions ]; then
         mkdir -p "$SESSION_TARGET"
         ln -sf "$SESSION_TARGET" /sessions 2>/dev/null || {
-            echo "claude-desktop: could not create /sessions — run manually:"
+            echo "claude-desktop: could not create /sessions \u2014 run manually:"
             echo "  sudo mkdir -p $SESSION_TARGET && sudo ln -sf $SESSION_TARGET /sessions"
         }
     fi
@@ -302,6 +302,12 @@ if [[ -z "$PKGINFO_CHECK" || "$PKGINFO_CHECK" != "pkgname = claude-desktop" ]]; 
     log "ERROR: .PKGINFO missing or unreadable in built package (got: '${PKGINFO_CHECK}')"
     exit 1
 fi
+MTREE_CHECK="$(bsdtar -xf "$DEST_PKG" -O .MTREE 2>/dev/null | head -c 64)"
+if [[ -z "$MTREE_CHECK" ]]; then
+    log "ERROR: .MTREE missing or unreadable in built package"
+    exit 1
+fi
+log "MTREE verification OK"
 log "Package verification OK"
 
 log "PKG          : $DEST_PKG"
