@@ -4,7 +4,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # build-packages.sh
 #
-# Orchestrator: re-pack the patched ASAR, then build RPM and AppImage.
+# Orchestrator: re-pack the patched ASAR, then build RPM, DEB, and AppImage.
 #
 # Env vars:
 #   BUILD_DIR        default: /tmp/claude-build
@@ -71,6 +71,18 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Build DEB — continue on failure (dpkg-deb may not be available)
+# ---------------------------------------------------------------------------
+log "--- DEB ---"
+DEB_OK=false
+if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" "$SCRIPT_DIR/build-deb.sh"; then
+    DEB_OK=true
+    log "DEB build succeeded."
+else
+    log "DEB build failed (dpkg-deb may not be available — skipping)."
+fi
+
+# ---------------------------------------------------------------------------
 # Build AppImage
 # ---------------------------------------------------------------------------
 log "--- AppImage ---"
@@ -116,15 +128,17 @@ verify_sha256() {
 }
 
 RPM_PKG="$OUTPUT_DIR/claude-desktop-${APP_VERSION}-x86_64.rpm"
+DEB_PKG="$OUTPUT_DIR/claude-desktop-${APP_VERSION}-x86_64.deb"
 APPIMAGE_PKG="$OUTPUT_DIR/claude-desktop-${APP_VERSION}-x86_64.AppImage"
 
 [[ -f "$RPM_PKG"      ]] && verify_sha256 "$RPM_PKG"      || true
+[[ -f "$DEB_PKG"      ]] && verify_sha256 "$DEB_PKG"      || true
 [[ -f "$APPIMAGE_PKG" ]] && verify_sha256 "$APPIMAGE_PKG" || true
 
 # ---------------------------------------------------------------------------
 # Exit 0 only if at least one package was built successfully
 # ---------------------------------------------------------------------------
-if [[ "$RPM_OK" == "true" || "$APPIMAGE_OK" == "true" ]]; then
+if [[ "$RPM_OK" == "true" || "$DEB_OK" == "true" || "$APPIMAGE_OK" == "true" ]]; then
     log "Done."
     exit 0
 else
