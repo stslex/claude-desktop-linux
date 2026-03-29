@@ -293,12 +293,12 @@ FRAME_DEST="$MAIN_ENTRY_DIR/native-frame.js"
 cp "$FRAME_SRC" "$FRAME_DEST"
 log "Copied native-frame to $FRAME_DEST"
 
-# -- app icon (for BrowserWindow and tray) ------------------------------------
+# -- app icon (for BrowserWindow) ----------------------------------------------
 # Copy the best available icon next to native-frame.js so it can load it.
 # Prefer the largest extracted PNG; fall back to the bundled SVG.
 ICONS_DIR="$REPO_DIR/packaging/icons"
 ICON_COPIED=""
-if [[ -d "$ICONS_DIR" ]] && ls "$ICONS_DIR"/claude-*.png &>/dev/null 2>&1; then
+if [[ -d "$ICONS_DIR" ]] && ls "$ICONS_DIR"/claude-*.png &>/dev/null; then
   # Pick the largest PNG (e.g. claude-512.png)
   BEST_PNG="$(find "$ICONS_DIR" -maxdepth 1 -name 'claude-*.png' | sort -V | tail -1)"
   if [[ -n "$BEST_PNG" ]]; then
