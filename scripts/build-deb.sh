@@ -90,34 +90,11 @@ fi
 DEB_ROOT="$BUILD_DIR/deb-root"
 rm -rf "$DEB_ROOT"
 
-# Installed size in KB (rough estimate: asar + electron)
-ASAR_SIZE_KB=$(( $(stat -c%s "$ASAR_OUT") / 1024 ))
-ELECTRON_SIZE_KB=$(( $(stat -c%s "$ELECTRON_ZIP") / 1024 ))
-INSTALLED_SIZE=$(( ASAR_SIZE_KB + ELECTRON_SIZE_KB ))
-
-# DEBIAN/control
 mkdir -p "$DEB_ROOT/DEBIAN"
-cat > "$DEB_ROOT/DEBIAN/control" <<CTRL_EOF
-Package: claude-desktop
-Version: ${VERSION}
-Architecture: amd64
-Maintainer: Claude Desktop Linux <claude-desktop-linux@users.noreply.github.com>
-Installed-Size: ${INSTALLED_SIZE}
-Depends: bash, xdg-utils
-Recommends: bubblewrap
-Section: net
-Priority: optional
-Homepage: https://github.com/stslex/claude-desktop-linux
-Description: Claude Desktop for Linux (unofficial rebuild)
- Unofficial repackage of the macOS Claude Desktop application for Linux.
- Extracts app.asar from the official macOS release, replaces macOS-native Node
- addons with pure-JS stubs, and patches the Cowork platform gate so Claude
- Code runs directly on Linux without a virtual machine.
- .
- Electron is bundled at /usr/lib/electron/. No system electron required.
-CTRL_EOF
 
 # DEBIAN/postinst
+# Note: the /sessions symlink is NOT created here — the launcher script
+# handles it per-user at runtime (~/.local/share/claude-linux/sessions).
 cat > "$DEB_ROOT/DEBIAN/postinst" <<'POST_EOF'
 #!/bin/sh
 set -e
@@ -136,15 +113,6 @@ fi
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     gtk-update-icon-cache -qf /usr/share/icons/hicolor || true
 fi
-
-# Create the /sessions symlink required by the path translator.
-SESSION_TARGET=/var/lib/claude-desktop/sessions
-if [ ! -L /sessions ] && [ ! -e /sessions ]; then
-    mkdir -p "$SESSION_TARGET"
-    ln -sf "$SESSION_TARGET" /sessions 2>/dev/null || \
-        echo "claude-desktop: could not create /sessions — run manually:" \
-        && echo "  sudo mkdir -p $SESSION_TARGET && sudo ln -sf $SESSION_TARGET /sessions"
-fi
 POST_EOF
 chmod 755 "$DEB_ROOT/DEBIAN/postinst"
 
@@ -152,15 +120,6 @@ chmod 755 "$DEB_ROOT/DEBIAN/postinst"
 cat > "$DEB_ROOT/DEBIAN/postrm" <<'POSTRM_EOF'
 #!/bin/sh
 set -e
-
-# Remove the /sessions symlink only if it points to our directory.
-if [ -L /sessions ]; then
-    target="$(readlink /sessions)"
-    case "$target" in
-        /var/lib/claude-desktop/sessions*)
-            rm -f /sessions ;;
-    esac
-fi
 
 # Refresh desktop database after removal.
 if command -v update-desktop-database >/dev/null 2>&1; then
@@ -208,6 +167,34 @@ if [[ -d "$ICONS_DIR" ]] && ls "$ICONS_DIR"/claude-*.png &>/dev/null; then
 else
     log "WARNING: No PNG icons found in $ICONS_DIR"
 fi
+
+# ---------------------------------------------------------------------------
+# Generate DEBIAN/control (after files are installed so size is accurate)
+# ---------------------------------------------------------------------------
+# Installed-Size is in KB, computed from the actual installed tree.
+INSTALLED_SIZE="$(du -sk "$DEB_ROOT/usr" | cut -f1)"
+# Include repack number in Debian version so apt detects newer repacks.
+DEB_VERSION="${VERSION}+repack${REPACK:-1}"
+
+cat > "$DEB_ROOT/DEBIAN/control" <<CTRL_EOF
+Package: claude-desktop
+Version: ${DEB_VERSION}
+Architecture: amd64
+Maintainer: Claude Desktop Linux <claude-desktop-linux@users.noreply.github.com>
+Installed-Size: ${INSTALLED_SIZE}
+Depends: bash, xdg-utils
+Recommends: bubblewrap
+Section: net
+Priority: optional
+Homepage: https://github.com/stslex/claude-desktop-linux
+Description: Claude Desktop for Linux (unofficial rebuild)
+ Unofficial repackage of the macOS Claude Desktop application for Linux.
+ Extracts app.asar from the official macOS release, replaces macOS-native Node
+ addons with pure-JS stubs, and patches the Cowork platform gate so Claude
+ Code runs directly on Linux without a virtual machine.
+ .
+ Electron is bundled at /usr/lib/electron/. No system electron required.
+CTRL_EOF
 
 # ---------------------------------------------------------------------------
 # Build .deb

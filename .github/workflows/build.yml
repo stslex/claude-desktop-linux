@@ -33,7 +33,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            dmg2img p7zip-full rpm imagemagick icnsutils fuse libfuse2 zsync createrepo-c dpkg-dev
+            dmg2img p7zip-full rpm imagemagick icnsutils fuse libfuse2 zsync createrepo-c dpkg-dev apt-utils
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -328,7 +328,7 @@ jobs:
           Types: deb
           URIs: ${PAGES_URL}/deb
           Suites: ./
-          Signed-By:
+          Trusted: yes
           SOURCES_EOF
 
             # Also provide a traditional .list one-liner.
