@@ -15,12 +15,13 @@ on:
   pull_request:
     branches: ['dev', 'main']
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       BUILD_DIR:  /tmp/claude-build
       OUTPUT_DIR: ${{ github.workspace }}/output
@@ -247,11 +248,11 @@ jobs:
             "${ASSETS[@]}"
 
       # -----------------------------------------------------------------------
-      # DNF / RPM repository on GitHub Pages
-      #   Keeps the latest repack per Claude version; older repacks are pruned.
-      #   Users add the repo once via the .repo file at the Pages URL.
+      # Prepare GitHub Pages content (all package repository metadata)
+      #   Only metadata lives on Pages; binaries are served from Releases.
+      #   Deployed via actions/deploy-pages for reliable GitHub Pages updates.
       # -----------------------------------------------------------------------
-      - name: Update package repositories on GitHub Pages
+      - name: Build repository metadata for GitHub Pages
         if: >
           github.ref == 'refs/heads/main' ||
           (github.event_name == 'workflow_dispatch' && inputs.release == true)
@@ -264,21 +265,11 @@ jobs:
           REPO_NAME="${GITHUB_REPOSITORY##*/}"
           PAGES_URL="https://${REPO_USER}.github.io/${REPO_NAME}"
           DOWNLOAD_PREFIX="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          PAGES_DIR="${GITHUB_WORKSPACE}/pages"
+          mkdir -p "$PAGES_DIR"
 
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Check out or create the gh-pages branch in a worktree.
-          git fetch origin gh-pages 2>/dev/null || true
-          if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
-            git worktree add /tmp/gh-pages origin/gh-pages
-          else
-            git worktree add --orphan -b gh-pages /tmp/gh-pages
-            git -C /tmp/gh-pages commit --allow-empty -m "Initialize gh-pages"
-          fi
-
-          # Disable Jekyll so GitHub Pages serves files as-is (no HTML wrapping).
-          touch /tmp/gh-pages/.nojekyll
+          # Disable Jekyll so GitHub Pages serves files as-is.
+          touch "$PAGES_DIR/.nojekyll"
 
           # -------------------------------------------------------------------
           # DNF / RPM repository
@@ -289,13 +280,10 @@ jobs:
             cp "$RPM_SRC" "$STAGING_DIR/"
             createrepo_c --location-prefix "$DOWNLOAD_PREFIX" "$STAGING_DIR"
 
-            RPM_DIR=/tmp/gh-pages/rpm
-            mkdir -p "$RPM_DIR"
-            rm -rf "$RPM_DIR/repodata"
-            cp -a "$STAGING_DIR/repodata" "$RPM_DIR/"
-            find "$RPM_DIR" -name "*.rpm" -delete
+            mkdir -p "$PAGES_DIR/rpm"
+            cp -a "$STAGING_DIR/repodata" "$PAGES_DIR/rpm/"
 
-            cat > /tmp/gh-pages/claude-desktop.repo <<REPO_EOF
+            cat > "$PAGES_DIR/claude-desktop.repo" <<REPO_EOF
           [claude-desktop]
           name=Claude Desktop Linux (unofficial)
           baseurl=${PAGES_URL}/rpm/
@@ -314,7 +302,7 @@ jobs:
           # -------------------------------------------------------------------
           PKG_SRC="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.pkg.tar.zst"
           if [[ -f "$PKG_SRC" ]]; then
-            PACMAN_DIR=/tmp/gh-pages/pacman
+            PACMAN_DIR="$PAGES_DIR/pacman"
             mkdir -p "$PACMAN_DIR"
 
             # Copy pkg temporarily to generate the repo database.
@@ -381,30 +369,26 @@ jobs:
           DESC_EOF
 
               tar -czf "$PACMAN_DIR/claude-desktop.db.tar.gz" -C "$DB_STAGING" .
-              cp "$PACMAN_DIR/claude-desktop.db.tar.gz" "$PACMAN_DIR/claude-desktop.db"
               rm -rf "$DB_STAGING"
             fi
 
-            # Create symlinks expected by pacman.
-            cd "$PACMAN_DIR"
-            ln -sf claude-desktop.db.tar.gz claude-desktop.db 2>/dev/null || true
-            cd "$GITHUB_WORKSPACE"
+            # Create claude-desktop.db as a regular file (symlinks not supported on Pages).
+            # rm first in case repo-add created it as a symlink (cp would fail on same-file).
+            rm -f "$PACMAN_DIR/claude-desktop.db"
+            cp "$PACMAN_DIR/claude-desktop.db.tar.gz" "$PACMAN_DIR/claude-desktop.db"
 
-            # Remove the .pkg.tar.zst binary — only repo DB stays on gh-pages.
+            # Remove the .pkg.tar.zst binary — only repo DB stays on Pages.
             rm -f "$PACMAN_DIR"/*.pkg.tar.zst
 
             # Write a pacman repo config snippet users can append to pacman.conf.
-            # Server points to gh-pages where the DB lives; pacman follows the
-            # %FILENAME% field in the DB desc to download the .pkg.tar.zst from
-            # GitHub Releases (the filename contains the full release URL).
-            cat > /tmp/gh-pages/claude-desktop-pacman.conf <<PACMAN_EOF
+            cat > "$PAGES_DIR/claude-desktop-pacman.conf" <<PACMAN_EOF
           [claude-desktop]
           SigLevel = Optional TrustAll
           Server = ${PAGES_URL}/pacman
           PACMAN_EOF
 
             # Also provide an install helper script.
-            cat > /tmp/gh-pages/install-pacman-repo.sh <<INSTALL_PACMAN_EOF
+            cat > "$PAGES_DIR/install-pacman-repo.sh" <<INSTALL_PACMAN_EOF
           #!/bin/sh
           # Add the Claude Desktop repository to pacman.
           # Usage:
@@ -425,12 +409,12 @@ jobs:
           fi
 
           # -------------------------------------------------------------------
-          # NixOS — install instructions page
-          #   NixOS users use the flake.nix directly; we publish a helper page.
+          # NixOS — version metadata JSON
+          #   NixOS users use the flake.nix directly; we publish latest info.
           # -------------------------------------------------------------------
           NIX_SRC="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64-nix.tar.gz"
           if [[ -f "$NIX_SRC" ]]; then
-            NIX_DIR=/tmp/gh-pages/nix
+            NIX_DIR="$PAGES_DIR/nix"
             mkdir -p "$NIX_DIR"
             NIX_SHA256="$(sha256sum "$NIX_SRC" | awk '{print $1}')"
 
@@ -448,58 +432,71 @@ jobs:
           fi
 
           # -------------------------------------------------------------------
-          # APT / DEB repository (alongside RPM on the same gh-pages branch)
+          # APT / DEB repository
           #   Uses apt-ftparchive to generate Packages metadata.
-          #   Like RPM, only metadata lives on gh-pages; the .deb is in Releases.
+          #   Like RPM, only metadata lives on Pages; the .deb is in Releases.
           # -------------------------------------------------------------------
           DEB_SRC="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.deb"
           if [[ -f "$DEB_SRC" ]]; then
-            APT_DIR=/tmp/gh-pages/deb
+            APT_DIR="$PAGES_DIR/deb"
             mkdir -p "$APT_DIR"
 
-            # Copy the .deb temporarily so apt-ftparchive can index it.
             cp "$DEB_SRC" "$APT_DIR/"
 
-            # Generate Packages file with the GitHub Releases download URL
-            # so apt fetches the .deb from Releases, not from gh-pages.
             cd "$APT_DIR"
             apt-ftparchive packages . > Packages
 
-            # Rewrite the Filename field to point to the GitHub Releases URL.
+            # Rewrite Filename to point to the GitHub Releases URL.
             DEB_FILENAME="claude-desktop-${VERSION}-repack-${REPACK}-x86_64.deb"
             DOWNLOAD_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${DEB_FILENAME}"
             sed -i "s|Filename: ./${DEB_FILENAME}|Filename: ${DOWNLOAD_URL}|" Packages
 
             gzip -kf Packages
-
-            # Generate Release file.
             apt-ftparchive release . > Release
 
-            # Remove the .deb binary — only metadata stays on gh-pages.
+            # Remove the .deb binary — only metadata stays on Pages.
             rm -f "$APT_DIR"/*.deb
 
             cd "$GITHUB_WORKSPACE"
 
-            # Write a stable .sources file consumers can curl-install (DEB822 format).
-            cat > /tmp/gh-pages/claude-desktop.sources <<SOURCES_EOF
+            # DEB822 format .sources file.
+            cat > "$PAGES_DIR/claude-desktop.sources" <<SOURCES_EOF
           Types: deb
           URIs: ${PAGES_URL}/deb
           Suites: ./
           Trusted: yes
           SOURCES_EOF
 
-            # Also provide a traditional .list one-liner.
-            echo "deb [trusted=yes] ${PAGES_URL}/deb ./" > /tmp/gh-pages/claude-desktop.list
+            # Traditional .list one-liner.
+            echo "deb [trusted=yes] ${PAGES_URL}/deb ./" > "$PAGES_DIR/claude-desktop.list"
           else
             echo "No .deb found — skipping APT repo metadata."
           fi
 
-          # Commit only if something changed.
-          git -C /tmp/gh-pages add -A
-          if git -C /tmp/gh-pages diff --cached --quiet; then
-            echo "gh-pages: no changes."
-          else
-            git -C /tmp/gh-pages commit \
-              -m "repo: claude-desktop ${VERSION}-repack-${REPACK}"
-            git -C /tmp/gh-pages push origin HEAD:gh-pages
-          fi
+      - name: Upload Pages artifact
+        if: >
+          github.ref == 'refs/heads/main' ||
+          (github.event_name == 'workflow_dispatch' && inputs.release == true)
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages/
+
+  # ---------------------------------------------------------------------------
+  # Deploy repository metadata to GitHub Pages
+  # ---------------------------------------------------------------------------
+  deploy-pages:
+    needs: build
+    if: >
+      github.ref == 'refs/heads/main' ||
+      (github.event_name == 'workflow_dispatch' && inputs.release == true)
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
