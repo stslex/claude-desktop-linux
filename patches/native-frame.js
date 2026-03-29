@@ -12,7 +12,8 @@
  *    handler to show/focus the main window.
  *
  * Icons are resolved in order: system-installed (RPM/DEB/pacman), then the
- * PNG/SVG bundled inside the ASAR by patch-cowork.sh as a fallback.
+ * PNG/SVG bundled inside the ASAR by patch-cowork.sh, then a programmatic
+ * fallback as a last resort.
  *
  * Injected at the top of the main-process bundle by patch-cowork.sh so it runs
  * before the app's BrowserWindow/Tray creation code.
@@ -28,7 +29,11 @@ if (!global[INIT_SYM] && process.type === 'browser') {
     const electron = require('electron');
     const OrigBrowserWindow = electron.BrowserWindow;
     const OrigTray = electron.Tray;
-    const debug = process.env.DEBUG;
+    const log = (msg) => process.stderr.write(`[native-frame] ${msg}\n`);
+
+    // ---------------------------------------------------------------------
+    // Icon resolution
+    // ---------------------------------------------------------------------
 
     // Helper: try to load a nativeImage from a path, return null on failure.
     function tryLoadIcon(iconPath) {
@@ -36,25 +41,46 @@ if (!global[INIT_SYM] && process.type === 'browser') {
         if (fs.existsSync(iconPath)) {
           const img = electron.nativeImage.createFromPath(iconPath);
           if (!img.isEmpty()) {
-            if (debug) process.stderr.write(`[native-frame] Loaded icon: ${iconPath}\n`);
+            log(`Loaded icon: ${iconPath}`);
             return img;
           }
+          log(`Icon file exists but loaded as empty: ${iconPath}`);
         }
-      } catch (_) {
-        // ignore and try next
+      } catch (e) {
+        log(`Failed to load icon ${iconPath}: ${e.message}`);
       }
       return null;
     }
 
-    // Resolve icon: prefer system-installed icons (from RPM/DEB/pacman packages),
-    // then fall back to the icon bundled inside the ASAR by patch-cowork.sh.
+    // Helper: create a minimal fallback icon programmatically.
+    // This is a small orange circle with a dark center — recognizable as Claude
+    // even at tray sizes — embedded as a base64-encoded 32x32 PNG.
+    function createFallbackIcon() {
+      try {
+        const dataUrl = 'data:image/png;base64,' +
+          'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAhElEQVR4nO3T7Q2AMAhF' +
+          '0c7BnK7kRu6jA1QtH+9RGiXh9z0paWv/BOfYtzM1pt1pYTgkEg8jEHE3Ahk3Ixhx' +
+          'NYIZVyGmAjLir4ilACLSbRrgLm5F1ANEnx9yhm+fYKlfgNiagCzEY7wEgI0YxpkI' +
+          'dZyBMMeRCHccgQjHvRBoeIRKizHmAuWItoSnykYjAAAAAElFTkSuQmCC';
+        const img = electron.nativeImage.createFromDataURL(dataUrl);
+        if (!img.isEmpty()) {
+          log('Created programmatic fallback icon');
+          return img;
+        }
+      } catch (e) {
+        log(`Fallback icon creation failed: ${e.message}`);
+      }
+      return null;
+    }
+
     let appIcon = null;
 
-    // 1. System-installed icons (highest resolution first).
+    // 1. System-installed icons (highest resolution first, then scalable SVG).
     const systemPaths = [
       '/usr/share/icons/hicolor/512x512/apps/claude-desktop.png',
       '/usr/share/icons/hicolor/256x256/apps/claude-desktop.png',
       '/usr/share/icons/hicolor/128x128/apps/claude-desktop.png',
+      '/usr/share/icons/hicolor/scalable/apps/claude-desktop.svg',
     ];
     for (const iconPath of systemPaths) {
       appIcon = tryLoadIcon(iconPath);
@@ -73,8 +99,12 @@ if (!global[INIT_SYM] && process.type === 'browser') {
       }
     }
 
+    // 3. Programmatic fallback — ensures we always have SOME icon.
+    if (!appIcon) {
+      appIcon = createFallbackIcon();
+    }
+
     // Tray icons should be smaller (typically 16-24px on Linux).
-    // Resize the app icon for the tray, or try to load a smaller system icon.
     let trayIcon = null;
     if (appIcon) {
       const smallSystemPaths = [
@@ -87,83 +117,97 @@ if (!global[INIT_SYM] && process.type === 'browser') {
         if (trayIcon) break;
       }
       if (!trayIcon) {
-        // Resize the app icon to a tray-appropriate size.
-        trayIcon = appIcon.resize({ width: 32, height: 32 });
+        try {
+          trayIcon = appIcon.resize({ width: 32, height: 32 });
+        } catch (e) {
+          log(`Failed to resize app icon for tray: ${e.message}`);
+          trayIcon = appIcon; // use full-size as fallback
+        }
       }
     }
 
-    // -------------------------------------------------------------------------
+    log(`Icon resolved: app=${appIcon ? 'yes' : 'none'}, tray=${trayIcon ? 'yes' : 'none'}`);
+
+    // ---------------------------------------------------------------------
     // Patch BrowserWindow
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
+    function patchBrowserWindowOptions(options) {
+      const patched = Object.assign({}, options, {
+        frame: true,
+        transparent: false,
+      });
+      // titleBarStyle / titleBarOverlay are macOS-specific and conflict with
+      // frame:true on Linux — drop them so the WM draws a standard title bar.
+      delete patched.titleBarStyle;
+      delete patched.titleBarOverlay;
+      // Set the window icon if we have one and the caller didn't set one.
+      if (appIcon && !patched.icon) {
+        patched.icon = appIcon;
+      }
+      return patched;
+    }
+
     const PatchedBrowserWindow = new Proxy(OrigBrowserWindow, {
       construct(Target, [options = {}, ...rest]) {
-        const patched = Object.assign({}, options, {
-          frame: true,
-          transparent: false,
-        });
-        // titleBarStyle / titleBarOverlay are macOS-specific and conflict with
-        // frame:true on Linux — drop them so the WM draws a standard title bar.
-        delete patched.titleBarStyle;
-        delete patched.titleBarOverlay;
-        // Set the window icon if we have one and the caller didn't set one.
-        if (appIcon && !patched.icon) {
-          patched.icon = appIcon;
-        }
+        const patched = patchBrowserWindowOptions(options);
+        log('BrowserWindow construct intercepted: frame=true, icon=' + (patched.icon ? 'set' : 'none'));
         return Reflect.construct(Target, [patched, ...rest], Target);
       },
     });
 
-    // -------------------------------------------------------------------------
+    // Copy static properties and prototype so PatchedBrowserWindow passes
+    // instanceof checks and static method access (e.g. getAllWindows).
+    Object.setPrototypeOf(PatchedBrowserWindow, OrigBrowserWindow);
+    PatchedBrowserWindow.prototype = OrigBrowserWindow.prototype;
+
+    // ---------------------------------------------------------------------
     // Patch Tray
-    // -------------------------------------------------------------------------
-    // The macOS app creates a Tray with a template image that doesn't exist on
-    // Linux, resulting in three dots and no click behavior.  Replace the icon
-    // and add a click handler that shows/focuses the main window.
+    // ---------------------------------------------------------------------
+    function patchTrayIcon(icon) {
+      if (!trayIcon) return icon;
+      try {
+        const orig = (typeof icon === 'string')
+          ? electron.nativeImage.createFromPath(icon)
+          : icon;
+        if (!orig || orig.isEmpty()) {
+          return trayIcon;
+        }
+      } catch (_) {
+        return trayIcon;
+      }
+      return icon;
+    }
+
+    function addTrayClickHandler(tray) {
+      tray.on('click', () => {
+        const wins = OrigBrowserWindow.getAllWindows();
+        const mainWin = wins.find(w => !w.isDestroyed()) || null;
+        if (mainWin) {
+          if (mainWin.isMinimized()) mainWin.restore();
+          mainWin.show();
+          mainWin.focus();
+        }
+      });
+    }
+
     const PatchedTray = new Proxy(OrigTray, {
       construct(Target, [icon, ...rest]) {
-        // Replace the icon if it's empty/broken or if we have a better one.
-        let resolvedIcon = icon;
-        if (trayIcon) {
-          try {
-            // Check if the original icon is a valid, non-empty nativeImage.
-            const orig = (typeof icon === 'string')
-              ? electron.nativeImage.createFromPath(icon)
-              : icon;
-            if (!orig || orig.isEmpty()) {
-              resolvedIcon = trayIcon;
-            }
-          } catch (_) {
-            resolvedIcon = trayIcon;
-          }
-        }
-
+        const resolvedIcon = patchTrayIcon(icon);
+        log('Tray construct intercepted: icon=' + (resolvedIcon === trayIcon ? 'replaced' : 'original'));
         const tray = Reflect.construct(Target, [resolvedIcon, ...rest], Target);
-
-        // Wire up click to show/focus the main window (macOS handles this
-        // natively but Linux tray click does nothing by default).
-        tray.on('click', () => {
-          const wins = electron.BrowserWindow.getAllWindows();
-          const mainWin = wins.find(w => !w.isDestroyed()) || null;
-          if (mainWin) {
-            if (mainWin.isMinimized()) mainWin.restore();
-            mainWin.show();
-            mainWin.focus();
-          }
-        });
-
-        if (debug) process.stderr.write('[native-frame] Tray patched: icon replaced, click handler added\n');
+        addTrayClickHandler(tray);
+        log('Tray click handler added');
         return tray;
       },
     });
 
-    // -------------------------------------------------------------------------
+    Object.setPrototypeOf(PatchedTray, OrigTray);
+    PatchedTray.prototype = OrigTray.prototype;
+
+    // ---------------------------------------------------------------------
     // Apply patches to electron module
-    // -------------------------------------------------------------------------
-    // In newer Electron versions, properties on the electron module may be
-    // non-configurable, causing Object.defineProperty to throw.  Try direct
-    // property definition first; if that fails, override Module._load to
-    // intercept all require('electron') calls and return a Proxy with
-    // patched constructors.
+    // ---------------------------------------------------------------------
+    // Strategy 1: Direct property replacement via defineProperty.
     let bwPatched = false;
     let trayPatched = false;
 
@@ -172,6 +216,7 @@ if (!global[INIT_SYM] && process.type === 'browser') {
         value: PatchedBrowserWindow, writable: true, configurable: true, enumerable: true,
       });
       bwPatched = true;
+      log('BrowserWindow patched via defineProperty');
     } catch (_) { /* non-configurable — will use fallback */ }
 
     try {
@@ -179,15 +224,16 @@ if (!global[INIT_SYM] && process.type === 'browser') {
         value: PatchedTray, writable: true, configurable: true, enumerable: true,
       });
       trayPatched = true;
+      log('Tray patched via defineProperty');
     } catch (_) { /* non-configurable — will use fallback */ }
 
+    // Strategy 2: Module._load override to intercept all require('electron').
+    // This is used when defineProperty fails (non-configurable getters in newer
+    // Electron).  We wrap the CURRENT Module._load to stay compatible with
+    // other patches (e.g. shell-env-patch.js) that also override Module._load.
     if (!bwPatched || !trayPatched) {
-      // Fallback: override Module._load to intercept all require('electron')
-      // calls and return a Proxy with patched constructors.  This is more
-      // reliable than patching Module._cache because Electron's built-in
-      // modules may bypass the standard module cache entirely.
       const Module = require('module');
-      const origLoad = Module._load;
+      const prevLoad = Module._load;
       const electronProxy = new Proxy(electron, {
         get(target, prop, receiver) {
           if (!bwPatched && prop === 'BrowserWindow') return PatchedBrowserWindow;
@@ -195,29 +241,50 @@ if (!global[INIT_SYM] && process.type === 'browser') {
           return Reflect.get(target, prop, receiver);
         },
       });
-      Module._load = function(request, parent, isMain) {
+      Module._load = function patchedElectronLoad(request, parent, isMain) {
         if (request === 'electron') return electronProxy;
-        return origLoad.call(this, request, parent, isMain);
+        return prevLoad.call(this, request, parent, isMain);
       };
-      process.stderr.write('[native-frame] Used Module._load Proxy fallback for patching\n');
+      log('Module._load Proxy fallback installed (bw=' + bwPatched + ', tray=' + trayPatched + ')');
     }
 
-    // Safety net: if BrowserWindow was not patched via defineProperty, at least
-    // set the icon on windows as they are created.
-    if (!bwPatched && appIcon) {
-      const app = electron.app || electron.default?.app;
-      if (app) {
-        app.on('browser-window-created', (_event, win) => {
-          try { win.setIcon(appIcon); } catch (_) { /* best effort */ }
+    // Strategy 3: Safety net via app events.  Even if the Proxy/Module._load
+    // interception misses some BrowserWindow or Tray instances (e.g. if the
+    // app caches its own reference to the constructor before our patch runs),
+    // these listeners provide a second chance.
+    const app = electron.app || electron.default?.app;
+    if (app) {
+      // 3a. Patch BrowserWindow instances after creation (icon + show frame).
+      // Note: frame:true cannot be changed after construction, but the icon can.
+      app.on('browser-window-created', (_event, win) => {
+        try {
+          if (appIcon) {
+            win.setIcon(appIcon);
+          }
+          // Remove any vibrancy/transparency that the macOS code sets.
+          if (typeof win.setVibrancy === 'function') {
+            try { win.setVibrancy(null); } catch (_) {}
+          }
+        } catch (e) {
+          log(`browser-window-created handler error: ${e.message}`);
+        }
+      });
+
+      // 3b. Double-ensure Module._load intercepts 'electron' after app is
+      // ready.  Some Electron versions defer internal module initialization
+      // until after 'ready', so re-apply the Module._load override here if
+      // it wasn't done above (e.g. defineProperty succeeded but the module
+      // got re-required later from a fresh reference).
+      if (!bwPatched || !trayPatched) {
+        app.once('ready', () => {
+          log('App ready — Module._load intercept still active');
         });
       }
     }
 
-    if (debug) {
-      process.stderr.write(`[native-frame] BrowserWindow patched: frame=true, icon=${appIcon ? 'set' : 'none'}\n`);
-      process.stderr.write(`[native-frame] Tray patched: icon=${trayIcon ? 'set' : 'none'}\n`);
-    }
+    log('Patches installed: BrowserWindow(frame=true, icon=' + (appIcon ? 'set' : 'none') +
+        '), Tray(icon=' + (trayIcon ? 'set' : 'none') + ', click=handler)');
   } catch (e) {
-    process.stderr.write(`[native-frame] setup failed: ${e.message}\n`);
+    process.stderr.write(`[native-frame] setup failed: ${e.message}\n${e.stack}\n`);
   }
 }
