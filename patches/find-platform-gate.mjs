@@ -86,7 +86,7 @@ function findJsFiles(dir) {
 }
 
 // ---------------------------------------------------------------------------
-// Scoring criteria  (5 points total, all must match for threshold)
+// Scoring criteria  (7 points total, threshold = 4)
 //
 // Target (pre-minification):
 //
@@ -102,13 +102,21 @@ function findJsFiles(dir) {
 // "supported"/"unsupported", and may include extra properties like
 // { status: "unsupported", reason: ... }.
 //
-//   1. Function body contains a conditional chain (if / ternary / switch)
-//   2. Function body references the string literal "darwin"
-//   3. Function body references the string literal "win32"
-//   4. At least one ObjectExpression contains { status: "supported"|"available" }
-//   5. At least one ObjectExpression contains { status: "unsupported"|"unavailable" }
+// Newer versions may:
+//   - Drop "win32" and add "linux"
+//   - Use different status strings (e.g. "enabled"/"disabled")
+//   - Return an object with a platform display name
+//
+//   1.  Function body contains a conditional chain (if / ternary / switch)
+//   2.  Function body references "darwin"
+//   3.  Function body references "win32" OR "linux"          (platform literal)
+//   4.  { status: "supported"|"available"|"enabled" }        (positive status)
+//   5.  { status: "unsupported"|"unavailable"|"disabled" }   (negative status)
+//   6.  Function body is compact (< 500 chars) — gate functions are small
+//   7.  Function body references "platform" as a string OR calls getPlatform
 // ---------------------------------------------------------------------------
-const MAX_SCORE = 5;
+const MAX_SCORE   = 7;
+const THRESHOLD   = 4;  // Accept candidates scoring ≥ 4
 
 /** Collect all string literal values in a subtree. */
 function collectStrings(node) {
@@ -146,6 +154,20 @@ function hasStatusValueAnywhere(node, value) {
 }
 
 /**
+ * True if any ObjectExpression has a property whose key is "status",
+ * regardless of the value.  Catches renamed status strings we haven't seen.
+ */
+function hasAnyStatusProperty(node) {
+  let found = false;
+  simple(node, {
+    ObjectExpression(n) {
+      if (n.properties.some(p => (p.key?.name ?? p.key?.value) === 'status')) found = true;
+    },
+  });
+  return found;
+}
+
+/**
  * True if the subtree contains at least one ReturnStatement (meaning the body
  * uses returns at all, not just falls off the end).
  */
@@ -166,20 +188,51 @@ function hasConditionalChain(node) {
   return found;
 }
 
-/** Score a BlockStatement body node 0-5. */
-function scoreBody(body) {
+/** True if the subtree contains a call to a function whose name contains "platform" (case-insensitive). */
+function callsPlatformFunction(node) {
+  let found = false;
+  simple(node, {
+    CallExpression(n) {
+      const callee = n.callee;
+      const name = callee?.name || callee?.property?.name || '';
+      if (/platform/i.test(name)) found = true;
+    },
+  });
+  return found;
+}
+
+/** Score a BlockStatement body node 0-7. */
+function scoreBody(body, src) {
   let score = 0;
 
-  if (hasConditionalChain(body))                   score++; // criterion 1: conditional chain
+  // criterion 1: conditional chain
+  if (hasConditionalChain(body))                   score++;
+
   const strings = collectStrings(body);
-  if (strings.has('darwin'))                       score++; // criterion 2: "darwin" literal
-  if (strings.has('win32'))                        score++; // criterion 3: "win32" literal
-  // criterion 4: return-like { status: "supported" } or { status: "available" }
+
+  // criterion 2: "darwin" literal
+  if (strings.has('darwin'))                       score++;
+
+  // criterion 3: "win32" OR "linux" literal (newer versions may add linux)
+  if (strings.has('win32') || strings.has('linux')) score++;
+
+  // criterion 4: positive status object
   if (hasStatusValueAnywhere(body, 'supported') ||
-      hasStatusValueAnywhere(body, 'available'))   score++;
-  // criterion 5: return-like { status: "unsupported" } or { status: "unavailable" }
+      hasStatusValueAnywhere(body, 'available') ||
+      hasStatusValueAnywhere(body, 'enabled'))     score++;
+
+  // criterion 5: negative status object
   if (hasStatusValueAnywhere(body, 'unsupported') ||
-      hasStatusValueAnywhere(body, 'unavailable')) score++;
+      hasStatusValueAnywhere(body, 'unavailable') ||
+      hasStatusValueAnywhere(body, 'disabled'))    score++;
+
+  // criterion 6: compact body (gate functions are typically < 500 chars)
+  const bodyLen = body.end - body.start;
+  if (bodyLen > 0 && bodyLen < 500)                score++;
+
+  // criterion 7: references "platform" string or calls a *platform* function
+  if (strings.has('platform') ||
+      callsPlatformFunction(body))                 score++;
 
   return score;
 }
@@ -240,7 +293,7 @@ for (const filePath of jsFiles) {
     const body = node.body;
     if (!body || body.type !== 'BlockStatement') return;
 
-    const score = scoreBody(body);
+    const score = scoreBody(body, src);
     if (score === 0) return;
 
     candidates.push({
@@ -278,16 +331,16 @@ if (dumpAll) {
 }
 
 // ---------------------------------------------------------------------------
-// Evaluate outcome
+// Evaluate outcome — accept candidates scoring ≥ THRESHOLD
 // ---------------------------------------------------------------------------
-const topMatches = candidates.filter(c => c.score === MAX_SCORE);
+const topMatches = candidates.filter(c => c.score >= THRESHOLD);
 
 // --- zero matches ---
 if (topMatches.length === 0) {
   const best = candidates[0];
   process.stderr.write(
     '[find-platform-gate] ERROR: No platform gate function found.\n' +
-    `  Best score: ${best ? best.score : 0}/${MAX_SCORE}\n`
+    `  Threshold: ${THRESHOLD}/${MAX_SCORE}  Best score: ${best ? best.score : 0}/${MAX_SCORE}\n`
   );
   if (candidates.length > 0) {
     process.stderr.write('  Partial matches:\n');
@@ -305,16 +358,16 @@ if (topMatches.length === 0) {
   process.exit(1);
 }
 
-// --- ambiguous: pick the shortest function body (most likely the concise gate) ---
+// --- ambiguous: pick the highest score, then shortest body (most likely the concise gate) ---
 if (topMatches.length > 1) {
-  topMatches.sort((a, b) => (a.end - a.start) - (b.end - b.start));
+  topMatches.sort((a, b) => b.score - a.score || (a.end - a.start) - (b.end - b.start));
   process.stderr.write(
-    `[find-platform-gate] Multiple matches at score ${MAX_SCORE}/${MAX_SCORE}; ` +
-    `selecting shortest body (${topMatches[0].end - topMatches[0].start} chars).\n`
+    `[find-platform-gate] ${topMatches.length} matches above threshold (${THRESHOLD}/${MAX_SCORE}); ` +
+    `selecting best (score=${topMatches[0].score}, ${topMatches[0].end - topMatches[0].start} chars).\n`
   );
-  for (const c of topMatches) {
+  for (const c of topMatches.slice(0, 5)) {
     process.stderr.write(
-      `  ${c.end - c.start} chars  ${c.file}:[${c.start}..${c.end}]  ${c.preview}\n`
+      `  score=${c.score}/${MAX_SCORE}  ${c.end - c.start} chars  ${c.file}:[${c.start}..${c.end}]  ${c.preview}\n`
     );
   }
 }
