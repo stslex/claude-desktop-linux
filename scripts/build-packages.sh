@@ -63,7 +63,7 @@ mkdir -p "$OUTPUT_DIR"
 # ---------------------------------------------------------------------------
 log "--- RPM ---"
 RPM_OK=false
-if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" "$SCRIPT_DIR/build-rpm.sh"; then
+if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" REPACK_NUM="${REPACK_NUM:-0}" "$SCRIPT_DIR/build-rpm.sh"; then
     RPM_OK=true
     log "RPM build succeeded."
 else
