@@ -92,17 +92,19 @@ const REPLACEMENT = '{return{status:"supported"}}';
 
 // Group by file
 /** @type {Map<string, Array<{ start: number, end: number }>>} */
+let totalPatched = 0;
+let totalSkipped = 0;
+
 const byFile = new Map();
 for (const gate of gates) {
   if (typeof gate.file !== 'string' || typeof gate.start !== 'number' || typeof gate.end !== 'number') {
     process.stderr.write(`[apply-platform-gate] Skipping malformed gate entry: ${JSON.stringify(gate)}\n`);
+    totalSkipped++;
     continue;
   }
   if (!byFile.has(gate.file)) byFile.set(gate.file, []);
   byFile.get(gate.file).push({ start: gate.start, end: gate.end });
 }
-
-let totalPatched = 0;
 
 for (const [bundlePath, locs] of byFile) {
   // Load bundle
@@ -144,6 +146,7 @@ for (const [bundlePath, locs] of byFile) {
         `[apply-platform-gate] Character range [${start}..${end}] is out of bounds ` +
         `for file of length ${src.length} — skipping.\n`
       );
+      totalSkipped++;
       continue;
     }
 
@@ -157,6 +160,7 @@ for (const [bundlePath, locs] of byFile) {
         `  Starts with: ${JSON.stringify(originalBody.slice(0, 20))}\n` +
         `  Ends with:   ${JSON.stringify(originalBody.slice(-20))}\n`
       );
+      totalSkipped++;
       continue;
     }
 
@@ -171,6 +175,10 @@ for (const [bundlePath, locs] of byFile) {
   }
 
   writeFileSync(bundlePath, src, 'utf8');
+}
+
+if (totalSkipped > 0) {
+  process.stderr.write(`[apply-platform-gate] WARNING: ${totalSkipped} gate(s) were skipped due to validation errors.\n`);
 }
 
 if (totalPatched === 0) {

@@ -89,7 +89,19 @@ function getFeatureAvailability(feature) {
 // not deliver real APNs push messages (background delivery is a known
 // non-goal — the app must be running for Dispatch to function on Linux).
 // ---------------------------------------------------------------------------
-const LINUX_PUSH_TOKEN = 'linux-dispatch-stub-' + require('os').hostname().replace(/[^a-z0-9]/gi, '').slice(0, 16) + '-' + process.pid;
+const LINUX_PUSH_TOKEN = (function() {
+  let machineId = '';
+  try {
+    machineId = require('fs').readFileSync('/etc/machine-id', 'utf8').trim();
+  } catch (_) {
+    try {
+      machineId = require('fs').readFileSync('/var/lib/dbus/machine-id', 'utf8').trim();
+    } catch (_) {
+      machineId = require('os').hostname().replace(/[^a-z0-9]/gi, '') || 'unknown';
+    }
+  }
+  return 'linux-dispatch-stub-' + machineId.slice(0, 32);
+})();
 
 function registerForPushNotifications(callback) {
   process.stderr.write('[claude-native stub] registerForPushNotifications → synthetic token\n');
