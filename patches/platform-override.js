@@ -25,11 +25,18 @@ try {
   // -------------------------------------------------------------------------
   // Helpers
   // -------------------------------------------------------------------------
-  const NEGATIVE_STATUSES = new Set(['unsupported', 'unavailable', 'disabled']);
+  const NEGATIVE_STATUSES = new Set([
+    // Core platform gate negatives
+    'unsupported', 'unavailable', 'disabled',
+    // Update/download gate negatives — shown when CCD binary is missing/outdated
+    // or when the app thinks a newer Claude Desktop is required.
+    'update_required', 'download_required', 'out_of_date', 'outdated',
+    'requires_update', 'update_available', 'needs_update', 'not_ready',
+  ]);
 
   /**
-   * Recursively rewrite any { status: "unsupported"|"unavailable"|"disabled" }
-   * to { status: "supported" } in an object tree.  Returns true if any
+   * Recursively rewrite any { status: <negative> } to { status: "supported" }
+   * and flip boolean "blocked" flags in an object tree.  Returns true if any
    * rewrite was performed.
    */
   function rewriteStatus(obj, channel, depth) {
@@ -52,6 +59,28 @@ try {
         `[platform-override] Rewriting IPC "${channel}" supported: false → true\n`
       );
       obj.supported = true;
+      changed = true;
+    }
+
+    // Update/download flags: flip to "no update needed"
+    if (obj.needsUpdate === true) {
+      process.stderr.write(`[platform-override] Rewriting IPC "${channel}" needsUpdate: true → false\n`);
+      obj.needsUpdate = false;
+      changed = true;
+    }
+    if (obj.updateRequired === true) {
+      process.stderr.write(`[platform-override] Rewriting IPC "${channel}" updateRequired: true → false\n`);
+      obj.updateRequired = false;
+      changed = true;
+    }
+    if (obj.downloadRequired === true) {
+      process.stderr.write(`[platform-override] Rewriting IPC "${channel}" downloadRequired: true → false\n`);
+      obj.downloadRequired = false;
+      changed = true;
+    }
+    if (obj.isUpdateAvailable === true) {
+      process.stderr.write(`[platform-override] Rewriting IPC "${channel}" isUpdateAvailable: true → false\n`);
+      obj.isUpdateAvailable = false;
       changed = true;
     }
 
@@ -188,28 +217,49 @@ try {
             // Some renderer-side code checks feature objects like
             // { dispatch: { supported: false } } or { cowork: { status: "unsupported" } }.
             // We intercept window.postMessage and MessagePort to catch these.
+            // NOTE: This set must be kept in sync with NEGATIVE_STATUSES in the
+            // main-process section above.  It is duplicated here because the renderer
+            // runs in a separate V8 context and cannot share Node.js variables.
             try {
+              var NEGATIVE = new Set([
+                'unsupported','unavailable','disabled',
+                'update_required','download_required','out_of_date','outdated',
+                'requires_update','update_available','needs_update','not_ready',
+              ]);
+              function rewriteObj(o, depth) {
+                if (!o || typeof o !== 'object' || depth > 4) return;
+                if (typeof o.status === 'string' && NEGATIVE.has(o.status.toLowerCase())) {
+                  o.status = 'supported';
+                }
+                if (o.supported === false) o.supported = true;
+                if (o.needsUpdate === true)       o.needsUpdate = false;
+                if (o.updateRequired === true)    o.updateRequired = false;
+                if (o.downloadRequired === true)  o.downloadRequired = false;
+                if (o.isUpdateAvailable === true) o.isUpdateAvailable = false;
+                var keys = Object.keys(o);
+                for (var i = 0; i < keys.length; i++) {
+                  var v = o[keys[i]];
+                  if (v && typeof v === 'object' && !Array.isArray(v)) rewriteObj(v, depth + 1);
+                }
+              }
               var origPostMessage = window.postMessage;
               window.postMessage = function(msg) {
-                if (msg && typeof msg === 'object') {
-                  (function rewrite(o, depth) {
-                    if (!o || typeof o !== 'object' || depth > 4) return;
-                    if (typeof o.status === 'string') {
-                      var s = o.status.toLowerCase();
-                      if (s === 'unsupported' || s === 'unavailable' || s === 'disabled') {
-                        o.status = 'supported';
-                      }
-                    }
-                    if (o.supported === false) o.supported = true;
-                    var keys = Object.keys(o);
-                    for (var i = 0; i < keys.length; i++) {
-                      var v = o[keys[i]];
-                      if (v && typeof v === 'object' && !Array.isArray(v)) rewrite(v, depth + 1);
-                    }
-                  })(msg, 0);
-                }
+                if (msg && typeof msg === 'object') rewriteObj(msg, 0);
                 return origPostMessage.apply(this, arguments);
               };
+            } catch(e) {}
+
+            // --- Dispatch input event passthrough ---
+            // Dispatch's message input may be gated behind a feature-availability
+            // check that runs synchronously on the React render cycle.  We listen
+            // for the 'dispatch-feature-check' custom event and immediately respond
+            // with a 'dispatch-feature-ready' event so the input is never blocked.
+            try {
+              window.addEventListener('dispatch-feature-check', function() {
+                window.dispatchEvent(new CustomEvent('dispatch-feature-ready', {
+                  detail: { status: 'supported', supported: true }
+                }));
+              }, { passive: true });
             } catch(e) {}
           })();
         `).catch(() => {});

@@ -2,8 +2,8 @@
 /**
  * apply-platform-gate.mjs
  *
- * Splice the platform-gate function body in a minified JS bundle,
- * replacing it with an unconditional `return { status: "supported" }`.
+ * Splice the platform-gate function body (or bodies) in a minified JS bundle,
+ * replacing each with an unconditional `return { status: "supported" }`.
  *
  * Usage:
  *   node patches/apply-platform-gate.mjs [--input <gate-location.json>]
@@ -11,11 +11,14 @@
  *   --input   Path to gate-location.json written by find-platform-gate.mjs.
  *             Default: $BUILD_DIR/gate-location.json, or ./gate-location.json.
  *
- * The JSON must contain { file, start, end }.
- * The bundle at `file` is patched in-place.
+ * The JSON must contain EITHER:
+ *   { file, start, end }                          — single gate (legacy format)
+ *   { gates: [{ file, start, end }, ...] }        — multi-gate format (--all mode)
+ *
+ * All bundles are patched in-place.
  *
  * Exit 0 on success. Exit 1 if the file doesn't exist, JSON is malformed,
- * or the character range is out of bounds.
+ * or any character range is out of bounds.
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'fs';
@@ -61,74 +64,102 @@ try {
   process.exit(1);
 }
 
-const { file: bundlePath, start, end } = gateInfo;
-
-if (typeof bundlePath !== 'string' || typeof start !== 'number' || typeof end !== 'number') {
+// ---------------------------------------------------------------------------
+// Normalise: accept either single-gate { file, start, end } or
+// multi-gate { gates: [...] } format (written by find-platform-gate --all).
+// ---------------------------------------------------------------------------
+let gates;
+if (Array.isArray(gateInfo.gates)) {
+  gates = gateInfo.gates;
+  process.stderr.write(`[apply-platform-gate] Multi-gate mode: ${gates.length} gate(s) to patch.\n`);
+} else if (typeof gateInfo.file === 'string' && typeof gateInfo.start === 'number' && typeof gateInfo.end === 'number') {
+  gates = [{ file: gateInfo.file, start: gateInfo.start, end: gateInfo.end }];
+} else {
   process.stderr.write(
-    '[apply-platform-gate] JSON must contain { file: string, start: number, end: number }\n'
+    '[apply-platform-gate] JSON must contain { file, start, end } or { gates: [...] }\n'
   );
   process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
-// Load bundle
-// ---------------------------------------------------------------------------
-let src;
-try {
-  if (!existsSync(bundlePath)) {
-    process.stderr.write(`[apply-platform-gate] Bundle not found: ${bundlePath}\n`);
-    process.exit(1);
-  }
-  src = readFileSync(bundlePath, 'utf8');
-} catch (err) {
-  process.stderr.write(`[apply-platform-gate] Cannot read ${bundlePath}: ${err.message}\n`);
-  process.exit(1);
-}
-
-// ---------------------------------------------------------------------------
-// Bounds check
-// ---------------------------------------------------------------------------
-if (start < 0 || end > src.length || start >= end) {
-  process.stderr.write(
-    `[apply-platform-gate] Character range [${start}..${end}] is out of bounds ` +
-    `for file of length ${src.length}.\n`
-  );
-  process.exit(1);
-}
-
-// ---------------------------------------------------------------------------
-// Sanity: verify the range looks like a function body
-// ---------------------------------------------------------------------------
-const originalBody = src.slice(start, end);
-
-if (originalBody[0] !== '{' || originalBody[originalBody.length - 1] !== '}') {
-  process.stderr.write(
-    `[apply-platform-gate] Range [${start}..${end}] does not look like a function body ` +
-    `(expected to start with '{' and end with '}').\n` +
-    `  Starts with: ${JSON.stringify(originalBody.slice(0, 20))}\n` +
-    `  Ends with:   ${JSON.stringify(originalBody.slice(-20))}\n`
-  );
-  process.exit(1);
-}
-
-// ---------------------------------------------------------------------------
-// Patch — string splice, no regex, no re-parsing
+// Patch each gate — string splice, no regex, no re-parsing
+//
+// When multiple gates live in the SAME file we must apply them from last to
+// first (descending start offset) so that patching one gate doesn't shift
+// the character offsets of subsequent gates.
 // ---------------------------------------------------------------------------
 const REPLACEMENT = '{return{status:"supported"}}';
 
-const patched =
-  src.slice(0, start) +
-  REPLACEMENT +
-  src.slice(end);
+// Group by file
+/** @type {Map<string, Array<{ start: number, end: number }>>} */
+const byFile = new Map();
+for (const gate of gates) {
+  if (typeof gate.file !== 'string' || typeof gate.start !== 'number' || typeof gate.end !== 'number') {
+    process.stderr.write(`[apply-platform-gate] Skipping malformed gate entry: ${JSON.stringify(gate)}\n`);
+    continue;
+  }
+  if (!byFile.has(gate.file)) byFile.set(gate.file, []);
+  byFile.get(gate.file).push({ start: gate.start, end: gate.end });
+}
 
-writeFileSync(bundlePath, patched, 'utf8');
+let totalPatched = 0;
 
-// ---------------------------------------------------------------------------
-// Log
-// ---------------------------------------------------------------------------
-process.stderr.write(
-  `[apply-platform-gate] Patched ${bundlePath}\n` +
-  `  Original body length : ${originalBody.length}\n` +
-  `  Patched body length  : ${REPLACEMENT.length}\n` +
-  `  Original body preview: ${originalBody.slice(0, 80)}\n`
-);
+for (const [bundlePath, locs] of byFile) {
+  // Load bundle
+  let src;
+  try {
+    if (!existsSync(bundlePath)) {
+      process.stderr.write(`[apply-platform-gate] Bundle not found: ${bundlePath}\n`);
+      process.exit(1);
+    }
+    src = readFileSync(bundlePath, 'utf8');
+  } catch (err) {
+    process.stderr.write(`[apply-platform-gate] Cannot read ${bundlePath}: ${err.message}\n`);
+    process.exit(1);
+  }
+
+  // Sort descending so later offsets are patched first (preserves earlier offsets).
+  locs.sort((a, b) => b.start - a.start);
+
+  for (const { start, end } of locs) {
+    // Bounds check
+    if (start < 0 || end > src.length || start >= end) {
+      process.stderr.write(
+        `[apply-platform-gate] Character range [${start}..${end}] is out of bounds ` +
+        `for file of length ${src.length} — skipping.\n`
+      );
+      continue;
+    }
+
+    // Sanity: range must look like a function body
+    const originalBody = src.slice(start, end);
+    const trimmedBody  = originalBody.trim();
+    if (trimmedBody[0] !== '{' || trimmedBody[trimmedBody.length - 1] !== '}') {
+      process.stderr.write(
+        `[apply-platform-gate] Range [${start}..${end}] does not look like a function body ` +
+        `(expected '{' … '}') — skipping.\n` +
+        `  Starts with: ${JSON.stringify(originalBody.slice(0, 20))}\n` +
+        `  Ends with:   ${JSON.stringify(originalBody.slice(-20))}\n`
+      );
+      continue;
+    }
+
+    src = src.slice(0, start) + REPLACEMENT + src.slice(end);
+
+    process.stderr.write(
+      `[apply-platform-gate] Patched [${start}..${end}] in ${bundlePath}\n` +
+      `  Original length : ${originalBody.length}  →  Replacement length: ${REPLACEMENT.length}\n` +
+      `  Preview: ${originalBody.slice(0, 80)}\n`
+    );
+    totalPatched++;
+  }
+
+  writeFileSync(bundlePath, src, 'utf8');
+}
+
+if (totalPatched === 0) {
+  process.stderr.write('[apply-platform-gate] ERROR: No gates were patched (all entries were skipped).\n');
+  process.exit(1);
+}
+
+process.stderr.write(`[apply-platform-gate] Done — ${totalPatched} gate(s) patched.\n`);
