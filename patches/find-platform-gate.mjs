@@ -34,6 +34,8 @@ import { simple }                                   from 'acorn-walk';
 // ---------------------------------------------------------------------------
 const rawArgs = process.argv.slice(2);
 const dumpAll = rawArgs.includes('--dump-candidates');
+// --all: output every match above threshold, not just the single best
+const outputAll = rawArgs.includes('--all');
 
 // --output <path>
 let outputPath = null;
@@ -358,13 +360,21 @@ if (topMatches.length === 0) {
   process.exit(1);
 }
 
-// --- ambiguous: pick the highest score, then shortest body (most likely the concise gate) ---
+// Sort: best score first, then shortest body within same score (most concise = most likely the gate)
+topMatches.sort((a, b) => b.score - a.score || (a.end - a.start) - (b.end - b.start));
+
 if (topMatches.length > 1) {
-  topMatches.sort((a, b) => b.score - a.score || (a.end - a.start) - (b.end - b.start));
-  process.stderr.write(
-    `[find-platform-gate] ${topMatches.length} matches above threshold (${THRESHOLD}/${MAX_SCORE}); ` +
-    `selecting best (score=${topMatches[0].score}, ${topMatches[0].end - topMatches[0].start} chars).\n`
-  );
+  if (outputAll) {
+    process.stderr.write(
+      `[find-platform-gate] ${topMatches.length} matches above threshold (${THRESHOLD}/${MAX_SCORE}); ` +
+      `outputting all (--all mode).\n`
+    );
+  } else {
+    process.stderr.write(
+      `[find-platform-gate] ${topMatches.length} matches above threshold (${THRESHOLD}/${MAX_SCORE}); ` +
+      `selecting best (score=${topMatches[0].score}, ${topMatches[0].end - topMatches[0].start} chars).\n`
+    );
+  }
   for (const c of topMatches.slice(0, 5)) {
     process.stderr.write(
       `  score=${c.score}/${MAX_SCORE}  ${c.end - c.start} chars  ${c.file}:[${c.start}..${c.end}]  ${c.preview}\n`
@@ -372,15 +382,34 @@ if (topMatches.length > 1) {
   }
 }
 
-// --- exactly one ---
-const best = topMatches[0];
-const result = {
-  file:    best.file,
-  start:   best.start,
-  end:     best.end,
-  score:   best.score,
-  preview: best.preview,
-};
+// --- Build output ---
+let result;
+if (outputAll) {
+  // --all mode: output every match above threshold so apply-platform-gate can patch all of them.
+  // This is important when Cowork and Dispatch have separate gate functions in the same bundle.
+  result = {
+    gates: topMatches.map(c => ({
+      file:    c.file,
+      start:   c.start,
+      end:     c.end,
+      score:   c.score,
+      preview: c.preview,
+    })),
+  };
+  process.stderr.write(
+    `[find-platform-gate] Emitting ${result.gates.length} gate(s) in multi-gate mode.\n`
+  );
+} else {
+  // Default: single best match (legacy format)
+  const best = topMatches[0];
+  result = {
+    file:    best.file,
+    start:   best.start,
+    end:     best.end,
+    score:   best.score,
+    preview: best.preview,
+  };
+}
 
 const json = JSON.stringify(result, null, 2) + '\n';
 process.stdout.write(json);
