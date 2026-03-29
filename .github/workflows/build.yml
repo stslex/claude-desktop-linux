@@ -84,9 +84,33 @@ jobs:
           path: ${{ env.BUILD_DIR }}/patch-*.log
           if-no-files-found: warn
 
+      - name: Compute repack number
+        id: repack
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION:  ${{ steps.ver.outputs.version }}
+        run: |
+          # Count existing repacks for this exact Claude version.
+          REPACK=0
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]] || \
+             [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.release }}" == "true" ]]; then
+            EXISTING="$(gh release list --repo "${{ github.repository }}" \
+              --limit 200 --json tagName --jq '.[].tagName' 2>/dev/null || true)"
+            while IFS= read -r tag; do
+              if [[ "$tag" =~ ^v${VERSION}-repack-([0-9]+)$ ]]; then
+                N="${BASH_REMATCH[1]}"
+                (( N + 1 > REPACK )) && REPACK=$(( N + 1 ))
+              fi
+            done <<< "$EXISTING"
+          fi
+          echo "num=${REPACK}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}-repack-${REPACK}" >> "$GITHUB_OUTPUT"
+          echo "Computed repack number: ${REPACK}"
+
       - name: build-packages
         env:
           KEEP_BUILD_DIR: '1'   # preserve BUILD_DIR so electron-cache can be saved
+          REPACK_NUM: ${{ steps.repack.outputs.num }}
         run: bash scripts/build-packages.sh
 
       # -----------------------------------------------------------------------
@@ -106,32 +130,10 @@ jobs:
       #   • workflow_dispatch with release=true  → release
       #   • push to dev / PR  → skip
       # -----------------------------------------------------------------------
-      - name: Compute repack number and release tag
-        id: repack
+      - name: Rename assets to include repack suffix
         if: >
           github.ref == 'refs/heads/main' ||
           (github.event_name == 'workflow_dispatch' && inputs.release == true)
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION:  ${{ steps.ver.outputs.version }}
-        run: |
-          # Count existing repacks for this exact Claude version.
-          REPACK=0
-          EXISTING="$(gh release list --repo "${{ github.repository }}" \
-            --limit 200 --json tagName --jq '.[].tagName' 2>/dev/null || true)"
-          while IFS= read -r tag; do
-            if [[ "$tag" =~ ^v${VERSION}-repack-([0-9]+)$ ]]; then
-              N="${BASH_REMATCH[1]}"
-              (( N + 1 > REPACK )) && REPACK=$(( N + 1 ))
-            fi
-          done <<< "$EXISTING"
-          RELEASE_TAG="v${VERSION}-repack-${REPACK}"
-          echo "num=${REPACK}"          >> "$GITHUB_OUTPUT"
-          echo "tag=${RELEASE_TAG}"     >> "$GITHUB_OUTPUT"
-          echo "Computed release tag: ${RELEASE_TAG}"
-
-      - name: Rename assets to include repack suffix
-        if: steps.repack.outcome == 'success'
         env:
           VERSION: ${{ steps.ver.outputs.version }}
           REPACK:  ${{ steps.repack.outputs.num }}
@@ -155,7 +157,9 @@ jobs:
 
       - name: Compute checksums for release notes
         id: sums
-        if: steps.repack.outcome == 'success'
+        if: >
+          github.ref == 'refs/heads/main' ||
+          (github.event_name == 'workflow_dispatch' && inputs.release == true)
         env:
           VERSION: ${{ steps.ver.outputs.version }}
           REPACK:  ${{ steps.repack.outputs.num }}
@@ -167,7 +171,9 @@ jobs:
           echo "appimage=${AI_SHA}"   >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
-        if: steps.repack.outcome == 'success'
+        if: >
+          github.ref == 'refs/heads/main' ||
+          (github.event_name == 'workflow_dispatch' && inputs.release == true)
         env:
           GH_TOKEN:  ${{ github.token }}
           VERSION:   ${{ steps.ver.outputs.version }}
@@ -222,7 +228,9 @@ jobs:
       #   Users add the repo once via the .repo file at the Pages URL.
       # -----------------------------------------------------------------------
       - name: Update DNF repository on GitHub Pages
-        if: steps.repack.outcome == 'success'
+        if: >
+          github.ref == 'refs/heads/main' ||
+          (github.event_name == 'workflow_dispatch' && inputs.release == true)
         env:
           VERSION: ${{ steps.ver.outputs.version }}
           REPACK:  ${{ steps.repack.outputs.num }}

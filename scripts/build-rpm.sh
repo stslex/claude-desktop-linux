@@ -119,9 +119,13 @@ cp "$REPO_DIR/packaging/claude-desktop.spec" "$RPM_ROOT/SPECS/claude-desktop.spe
 # ---------------------------------------------------------------------------
 log "Running rpmbuild $VERSION ..."
 
+REPACK_NUM="${REPACK_NUM:-0}"
+log "Repack       : $REPACK_NUM"
+
 RPMBUILD_ARGS=(
     --define "_topdir $RPM_ROOT"
     --define "_version $VERSION"
+    --define "_repack $REPACK_NUM"
     -bb "$RPM_ROOT/SPECS/claude-desktop.spec"
 )
 

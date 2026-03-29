@@ -1,10 +1,11 @@
 # Version may be passed via --define "_version <ver>".
 # Falls back to reading %{_builddir}/VERSION at spec-parse time.
 %{!?_version: %global _version %(cat %{_builddir}/VERSION 2>/dev/null || echo 0.0.0)}
+%{!?_repack:  %global _repack  0}
 
 Name:           claude-desktop
 Version:        %{_version}
-Release:        1%{?dist}
+Release:        %{_repack}%{?dist}
 Summary:        Claude Desktop for Linux (unofficial rebuild)
 License:        Proprietary
 URL:            https://github.com/your-org/claude-desktop-linux
