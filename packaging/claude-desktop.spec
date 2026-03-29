@@ -83,7 +83,14 @@ install -D -m 644 %{SOURCE6} \
 %post
 # Register the claude:// URI scheme.
 if command -v xdg-mime &>/dev/null; then
-    mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}"
+    if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+        config_dir="$XDG_CONFIG_HOME"
+    elif [ -n "${HOME:-}" ]; then
+        config_dir="$HOME/.config"
+    else
+        config_dir="/root/.config"
+    fi
+    mkdir -p "$config_dir"
     xdg-mime default claude-desktop.desktop x-scheme-handler/claude 2>/dev/null || true
 fi
 

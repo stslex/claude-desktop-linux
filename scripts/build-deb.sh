@@ -101,8 +101,10 @@ set -e
 
 # Register the claude:// URI scheme.
 if command -v xdg-mime >/dev/null 2>&1; then
-    mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}"
-    xdg-mime default claude-desktop.desktop x-scheme-handler/claude 2>/dev/null || true
+    CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME:+$HOME/.config}}"
+    : "${CONFIG_HOME:=/root/.config}"
+    mkdir -p "$CONFIG_HOME"
+    XDG_CONFIG_HOME="$CONFIG_HOME" xdg-mime default claude-desktop.desktop x-scheme-handler/claude 2>/dev/null || true
 fi
 
 # Refresh the desktop database.

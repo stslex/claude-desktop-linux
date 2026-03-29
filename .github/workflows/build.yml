@@ -249,7 +249,7 @@ jobs:
 
       # -----------------------------------------------------------------------
       # Prepare GitHub Pages content (all package repository metadata)
-      #   Only metadata lives on Pages; binaries are served from Releases.
+      #   Metadata and binaries live on Pages; RPM binaries are in Releases.
       #   Deployed via actions/deploy-pages for reliable GitHub Pages updates.
       # -----------------------------------------------------------------------
       - name: Build repository metadata for GitHub Pages
