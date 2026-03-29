@@ -36,17 +36,33 @@ if (!global[INIT_SYM] && process.type === 'browser') {
           mod.Worker = function PatchedWorker(filename, options) {
             // Detect the shell path worker by filename.
             if (typeof filename === 'string' && filename.includes('shellPathWorker')) {
-              // Return an inline worker that immediately posts back process.env.
-              const workerCode = `
-                const { parentPort } = require('worker_threads');
-                parentPort.on('message', () => {
-                  parentPort.postMessage({ env: process.env });
-                });
-              `;
-              return new OrigWorker(workerCode, {
-                ...options,
-                eval: true,
-              });
+              // First, try to construct the original worker as-is. If that fails
+              // due to a missing/unloadable script, fall back to an inline worker
+              // that immediately posts back process.env.
+              try {
+                return new OrigWorker(filename, options);
+              } catch (err) {
+                const code = err && err.code;
+                if (
+                  code === 'ENOENT' ||
+                  code === 'MODULE_NOT_FOUND' ||
+                  code === 'ERR_MODULE_NOT_FOUND' ||
+                  code === 'ERR_WORKER_NOT_FOUND'
+                ) {
+                  process.stderr.write(`[shell-env-patch] Original worker failed (${code}), using inline fallback.\n`);
+                  const workerCode = `
+                    const { parentPort } = require('worker_threads');
+                    parentPort.on('message', () => {
+                      parentPort.postMessage({ env: process.env });
+                    });
+                  `;
+                  return new OrigWorker(workerCode, {
+                    ...options,
+                    eval: true,
+                  });
+                }
+                throw err;
+              }
             }
             return new OrigWorker(filename, options);
           };

@@ -141,10 +141,10 @@ if (!global[INIT_SYM] && process.type === 'browser') {
     }
 
     const PatchedBrowserWindow = new Proxy(OrigBrowserWindow, {
-      construct(Target, [options = {}, ...rest]) {
+      construct(Target, [options = {}, ...rest], newTarget) {
         const patched = patchBrowserWindowOptions(options);
         log('BrowserWindow construct intercepted: icon=' + (patched.icon ? 'set' : 'none'));
-        return Reflect.construct(Target, [patched, ...rest], Target);
+        return Reflect.construct(Target, [patched, ...rest], newTarget);
       },
     });
 
@@ -184,10 +184,10 @@ if (!global[INIT_SYM] && process.type === 'browser') {
     }
 
     const PatchedTray = new Proxy(OrigTray, {
-      construct(Target, [icon, ...rest]) {
+      construct(Target, [icon, ...rest], newTarget) {
         const resolvedIcon = patchTrayIcon(icon);
         log('Tray construct intercepted: icon=' + (resolvedIcon === trayIcon ? 'replaced' : 'original'));
-        const tray = Reflect.construct(Target, [resolvedIcon, ...rest], Target);
+        const tray = Reflect.construct(Target, [resolvedIcon, ...rest], newTarget);
         addTrayClickHandler(tray);
         log('Tray click handler added');
         return tray;
@@ -247,8 +247,7 @@ if (!global[INIT_SYM] && process.type === 'browser') {
     // these listeners provide a second chance.
     const app = electron.app || electron.default?.app;
     if (app) {
-      // 3a. Patch BrowserWindow instances after creation (icon + show frame).
-      // Note: frame:true cannot be changed after construction, but the icon can.
+      // 3a. Patch BrowserWindow instances after creation (icon only).
       app.on('browser-window-created', (_event, win) => {
         try {
           if (appIcon) {
@@ -259,14 +258,10 @@ if (!global[INIT_SYM] && process.type === 'browser') {
         }
       });
 
-      // 3b. Double-ensure Module._load intercepts 'electron' after app is
-      // ready.  Some Electron versions defer internal module initialization
-      // until after 'ready', so re-apply the Module._load override here if
-      // it wasn't done above (e.g. defineProperty succeeded but the module
-      // got re-required later from a fresh reference).
+      // 3b. Log confirmation that Module._load intercept is active at ready time.
       if (!bwPatched || !trayPatched) {
         app.once('ready', () => {
-          log('App ready — Module._load intercept still active');
+          log('App ready — Module._load intercept active (bw=' + bwPatched + ', tray=' + trayPatched + ')');
         });
       }
     }

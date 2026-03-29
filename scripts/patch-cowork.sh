@@ -345,7 +345,7 @@ cp "$PLAT_OVERRIDE_SRC" "$PLAT_OVERRIDE_DEST"
 log "Copied platform-override to $PLAT_OVERRIDE_DEST"
 
 # -- Prepend all requires (idempotent: skip if already present) ---------------
-if head -1 "$MAIN_ENTRY" | grep -qF 'shell-env-patch'; then
+if grep -qF 'shell-env-patch' "$MAIN_ENTRY"; then
   log "Patches already injected into $MAIN_ENTRY — skipping prepend."
 else
   TMPFILE="$(mktemp)"
@@ -381,7 +381,7 @@ log "  CCD platform patch  : linux-x64/linux-arm64 added to getHostPlatform + ge
 log "  Patches injected    : $MAIN_ENTRY"
 log "    shell-env-patch.js (fix shell path worker not found on Linux)"
 log "    platform-override.js (runtime fallback for platform gate)"
-log "    native-frame.js    (force frame:true on all BrowserWindow instances)"
+log "    native-frame.js    (icon injection + tray click handler for Linux)"
 log "    open-url-bridge.js (second-instance → open-url bridge for Linux OAuth)"
 log "    path-translator.js (/sessions/… path remapping)"
 log "------------------------------------------------------------"
