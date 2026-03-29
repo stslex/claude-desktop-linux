@@ -293,6 +293,45 @@ FRAME_DEST="$MAIN_ENTRY_DIR/native-frame.js"
 cp "$FRAME_SRC" "$FRAME_DEST"
 log "Copied native-frame to $FRAME_DEST"
 
+# -- app icon (for BrowserWindow and tray) ------------------------------------
+# Copy the best available icon next to native-frame.js so it can load it.
+# Prefer the largest extracted PNG; fall back to the bundled SVG.
+ICONS_DIR="$REPO_DIR/packaging/icons"
+ICON_COPIED=""
+if [[ -d "$ICONS_DIR" ]] && ls "$ICONS_DIR"/claude-*.png &>/dev/null 2>&1; then
+  # Pick the largest PNG (e.g. claude-512.png)
+  BEST_PNG="$(find "$ICONS_DIR" -maxdepth 1 -name 'claude-*.png' | sort -V | tail -1)"
+  if [[ -n "$BEST_PNG" ]]; then
+    cp "$BEST_PNG" "$MAIN_ENTRY_DIR/claude-desktop.png"
+    ICON_COPIED="$BEST_PNG"
+    log "Copied app icon (PNG) to $MAIN_ENTRY_DIR/claude-desktop.png"
+  fi
+fi
+if [[ -z "$ICON_COPIED" ]]; then
+  SVG_ICON="$REPO_DIR/packaging/claude-desktop.svg"
+  if [[ -f "$SVG_ICON" ]]; then
+    # Try to convert SVG to PNG for better Electron nativeImage compatibility
+    if command -v rsvg-convert &>/dev/null; then
+      rsvg-convert -w 256 -h 256 "$SVG_ICON" \
+        -o "$MAIN_ENTRY_DIR/claude-desktop.png" 2>/dev/null \
+        && ICON_COPIED="svg-converted" \
+        && log "Converted SVG to PNG icon at $MAIN_ENTRY_DIR/claude-desktop.png"
+    elif command -v convert &>/dev/null; then
+      convert -background none "$SVG_ICON" -resize 256x256 \
+        "$MAIN_ENTRY_DIR/claude-desktop.png" 2>/dev/null \
+        && ICON_COPIED="svg-converted" \
+        && log "Converted SVG to PNG icon at $MAIN_ENTRY_DIR/claude-desktop.png"
+    fi
+    if [[ -z "$ICON_COPIED" ]]; then
+      cp "$SVG_ICON" "$MAIN_ENTRY_DIR/claude-desktop.svg"
+      ICON_COPIED="svg"
+      log "Copied SVG icon to $MAIN_ENTRY_DIR/claude-desktop.svg"
+    fi
+  else
+    log "WARNING: No icon file found — windows will have no custom icon."
+  fi
+fi
+
 # -- platform-override (already CJS, just copy) -------------------------------
 PLAT_OVERRIDE_SRC="$PATCHES_DIR/platform-override.js"
 PLAT_OVERRIDE_DEST="$MAIN_ENTRY_DIR/platform-override.js"
