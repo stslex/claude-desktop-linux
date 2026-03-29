@@ -161,9 +161,9 @@ if (!global[INIT_SYM] && process.type === 'browser') {
     // -------------------------------------------------------------------------
     // In newer Electron versions, properties on the electron module may be
     // non-configurable, causing Object.defineProperty to throw.  Try direct
-    // property definition first; if that fails, replace the module-cache entry
-    // with a Proxy so all subsequent require('electron') calls return patched
-    // constructors.
+    // property definition first; if that fails, override Module._load to
+    // intercept all require('electron') calls and return a Proxy with
+    // patched constructors.
     let bwPatched = false;
     let trayPatched = false;
 
@@ -182,24 +182,24 @@ if (!global[INIT_SYM] && process.type === 'browser') {
     } catch (_) { /* non-configurable — will use fallback */ }
 
     if (!bwPatched || !trayPatched) {
-      // Fallback: wrap the module-cache entry in a Proxy that intercepts
-      // property access for the constructors we need to patch.
+      // Fallback: override Module._load to intercept all require('electron')
+      // calls and return a Proxy with patched constructors.  This is more
+      // reliable than patching Module._cache because Electron's built-in
+      // modules may bypass the standard module cache entirely.
       const Module = require('module');
-      const electronId = require.resolve('electron');
-      const cached = Module._cache[electronId];
-      if (cached) {
-        const origExports = cached.exports;
-        cached.exports = new Proxy(origExports, {
-          get(target, prop, receiver) {
-            if (!bwPatched && prop === 'BrowserWindow') return PatchedBrowserWindow;
-            if (!trayPatched && prop === 'Tray') return PatchedTray;
-            return Reflect.get(target, prop, receiver);
-          },
-        });
-        process.stderr.write('[native-frame] Used module-cache Proxy fallback for patching\n');
-      } else {
-        process.stderr.write('[native-frame] WARNING: electron not in module cache; patches may not apply\n');
-      }
+      const origLoad = Module._load;
+      const electronProxy = new Proxy(electron, {
+        get(target, prop, receiver) {
+          if (!bwPatched && prop === 'BrowserWindow') return PatchedBrowserWindow;
+          if (!trayPatched && prop === 'Tray') return PatchedTray;
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      Module._load = function(request, parent, isMain) {
+        if (request === 'electron') return electronProxy;
+        return origLoad.call(this, request, parent, isMain);
+      };
+      process.stderr.write('[native-frame] Used Module._load Proxy fallback for patching\n');
     }
 
     // Safety net: if BrowserWindow patching failed entirely, at least set the
