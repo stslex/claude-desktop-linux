@@ -237,15 +237,10 @@ post_install() {
         gtk-update-icon-cache -qf /usr/share/icons/hicolor || true
     fi
 
-    # Create the /sessions symlink required by the path translator.
-    SESSION_TARGET=/var/lib/claude-desktop/sessions
-    if [ ! -L /sessions ] && [ ! -e /sessions ]; then
-        mkdir -p "$SESSION_TARGET"
-        ln -sf "$SESSION_TARGET" /sessions 2>/dev/null || {
-            echo "claude-desktop: could not create /sessions \u2014 run manually:"
-            echo "  sudo mkdir -p $SESSION_TARGET && sudo ln -sf $SESSION_TARGET /sessions"
-        }
-    fi
+    # NOTE: The /sessions symlink is created by the launcher script at runtime
+    # (as the invoking user), not here.  This scriptlet runs as root and
+    # cannot know the end user's $HOME, so it cannot point the symlink at
+    # the correct target ($HOME/.local/share/claude-linux/sessions).
 }
 
 post_upgrade() {
@@ -253,15 +248,6 @@ post_upgrade() {
 }
 
 post_remove() {
-    # Remove the /sessions symlink only if it points to our directory.
-    if [ -L /sessions ]; then
-        target="$(readlink /sessions)"
-        case "$target" in
-            /var/lib/claude-desktop/sessions*)
-                rm -f /sessions ;;
-        esac
-    fi
-
     # Refresh desktop database after removal.
     if command -v update-desktop-database &>/dev/null; then
         update-desktop-database -q /usr/share/applications || true
