@@ -259,25 +259,26 @@ if (!global[INIT_SYM] && process.type === 'browser') {
       log('Tray patched via defineProperty');
     } catch (_) { /* non-configurable — will use fallback */ }
 
-    // Strategy 2: Module._load override to intercept all require('electron').
-    // This is used when defineProperty fails (non-configurable getters in newer
-    // Electron).  We wrap the CURRENT Module._load to stay compatible with
-    // other patches (e.g. shell-env-patch.js) that also override Module._load.
+    // Strategy 2: Module._load interceptor via the shared registry
+    // (module-load-patch.js).  Used when defineProperty fails (non-configurable
+    // getters in newer Electron).
     if (!bwPatched || !trayPatched) {
-      const Module = require('module');
-      const prevLoad = Module._load;
-      const electronProxy = new Proxy(electron, {
-        get(target, prop, receiver) {
-          if (!bwPatched && prop === 'BrowserWindow') return PatchedBrowserWindow;
-          if (!trayPatched && prop === 'Tray') return PatchedTray;
-          return Reflect.get(target, prop, receiver);
-        },
-      });
-      Module._load = function patchedElectronLoad(request, parent, isMain) {
-        if (request === 'electron') return electronProxy;
-        return prevLoad.call(this, request, parent, isMain);
-      };
-      log('Module._load Proxy fallback installed (bw=' + bwPatched + ', tray=' + trayPatched + ')');
+      if (typeof global.__claudeRegisterModuleInterceptor === 'function') {
+        const electronProxy = new Proxy(electron, {
+          get(target, prop, receiver) {
+            if (!bwPatched && prop === 'BrowserWindow') return PatchedBrowserWindow;
+            if (!trayPatched && prop === 'Tray') return PatchedTray;
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        global.__claudeRegisterModuleInterceptor('native-frame', (request) => {
+          if (request === 'electron') return electronProxy;
+          return undefined;
+        });
+        log('Module interceptor registered via shared registry (bw=' + bwPatched + ', tray=' + trayPatched + ')');
+      } else {
+        log('WARNING: module-load-patch.js not loaded — Module._load fallback unavailable');
+      }
     }
 
     // Strategy 3: Safety net via app events.  Even if the Proxy/Module._load

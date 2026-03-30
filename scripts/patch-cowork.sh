@@ -363,6 +363,12 @@ if [[ -z "$ICON_COPIED" ]]; then
   fi
 fi
 
+# -- module-load-patch (shared Module._load registry — must be first) ----------
+MODULE_LOAD_SRC="$PATCHES_DIR/module-load-patch.js"
+MODULE_LOAD_DEST="$MAIN_ENTRY_DIR/module-load-patch.js"
+cp "$MODULE_LOAD_SRC" "$MODULE_LOAD_DEST"
+log "Copied module-load-patch to $MODULE_LOAD_DEST"
+
 # -- shell-env-patch (already CJS, just copy) ---------------------------------
 SHELL_ENV_SRC="$PATCHES_DIR/shell-env-patch.js"
 SHELL_ENV_DEST="$MAIN_ENTRY_DIR/shell-env-patch.js"
@@ -376,11 +382,12 @@ cp "$PLAT_OVERRIDE_SRC" "$PLAT_OVERRIDE_DEST"
 log "Copied platform-override to $PLAT_OVERRIDE_DEST"
 
 # -- Prepend all requires (idempotent: skip if already present) ---------------
-if grep -qF 'shell-env-patch' "$MAIN_ENTRY"; then
+if grep -qF 'module-load-patch' "$MAIN_ENTRY"; then
   log "Patches already injected into $MAIN_ENTRY — skipping prepend."
 else
   TMPFILE="$(mktemp)"
   {
+    echo "require('./module-load-patch.js');"
     echo "require('./shell-env-patch.js');"
     echo "require('./platform-override.js');"
     echo "require('./native-frame.js');"
@@ -389,7 +396,7 @@ else
     cat "$MAIN_ENTRY"
   } > "$TMPFILE"
   mv "$TMPFILE" "$MAIN_ENTRY"
-  log "Prepended shell-env-patch + platform-override + native-frame + open-url-bridge + path-translator to $MAIN_ENTRY"
+  log "Prepended module-load-patch + shell-env-patch + platform-override + native-frame + open-url-bridge + path-translator to $MAIN_ENTRY"
 fi
 
 touch "$GUARD"
@@ -403,6 +410,7 @@ log "  Platform-gate patch : $GATE_SUMMARY (all gates patched to return {status:
 log "  CCD platform patch  : linux-x64/linux-arm64 added to getHostPlatform + getBinaryPathIfReady"
 log "  VM download patch   : download_and_sdk_prepare returns early on Linux"
 log "  Patches injected    : $MAIN_ENTRY"
+log "    module-load-patch.js (shared Module._load interceptor registry)"
 log "    shell-env-patch.js (fix shell path worker not found on Linux)"
 log "    platform-override.js (runtime fallback for platform gate)"
 log "    native-frame.js    (icon injection + tray click handler for Linux)"
