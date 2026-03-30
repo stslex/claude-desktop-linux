@@ -8,7 +8,7 @@ Version:        %{_version}
 Release:        %{_repack}%{?dist}
 Summary:        Claude Desktop for Linux (unofficial rebuild)
 License:        Proprietary
-URL:            https://github.com/your-org/claude-desktop-linux
+URL:            https://github.com/stslex/claude-desktop-linux
 BuildArch:      x86_64
 
 Requires:       xdg-utils
