@@ -29,8 +29,8 @@ if [[ ! -f "$BUILD_DIR/VERSION" ]]; then
     exit 1
 fi
 
-if [[ ! -f "$BUILD_DIR/app.asar" ]]; then
-    log "ERROR: $BUILD_DIR/app.asar not found. Run patch-cowork.sh first."
+if [[ ! -f "$BUILD_DIR/app-patched.asar" ]]; then
+    log "ERROR: $BUILD_DIR/app-patched.asar not found. Run build-packages.sh first."
     exit 1
 fi
 
@@ -126,9 +126,9 @@ cp -a "$REPO_DIR/packaging/AppDir/." "$APPDIR/"
 
 # App ASAR
 mkdir -p "$APPDIR/usr/lib/claude-desktop"
-cp "$BUILD_DIR/app.asar" "$APPDIR/usr/lib/claude-desktop/"
-if [[ -d "$BUILD_DIR/app.asar.unpacked" ]]; then
-    cp -a "$BUILD_DIR/app.asar.unpacked" "$APPDIR/usr/lib/claude-desktop/"
+cp "$BUILD_DIR/app-patched.asar" "$APPDIR/usr/lib/claude-desktop/app.asar"
+if [[ -d "$BUILD_DIR/app-patched.asar.unpacked" ]]; then
+    cp -a "$BUILD_DIR/app-patched.asar.unpacked" "$APPDIR/usr/lib/claude-desktop/app.asar.unpacked"
 fi
 
 # Bundled Electron

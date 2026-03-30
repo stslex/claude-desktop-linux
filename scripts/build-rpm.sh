@@ -74,12 +74,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Re-pack the patched ASAR
+# Use the canonical ASAR packed by build-packages.sh
 # ---------------------------------------------------------------------------
 ASAR_OUT="$BUILD_DIR/app-patched.asar"
-log "Packing app-patched.asar from $BUILD_DIR/app-extracted ..."
-npx --yes @electron/asar pack "$BUILD_DIR/app-extracted" "$ASAR_OUT"
-log "Packed       : $ASAR_OUT"
+if [[ ! -f "$ASAR_OUT" ]]; then
+    log "ERROR: $ASAR_OUT not found. Run build-packages.sh or pack the ASAR first."
+    exit 1
+fi
+log "ASAR         : $ASAR_OUT"
 
 # ---------------------------------------------------------------------------
 # Set up the rpmbuild tree

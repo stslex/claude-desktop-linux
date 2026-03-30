@@ -14,7 +14,7 @@ set -euo pipefail
 #      patches/path-translator.mjs so path/fs monkey-patching is active
 #      from the first tick of the main process.
 #
-# After patching, repack app-extracted/ back into app.asar.
+# Does NOT repack the ASAR — that is done once by build-packages.sh.
 #
 # Env vars:
 #   BUILD_DIR          default: /tmp/claude-build
@@ -391,13 +391,6 @@ else
   mv "$TMPFILE" "$MAIN_ENTRY"
   log "Prepended shell-env-patch + platform-override + native-frame + open-url-bridge + path-translator to $MAIN_ENTRY"
 fi
-
-# ---------------------------------------------------------------------------
-# Repack app.asar
-# ---------------------------------------------------------------------------
-log "Repacking app.asar..."
-npx --yes @electron/asar pack "$APP_DIR" "$BUILD_DIR/app.asar"
-log "app.asar written to $BUILD_DIR/app.asar"
 
 touch "$GUARD"
 
