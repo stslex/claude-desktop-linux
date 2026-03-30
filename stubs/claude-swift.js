@@ -3,6 +3,7 @@
 const { spawn: cpSpawn } = require('child_process');
 const path = require('path');
 const os   = require('os');
+const fs   = require('fs');
 
 // ---------------------------------------------------------------------------
 // State — module-scope singletons.
@@ -17,7 +18,11 @@ const _procs = new Map();
 // Helpers
 // ---------------------------------------------------------------------------
 const COWORK_BACKEND = process.env.COWORK_BACKEND || 'bubblewrap';
+const DEBUG          = process.env.COWORK_DEBUG === '1';
 const SESSION_BASE   = path.join(os.homedir(), '.local', 'share', 'claude-linux', 'sessions');
+
+// Must stay in sync with the same regex in patches/path-translator.mjs.
+const SESSION_RE = /^\/sessions\/([^/]+)\/mnt\/([^/]+)(\/.*)?$/;
 
 /** Build bwrap argv prefix for the given session directory. */
 function bwrapPrefix(sessionDir) {
@@ -29,7 +34,7 @@ function bwrapPrefix(sessionDir) {
     '--new-session',
     '--ro-bind', '/usr', '/usr',
     '--ro-bind', '/lib', '/lib',
-    ...( require('fs').existsSync('/lib64') ? ['--ro-bind', '/lib64', '/lib64'] : [] ),
+    ...( fs.existsSync('/lib64') ? ['--ro-bind', '/lib64', '/lib64'] : [] ),
     '--ro-bind', '/etc', '/etc',
     '--ro-bind', os.homedir(), os.homedir(),
     '--bind', sessionDir, sessionDir,
@@ -41,13 +46,56 @@ function bwrapPrefix(sessionDir) {
 }
 
 /**
- * Placeholder — real path translation is handled by patches/path-translator.mjs.
- * Returns opts unchanged so callers can be wired up without modification.
+ * Translate VM-style /sessions/… paths in spawn opts to real host paths.
+ *
+ * path-translator.mjs patches path.join/path.resolve/fs.promises globally,
+ * but child_process.spawn({cwd}) passes cwd directly to libuv without
+ * going through path.join — so we must translate cwd (and additionalMounts
+ * hostPath values) explicitly here.
+ *
+ * Translation rule (must stay in sync with patches/path-translator.mjs):
+ *   /sessions/<uuid>/mnt/<mount-name>/…
+ *     → SESSION_BASE/<uuid>/<mount-name>/…
+ *
  * @param {object} opts
  * @returns {object}
  */
 function translatePaths(opts) {
-  return opts;
+  if (!opts || typeof opts !== 'object') return opts;
+
+  const result = { ...opts };
+
+  // -- Translate cwd --
+  if (typeof result.cwd === 'string') {
+    const m = SESSION_RE.exec(result.cwd);
+    if (m) {
+      const [, uuid, mountName, rest] = m;
+      const translated = path.join(SESSION_BASE, uuid, mountName) + (rest || '');
+      if (DEBUG) {
+        process.stderr.write(`[claude-swift stub] translatePaths cwd: ${result.cwd} → ${translated}\n`);
+      }
+      result.cwd = translated;
+    }
+  }
+
+  // -- Translate additionalMounts[].hostPath --
+  if (Array.isArray(result.additionalMounts)) {
+    result.additionalMounts = result.additionalMounts.map((mount) => {
+      if (!mount || typeof mount.hostPath !== 'string') return mount;
+      const m = SESSION_RE.exec(mount.hostPath);
+      if (!m) return mount;
+      const [, uuid, mountName, rest] = m;
+      const translated = path.join(SESSION_BASE, uuid, mountName) + (rest || '');
+      if (DEBUG) {
+        process.stderr.write(
+          `[claude-swift stub] translatePaths mount "${mount.name}": ${mount.hostPath} → ${translated}\n`
+        );
+      }
+      return { ...mount, hostPath: translated };
+    });
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,7 +139,7 @@ const _vmBase = {
     const { cwd, env, additionalMounts = [] } = opts;
 
     const sessionDir = cwd || path.join(SESSION_BASE, 'default');
-    require('fs').mkdirSync(sessionDir, { recursive: true });
+    fs.mkdirSync(sessionDir, { recursive: true });
 
     if (typeof globalThis.__claudeRegisterMounts === 'function' && additionalMounts.length) {
       const sessionId = path.basename(sessionDir);
