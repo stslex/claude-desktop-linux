@@ -17,11 +17,22 @@ if [[ -n "${DEBUG:-}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Kill any stale instances so the single-instance lock doesn't block startup.
-# Uses the ASAR path to avoid matching this launcher script itself.
+# Stale instance cleanup (opt-in).
+#
+# Normal case: Electron's app.requestSingleInstanceLock() (in open-url-bridge.js)
+# handles duplicate launches — the second instance sends its argv to the first
+# and exits cleanly.  No pkill needed.
+#
+# Edge case: after a crash, a zombie electron process may hold the lock file
+# without actually serving requests.  Pass --kill-stale to force-kill any
+# previous electron process that was started with this ASAR before launching.
+# Only the main process is matched (--oldest), not renderers or GPU helpers.
 # ---------------------------------------------------------------------------
-pkill -f "$ASAR" 2>/dev/null || true
-sleep 0.2
+if [[ "${1:-}" == "--kill-stale" ]]; then
+    shift
+    pkill --oldest -f "electron.*$(basename "$ASAR")" 2>/dev/null || true
+    sleep 0.2
+fi
 
 # ---------------------------------------------------------------------------
 # Locate Electron — bundled copy first, then system PATH.

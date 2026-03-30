@@ -14,7 +14,7 @@ set -euo pipefail
 #      patches/path-translator.mjs so path/fs monkey-patching is active
 #      from the first tick of the main process.
 #
-# After patching, repack app-extracted/ back into app.asar.
+# Does NOT repack the ASAR — that is done once by build-packages.sh.
 #
 # Env vars:
 #   BUILD_DIR          default: /tmp/claude-build
@@ -206,7 +206,41 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Patch 3 — Find main entry point
+# Patch 3 — VM download step: skip on Linux
+# ---------------------------------------------------------------------------
+log "Locating VM download step (download_and_sdk_prepare)..."
+
+VM_DL_FIND_LOG="$BUILD_DIR/patch-vm-dl-find.log"
+VM_DL_JSON="$BUILD_DIR/vm-download-location.json"
+
+set +e
+node "$PATCHES_DIR/find-vm-download.mjs" \
+  2>"$VM_DL_FIND_LOG"
+VM_DL_FIND_EXIT=$?
+set -e
+
+cat "$VM_DL_FIND_LOG" >&2
+
+if [[ $VM_DL_FIND_EXIT -ne 0 ]]; then
+  log "WARNING: find-vm-download.mjs failed — VM download step will not be skipped on Linux."
+else
+  VM_DL_APPLY_LOG="$BUILD_DIR/patch-vm-dl-apply.log"
+  set +e
+  node "$PATCHES_DIR/apply-vm-download.mjs" \
+    --input "$VM_DL_JSON" \
+    2>"$VM_DL_APPLY_LOG"
+  VM_DL_APPLY_EXIT=$?
+  set -e
+  cat "$VM_DL_APPLY_LOG" >&2
+  if [[ $VM_DL_APPLY_EXIT -ne 0 ]]; then
+    log "WARNING: apply-vm-download.mjs failed — VM download step will not be skipped on Linux."
+  else
+    log "VM download step patched (returns early on Linux)."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Patch 4 — Find main entry point
 # ---------------------------------------------------------------------------
 log "Locating main entry point..."
 
@@ -329,6 +363,12 @@ if [[ -z "$ICON_COPIED" ]]; then
   fi
 fi
 
+# -- module-load-patch (shared Module._load registry — must be first) ----------
+MODULE_LOAD_SRC="$PATCHES_DIR/module-load-patch.js"
+MODULE_LOAD_DEST="$MAIN_ENTRY_DIR/module-load-patch.js"
+cp "$MODULE_LOAD_SRC" "$MODULE_LOAD_DEST"
+log "Copied module-load-patch to $MODULE_LOAD_DEST"
+
 # -- shell-env-patch (already CJS, just copy) ---------------------------------
 SHELL_ENV_SRC="$PATCHES_DIR/shell-env-patch.js"
 SHELL_ENV_DEST="$MAIN_ENTRY_DIR/shell-env-patch.js"
@@ -342,11 +382,12 @@ cp "$PLAT_OVERRIDE_SRC" "$PLAT_OVERRIDE_DEST"
 log "Copied platform-override to $PLAT_OVERRIDE_DEST"
 
 # -- Prepend all requires (idempotent: skip if already present) ---------------
-if grep -qF 'shell-env-patch' "$MAIN_ENTRY"; then
+if grep -qF 'module-load-patch' "$MAIN_ENTRY"; then
   log "Patches already injected into $MAIN_ENTRY — skipping prepend."
 else
   TMPFILE="$(mktemp)"
   {
+    echo "require('./module-load-patch.js');"
     echo "require('./shell-env-patch.js');"
     echo "require('./platform-override.js');"
     echo "require('./native-frame.js');"
@@ -355,15 +396,8 @@ else
     cat "$MAIN_ENTRY"
   } > "$TMPFILE"
   mv "$TMPFILE" "$MAIN_ENTRY"
-  log "Prepended shell-env-patch + platform-override + native-frame + open-url-bridge + path-translator to $MAIN_ENTRY"
+  log "Prepended module-load-patch + shell-env-patch + platform-override + native-frame + open-url-bridge + path-translator to $MAIN_ENTRY"
 fi
-
-# ---------------------------------------------------------------------------
-# Repack app.asar
-# ---------------------------------------------------------------------------
-log "Repacking app.asar..."
-npx --yes @electron/asar pack "$APP_DIR" "$BUILD_DIR/app.asar"
-log "app.asar written to $BUILD_DIR/app.asar"
 
 touch "$GUARD"
 
@@ -374,7 +408,9 @@ log "------------------------------------------------------------"
 log "Patch summary"
 log "  Platform-gate patch : $GATE_SUMMARY (all gates patched to return {status:\"supported\"})"
 log "  CCD platform patch  : linux-x64/linux-arm64 added to getHostPlatform + getBinaryPathIfReady"
+log "  VM download patch   : download_and_sdk_prepare returns early on Linux"
 log "  Patches injected    : $MAIN_ENTRY"
+log "    module-load-patch.js (shared Module._load interceptor registry)"
 log "    shell-env-patch.js (fix shell path worker not found on Linux)"
 log "    platform-override.js (runtime fallback for platform gate)"
 log "    native-frame.js    (icon injection + tray click handler for Linux)"

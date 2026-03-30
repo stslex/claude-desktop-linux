@@ -163,9 +163,13 @@ On Linux there is no VM, so we redirect these paths to:
 ~/.local/share/claude-linux/sessions/<session-id>/<mount-name>/…
 ```
 
-A symlink `sudo ln -sf ~/.local/share/claude-linux/sessions /sessions` is created
-once at install time to handle absolute paths the app constructs before our
-translation layer sees them.
+A symlink `sudo ln -sf ~/.local/share/claude-linux/sessions /sessions` is needed
+to handle absolute paths the app constructs before our translation layer sees
+them.  The symlink is created by the **launcher script** at runtime (as the
+invoking user), not by the RPM/pacman post-install scriptlet.  Package scriptlets
+run as root and do not know the end user's `$HOME`, so they cannot set the correct
+symlink target.  Both `packaging/AppDir/usr/bin/claude-desktop` (RPM/system
+launcher) and `packaging/AppDir/AppRun` (AppImage) handle this identically.
 
 `patches/path-translator.js` is injected as the first `require` in the main
 process bundle via a one-line prepend. It monkey-patches `path.join` and

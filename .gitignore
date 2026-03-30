@@ -1,7 +1,5 @@
-output/*.rpm
-output/*.AppImage
-output/*.AppImage.zsync
-output/*.sha256
+output/*
+!output/.gitkeep
 
 node_modules/
 

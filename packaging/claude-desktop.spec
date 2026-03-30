@@ -8,7 +8,7 @@ Version:        %{_version}
 Release:        %{_repack}%{?dist}
 Summary:        Claude Desktop for Linux (unofficial rebuild)
 License:        Proprietary
-URL:            https://github.com/your-org/claude-desktop-linux
+URL:            https://github.com/stslex/claude-desktop-linux
 BuildArch:      x86_64
 
 Requires:       xdg-utils
@@ -126,29 +126,15 @@ if command -v gtk-update-icon-cache &>/dev/null; then
     gtk-update-icon-cache -qf /usr/share/icons/hicolor || true
 fi
 
-# Create the /sessions symlink required by the path translator.
-# Using a fixed system path is correct here because the scriptlet runs as root.
-SESSION_TARGET=/var/lib/claude-desktop/sessions
-if [ ! -L /sessions ] && [ ! -e /sessions ]; then
-    mkdir -p "$SESSION_TARGET"
-    ln -sf "$SESSION_TARGET" /sessions 2>/dev/null || \
-        echo "claude-desktop: could not create /sessions — run manually:" \
-        && echo "  sudo mkdir -p $SESSION_TARGET && sudo ln -sf $SESSION_TARGET /sessions"
-fi
+# NOTE: The /sessions symlink is created by the launcher script at runtime
+# (as the invoking user), not here.  This scriptlet runs as root and cannot
+# know the end user's $HOME, so it cannot point the symlink at the correct
+# target ($HOME/.local/share/claude-linux/sessions).
 
 # Conditional GPG verification message (signing performed by build-rpm.sh).
 %{?gpg_sign:echo "claude-desktop: package is GPG-signed."}
 
 %postun
-# Remove the /sessions symlink only if it still points to our directory.
-if [ -L /sessions ]; then
-    target="$(readlink /sessions)"
-    case "$target" in
-        /var/lib/claude-desktop/sessions*)
-            rm -f /sessions ;;
-    esac
-fi
-
 # Refresh desktop database after removal.
 if command -v update-desktop-database &>/dev/null; then
     update-desktop-database -q /usr/share/applications || true

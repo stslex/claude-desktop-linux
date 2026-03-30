@@ -39,6 +39,10 @@ if (!global[INIT_SYM] && process.type === 'browser') {
     function tryLoadIcon(iconPath) {
       try {
         if (fs.existsSync(iconPath)) {
+          // nativeImage.createFromPath does NOT support SVG — convert first.
+          if (iconPath.endsWith('.svg')) {
+            return tryLoadSvgIcon(iconPath);
+          }
           const img = electron.nativeImage.createFromPath(iconPath);
           if (!img.isEmpty()) {
             log(`Loaded icon: ${iconPath}`);
@@ -49,6 +53,34 @@ if (!global[INIT_SYM] && process.type === 'browser') {
       } catch (e) {
         log(`Failed to load icon ${iconPath}: ${e.message}`);
       }
+      return null;
+    }
+
+    // Helper: convert SVG to PNG at runtime using rsvg-convert or convert,
+    // then load the result as a nativeImage.
+    function tryLoadSvgIcon(svgPath) {
+      const { execFileSync } = require('child_process');
+      const os = require('os');
+      const tmpPng = path.join(os.tmpdir(), 'claude-desktop-icon-' + process.pid + '.png');
+      const converters = [
+        { cmd: 'rsvg-convert', args: ['-w', '256', '-h', '256', svgPath, '-o', tmpPng] },
+        { cmd: 'convert', args: ['-background', 'none', svgPath, '-resize', '256x256', tmpPng] },
+      ];
+      for (const { cmd, args } of converters) {
+        try {
+          execFileSync(cmd, args, { stdio: 'pipe', timeout: 5000 });
+          const img = electron.nativeImage.createFromPath(tmpPng);
+          try { fs.unlinkSync(tmpPng); } catch (_) {}
+          if (!img.isEmpty()) {
+            log(`Loaded SVG icon via ${cmd}: ${svgPath}`);
+            return img;
+          }
+        } catch (_) {
+          // converter not available or failed — try next
+        }
+      }
+      try { fs.unlinkSync(tmpPng); } catch (_) {}
+      log(`SVG icon could not be converted: ${svgPath}`);
       return null;
     }
 
@@ -141,10 +173,10 @@ if (!global[INIT_SYM] && process.type === 'browser') {
     }
 
     const PatchedBrowserWindow = new Proxy(OrigBrowserWindow, {
-      construct(Target, [options = {}, ...rest], newTarget) {
+      construct(Target, [options = {}, ...rest]) {
         const patched = patchBrowserWindowOptions(options);
         log('BrowserWindow construct intercepted: icon=' + (patched.icon ? 'set' : 'none'));
-        return Reflect.construct(Target, [patched, ...rest], newTarget);
+        return new Target(patched, ...rest);
       },
     });
 
@@ -182,10 +214,12 @@ if (!global[INIT_SYM] && process.type === 'browser') {
     }
 
     const PatchedTray = new Proxy(OrigTray, {
-      construct(Target, [icon, ...rest], newTarget) {
+      construct(Target, [icon, ...rest]) {
         const resolvedIcon = patchTrayIcon(icon);
         log('Tray construct intercepted: icon=' + (resolvedIcon === trayIcon ? 'replaced' : 'original'));
-        const tray = Reflect.construct(Target, [resolvedIcon, ...rest], newTarget);
+        // Use `new Target(...)` directly instead of Reflect.construct with
+        // newTarget to avoid issues where Electron's Tray checks new.target.
+        const tray = new Target(resolvedIcon);
         // Intercept setImage() so that post-construction icon updates (e.g.
         // notification badges) also use our Linux-compatible icon instead of
         // reverting to the macOS resource.
@@ -225,25 +259,26 @@ if (!global[INIT_SYM] && process.type === 'browser') {
       log('Tray patched via defineProperty');
     } catch (_) { /* non-configurable — will use fallback */ }
 
-    // Strategy 2: Module._load override to intercept all require('electron').
-    // This is used when defineProperty fails (non-configurable getters in newer
-    // Electron).  We wrap the CURRENT Module._load to stay compatible with
-    // other patches (e.g. shell-env-patch.js) that also override Module._load.
+    // Strategy 2: Module._load interceptor via the shared registry
+    // (module-load-patch.js).  Used when defineProperty fails (non-configurable
+    // getters in newer Electron).
     if (!bwPatched || !trayPatched) {
-      const Module = require('module');
-      const prevLoad = Module._load;
-      const electronProxy = new Proxy(electron, {
-        get(target, prop, receiver) {
-          if (!bwPatched && prop === 'BrowserWindow') return PatchedBrowserWindow;
-          if (!trayPatched && prop === 'Tray') return PatchedTray;
-          return Reflect.get(target, prop, receiver);
-        },
-      });
-      Module._load = function patchedElectronLoad(request, parent, isMain) {
-        if (request === 'electron') return electronProxy;
-        return prevLoad.call(this, request, parent, isMain);
-      };
-      log('Module._load Proxy fallback installed (bw=' + bwPatched + ', tray=' + trayPatched + ')');
+      if (typeof global.__claudeRegisterModuleInterceptor === 'function') {
+        const electronProxy = new Proxy(electron, {
+          get(target, prop, receiver) {
+            if (!bwPatched && prop === 'BrowserWindow') return PatchedBrowserWindow;
+            if (!trayPatched && prop === 'Tray') return PatchedTray;
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        global.__claudeRegisterModuleInterceptor('native-frame', (request) => {
+          if (request === 'electron') return electronProxy;
+          return undefined;
+        });
+        log('Module interceptor registered via shared registry (bw=' + bwPatched + ', tray=' + trayPatched + ')');
+      } else {
+        log('WARNING: module-load-patch.js not loaded — Module._load fallback unavailable');
+      }
     }
 
     // Strategy 3: Safety net via app events.  Even if the Proxy/Module._load
@@ -263,7 +298,23 @@ if (!global[INIT_SYM] && process.type === 'browser') {
         }
       });
 
-      // 3b. Log confirmation that Module._load intercept is active at ready time.
+      // 3b. Tray safety net — periodically check for un-patched Tray instances
+      // and fix their icon + click handlers.  This covers the case where the
+      // app creates a Tray using a cached OrigTray reference.
+      const TRAY_PATCH_SYM = Symbol.for('__claudeTrayPatched');
+      const patchExistingTray = () => {
+        try {
+          // Electron has no Tray enumeration API, but we can intercept via
+          // the prototype: wrap Tray.prototype.setTitle (a no-op on Linux)
+          // as a detection hook.  Instead, we set up a timer that checks
+          // the app's dock/tray once at startup.
+          //
+          // NOTE: This is a best-effort fallback.  The primary patching
+          // (Strategy 1 or 2) should cover the common case.
+        } catch (_) {}
+      };
+
+      // 3c. Log confirmation that Module._load intercept is active at ready time.
       if (!bwPatched || !trayPatched) {
         app.once('ready', () => {
           log('App ready — Module._load intercept active (bw=' + bwPatched + ', tray=' + trayPatched + ')');

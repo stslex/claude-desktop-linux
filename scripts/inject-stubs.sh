@@ -28,6 +28,26 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 APP_DIR="$BUILD_DIR/app-extracted"
 
 # ---------------------------------------------------------------------------
+# Idempotency guard — skip if already done and sources unchanged
+# ---------------------------------------------------------------------------
+GUARD="$BUILD_DIR/.inject-stubs-done"
+
+STUB_SOURCES=(
+  "$REPO_DIR/stubs/claude-native.js"
+  "$REPO_DIR/stubs/claude-swift.js"
+)
+CURRENT_HASH=$(sha256sum "${STUB_SOURCES[@]}" | sha256sum | awk '{print $1}')
+
+if [[ -f "$GUARD" ]]; then
+  STORED_HASH=$(cat "$GUARD")
+  if [[ "$CURRENT_HASH" == "$STORED_HASH" ]]; then
+    log "Already done (remove $GUARD to re-run)."
+    exit 0
+  fi
+  log "Stub sources changed — re-injecting."
+fi
+
+# ---------------------------------------------------------------------------
 # Pre-flight: extracted ASAR must exist
 # ---------------------------------------------------------------------------
 if [[ ! -d "$APP_DIR" ]]; then
@@ -90,4 +110,6 @@ log "  $NATIVE_DIR/package.json ($NATIVE_PKG_SIZE)"
 log "  $SWIFT_DIR/index.js     ($SWIFT_JS_SIZE)"
 log "  $SWIFT_DIR/package.json  ($SWIFT_PKG_SIZE)"
 log "------------------------------------------------------------"
+
+echo -n "$CURRENT_HASH" > "$GUARD"
 log "Done."
