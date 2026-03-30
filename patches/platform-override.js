@@ -25,63 +25,95 @@ try {
   // -------------------------------------------------------------------------
   // Helpers
   // -------------------------------------------------------------------------
+  // -- Platform-gate statuses (always rewritten) --
   const NEGATIVE_STATUSES = new Set([
-    // Core platform gate negatives
     'unsupported', 'unavailable', 'disabled',
-    // Update/download gate negatives — shown when CCD binary is missing/outdated
-    // or when the app thinks a newer Claude Desktop is required.
+  ]);
+
+  // -- Update/download gate statuses (only rewritten on CCD/cowork channels) --
+  const UPDATE_STATUSES = new Set([
     'update_required', 'download_required', 'out_of_date', 'outdated',
     'requires_update', 'update_available', 'needs_update', 'not_ready',
   ]);
 
   /**
-   * Recursively rewrite any { status: <negative> } to { status: "supported" }
-   * and flip boolean "blocked" flags in an object tree.  Returns true if any
-   * rewrite was performed.
+   * Returns true when `channel` refers to a CCD / cowork / plugin subsystem
+   * whose update signals should be suppressed (there is no CCD binary on
+   * Linux).  Generic channels (e.g. "app-update") are left untouched so
+   * Claude Desktop's own update notifications can pass through.
+   */
+  const CCD_CHANNEL_RE = /ccd|cowork|binary|plugin/i;
+  function isCcdChannel(channel) {
+    return CCD_CHANNEL_RE.test(channel);
+  }
+
+  /**
+   * Recursively rewrite platform-gate fields in an object tree.
+   *
+   * Two categories of rewrites:
+   *   1. Platform gates (status: "unsupported", supported: false) — always
+   *      rewritten regardless of channel.
+   *   2. Update/download gates (needsUpdate, updateRequired, …) — only
+   *      rewritten when the channel matches CCD/cowork/binary/plugin so that
+   *      Claude Desktop's own update notifications are not suppressed.
+   *
+   * Returns true if any rewrite was performed.
    */
   function rewriteStatus(obj, channel, depth) {
     if (!obj || typeof obj !== 'object' || depth > 4) return false;
     let changed = false;
+    const ccd = isCcdChannel(channel);
 
-    // Direct status property
-    if (typeof obj.status === 'string' && NEGATIVE_STATUSES.has(obj.status.toLowerCase())) {
-      process.stderr.write(
-        `[platform-override] Rewriting IPC "${channel}" status ` +
-        `"${obj.status}" → "supported"\n`
-      );
-      obj.status = 'supported';
-      changed = true;
+    // --- Platform gate rewrites (always apply) ---
+
+    if (typeof obj.status === 'string') {
+      const lower = obj.status.toLowerCase();
+      if (NEGATIVE_STATUSES.has(lower)) {
+        process.stderr.write(
+          `[platform-override] [gate] "${channel}": status "${obj.status}" → "supported"\n`
+        );
+        obj.status = 'supported';
+        changed = true;
+      } else if (ccd && UPDATE_STATUSES.has(lower)) {
+        process.stderr.write(
+          `[platform-override] [ccd-update] "${channel}": status "${obj.status}" → "supported"\n`
+        );
+        obj.status = 'supported';
+        changed = true;
+      }
     }
 
-    // Boolean support flags: { supported: false } → { supported: true }
     if (obj.supported === false) {
       process.stderr.write(
-        `[platform-override] Rewriting IPC "${channel}" supported: false → true\n`
+        `[platform-override] [gate] "${channel}": supported: false → true\n`
       );
       obj.supported = true;
       changed = true;
     }
 
-    // Update/download flags: flip to "no update needed"
-    if (obj.needsUpdate === true) {
-      process.stderr.write(`[platform-override] Rewriting IPC "${channel}" needsUpdate: true → false\n`);
-      obj.needsUpdate = false;
-      changed = true;
-    }
-    if (obj.updateRequired === true) {
-      process.stderr.write(`[platform-override] Rewriting IPC "${channel}" updateRequired: true → false\n`);
-      obj.updateRequired = false;
-      changed = true;
-    }
-    if (obj.downloadRequired === true) {
-      process.stderr.write(`[platform-override] Rewriting IPC "${channel}" downloadRequired: true → false\n`);
-      obj.downloadRequired = false;
-      changed = true;
-    }
-    if (obj.isUpdateAvailable === true) {
-      process.stderr.write(`[platform-override] Rewriting IPC "${channel}" isUpdateAvailable: true → false\n`);
-      obj.isUpdateAvailable = false;
-      changed = true;
+    // --- Update/download suppression (CCD channels only) ---
+
+    if (ccd) {
+      if (obj.needsUpdate === true) {
+        process.stderr.write(`[platform-override] [ccd-update] "${channel}": needsUpdate → false\n`);
+        obj.needsUpdate = false;
+        changed = true;
+      }
+      if (obj.updateRequired === true) {
+        process.stderr.write(`[platform-override] [ccd-update] "${channel}": updateRequired → false\n`);
+        obj.updateRequired = false;
+        changed = true;
+      }
+      if (obj.downloadRequired === true) {
+        process.stderr.write(`[platform-override] [ccd-update] "${channel}": downloadRequired → false\n`);
+        obj.downloadRequired = false;
+        changed = true;
+      }
+      if (obj.isUpdateAvailable === true) {
+        process.stderr.write(`[platform-override] [ccd-update] "${channel}": isUpdateAvailable → false\n`);
+        obj.isUpdateAvailable = false;
+        changed = true;
+      }
     }
 
     // Recurse into nested objects (but not arrays of primitives)
@@ -217,34 +249,52 @@ try {
             // Some renderer-side code checks feature objects like
             // { dispatch: { supported: false } } or { cowork: { status: "unsupported" } }.
             // We intercept window.postMessage and MessagePort to catch these.
-            // NOTE: This set must be kept in sync with NEGATIVE_STATUSES in the
-            // main-process section above.  It is duplicated here because the renderer
-            // runs in a separate V8 context and cannot share Node.js variables.
+            // NOTE: These sets must be kept in sync with the main-process
+            // equivalents above.  Duplicated because the renderer runs in a
+            // separate V8 context and cannot share Node.js variables.
             try {
+              // Platform-gate statuses — always rewritten
               var NEGATIVE = new Set([
                 'unsupported','unavailable','disabled',
+              ]);
+              // Update/download statuses — only rewritten in CCD/cowork messages
+              var UPDATE_NEG = new Set([
                 'update_required','download_required','out_of_date','outdated',
                 'requires_update','update_available','needs_update','not_ready',
               ]);
-              function rewriteObj(o, depth) {
+              var CCD_RE = /ccd|cowork|binary|plugin/i;
+
+              function rewriteObj(o, depth, isCcd) {
                 if (!o || typeof o !== 'object' || depth > 4) return;
-                if (typeof o.status === 'string' && NEGATIVE.has(o.status.toLowerCase())) {
-                  o.status = 'supported';
+                if (typeof o.status === 'string') {
+                  var sl = o.status.toLowerCase();
+                  if (NEGATIVE.has(sl)) {
+                    o.status = 'supported';
+                  } else if (isCcd && UPDATE_NEG.has(sl)) {
+                    o.status = 'supported';
+                  }
                 }
                 if (o.supported === false) o.supported = true;
-                if (o.needsUpdate === true)       o.needsUpdate = false;
-                if (o.updateRequired === true)    o.updateRequired = false;
-                if (o.downloadRequired === true)  o.downloadRequired = false;
-                if (o.isUpdateAvailable === true) o.isUpdateAvailable = false;
+                // Update flags — only suppress for CCD/cowork channels
+                if (isCcd) {
+                  if (o.needsUpdate === true)       o.needsUpdate = false;
+                  if (o.updateRequired === true)    o.updateRequired = false;
+                  if (o.downloadRequired === true)  o.downloadRequired = false;
+                  if (o.isUpdateAvailable === true) o.isUpdateAvailable = false;
+                }
                 var keys = Object.keys(o);
                 for (var i = 0; i < keys.length; i++) {
                   var v = o[keys[i]];
-                  if (v && typeof v === 'object' && !Array.isArray(v)) rewriteObj(v, depth + 1);
+                  if (v && typeof v === 'object' && !Array.isArray(v)) rewriteObj(v, depth + 1, isCcd);
                 }
               }
               var origPostMessage = window.postMessage;
               window.postMessage = function(msg) {
-                if (msg && typeof msg === 'object') rewriteObj(msg, 0);
+                if (msg && typeof msg === 'object') {
+                  // Determine if this message relates to CCD/cowork subsystem
+                  var channelHint = (msg.channel || msg.type || '');
+                  rewriteObj(msg, 0, CCD_RE.test(channelHint));
+                }
                 return origPostMessage.apply(this, arguments);
               };
             } catch(e) {}
