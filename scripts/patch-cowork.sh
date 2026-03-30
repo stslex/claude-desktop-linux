@@ -172,6 +172,29 @@ if [[ $APPLY_EXIT -ne 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Patch — Tray icon: fix minifier variable reference on non-Windows path
+# ---------------------------------------------------------------------------
+# This runs unconditionally (not gated on SKIP_COWORK_PATCH) because the bug
+# is in the upstream Vite minifier output, not related to Cowork.
+log "Fixing tray icon variable reference..."
+
+TRAY_FIX_LOG="$BUILD_DIR/patch-tray-icon.log"
+
+set +e
+node "$PATCHES_DIR/fix-tray-icon.mjs" "$APP_DIR" \
+  2>"$TRAY_FIX_LOG"
+TRAY_FIX_EXIT=$?
+set -e
+
+cat "$TRAY_FIX_LOG" >&2
+
+if [[ $TRAY_FIX_EXIT -ne 0 ]]; then
+  log "WARNING: fix-tray-icon.mjs failed (exit $TRAY_FIX_EXIT) — tray icon may not appear on Linux."
+else
+  log "Tray icon variable reference patched."
+fi
+
+# ---------------------------------------------------------------------------
 # Patch 2 — CCD platform: add linux-x64/linux-arm64 support
 # ---------------------------------------------------------------------------
 log "Locating CCD getHostPlatform / getBinaryPathIfReady..."

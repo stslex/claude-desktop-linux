@@ -115,6 +115,26 @@ if [[ ! -S /run/dbus/system_bus_socket ]] && [[ -z "${DBUS_SYSTEM_BUS_ADDRESS:-}
 fi
 
 # ---------------------------------------------------------------------------
+# Ensure menuBarEnabled is set in config (updates reset it).
+# ---------------------------------------------------------------------------
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/Claude"
+CONFIG_FILE="$CONFIG_DIR/config.json"
+
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  mkdir -p "$CONFIG_DIR"
+  echo '{"menuBarEnabled":true}' > "$CONFIG_FILE"
+elif ! grep -q '"menuBarEnabled"[[:space:]]*:[[:space:]]*true' "$CONFIG_FILE" 2>/dev/null; then
+  if command -v jq &>/dev/null; then
+    TMP="$(mktemp)"
+    jq '.menuBarEnabled = true' "$CONFIG_FILE" > "$TMP" && mv "$TMP" "$CONFIG_FILE"
+  elif grep -q '"menuBarEnabled"' "$CONFIG_FILE" 2>/dev/null; then
+    sed -i 's/"menuBarEnabled"[[:space:]]*:[[:space:]]*[^,}]*/"menuBarEnabled":true/' "$CONFIG_FILE"
+  else
+    sed -i 's/^{/{\"menuBarEnabled\":true,/' "$CONFIG_FILE"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Launch.
 # --no-sandbox is required:
 #   • AppImage: FUSE nosuid prevents chrome-sandbox setuid.
