@@ -16,77 +16,143 @@
  *   node patches/find-ccd-platform.mjs [--bundle <path>]
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { parse } from 'acorn';
 import { simple as walkSimple } from 'acorn-walk';
 
 // ---------------------------------------------------------------------------
-// Resolve bundle path
+// Resolve bundle path(s)
 // ---------------------------------------------------------------------------
 const args = process.argv.slice(2);
-let bundlePath = null;
+let explicitBundle = null;
 const bundleIdx = args.indexOf('--bundle');
 if (bundleIdx !== -1 && bundleIdx + 1 < args.length) {
-  bundlePath = args[bundleIdx + 1];
+  explicitBundle = args[bundleIdx + 1];
 }
 
-if (!bundlePath) {
-  const buildDir = process.env.BUILD_DIR || '/tmp/claude-build';
-  const appDir   = join(buildDir, 'app-extracted');
-  bundlePath = join(appDir, '.vite', 'build', 'index.js');
-}
-
-if (!existsSync(bundlePath)) {
-  process.stderr.write(`[find-ccd-platform] Bundle not found: ${bundlePath}\n`);
-  process.exit(1);
-}
-
-const src = readFileSync(bundlePath, 'utf8');
-process.stderr.write(`[find-ccd-platform] Parsing ${bundlePath} (${src.length} chars)...\n`);
+const buildDir = process.env.BUILD_DIR || '/tmp/claude-build';
+const appDir   = join(buildDir, 'app-extracted');
+const viteBuildDir = join(appDir, '.vite', 'build');
 
 // ---------------------------------------------------------------------------
-// Parse
+// Recursively collect .js files (same pattern as find-platform-gate.mjs)
 // ---------------------------------------------------------------------------
-let ast;
-try {
-  ast = parse(src, { ecmaVersion: 2022, sourceType: 'script' });
-} catch (e) {
-  process.stderr.write(`[find-ccd-platform] Parse error: ${e.message}\n`);
-  process.exit(1);
+function findJsFiles(dir) {
+  const results = [];
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    process.stderr.write(`[find-ccd-platform] Warning: cannot read directory ${dir}: ${err.message}\n`);
+    return results;
+  }
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...findJsFiles(full));
+    } else if (entry.isFile() && entry.name.endsWith('.js')) {
+      results.push(full);
+    }
+  }
+  return results;
 }
 
 // ---------------------------------------------------------------------------
-// Walk — collect method bodies by name
+// Parse helper — try module then script (matches find-platform-gate.mjs)
+// ---------------------------------------------------------------------------
+function tryParse(src, filePath) {
+  try {
+    return parse(src, { ecmaVersion: 'latest', sourceType: 'module' });
+  } catch {
+    try {
+      return parse(src, { ecmaVersion: 'latest', sourceType: 'script', allowReserved: true });
+    } catch (e) {
+      process.stderr.write(`[find-ccd-platform] Warning: skipping ${filePath}: ${e.message}\n`);
+      return null;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Walk a single file — collect method bodies by name
 // ---------------------------------------------------------------------------
 const TARGETS = ['getHostPlatform', 'getBinaryPathIfReady'];
 const found   = {};
 
-function recordMethod(keyName, valueNode) {
+function recordMethod(keyName, valueNode, filePath) {
   if (!TARGETS.includes(keyName)) return;
   if (found[keyName]) return; // take the first occurrence
   const body = valueNode.body ?? valueNode; // FunctionExpression → .body is BlockStatement
   if (body && body.type === 'BlockStatement') {
-    found[keyName] = { start: body.start, end: body.end };
+    found[keyName] = { file: filePath, start: body.start, end: body.end };
   }
 }
 
-walkSimple(ast, {
-  // class Foo { getHostPlatform() { ... } }
-  MethodDefinition(node) {
-    const key = node.key;
-    if (key && (key.name || key.value)) {
-      recordMethod(key.name ?? key.value, node.value);
+function scanFile(filePath) {
+  let src;
+  try {
+    src = readFileSync(filePath, 'utf8');
+  } catch (err) {
+    process.stderr.write(`[find-ccd-platform] Warning: cannot read ${filePath}: ${err.message}\n`);
+    return;
+  }
+
+  process.stderr.write(`[find-ccd-platform] Parsing ${filePath} (${src.length} chars)...\n`);
+
+  const ast = tryParse(src, filePath);
+  if (!ast) return;
+
+  walkSimple(ast, {
+    // class Foo { getHostPlatform() { ... } }
+    MethodDefinition(node) {
+      const key = node.key;
+      if (key && (key.name || key.value)) {
+        recordMethod(key.name ?? key.value, node.value, filePath);
+      }
+    },
+    // { getHostPlatform: function() { ... } }  or  { getHostPlatform() { ... } }
+    Property(node) {
+      const key = node.key;
+      if (key && (key.name || key.value)) {
+        recordMethod(key.name ?? key.value, node.value, filePath);
+      }
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Search strategy:
+//   1. If --bundle given explicitly, scan only that file.
+//   2. Otherwise try .vite/build/index.js first (fast path).
+//   3. If getHostPlatform not found, fall back to recursive scan.
+// ---------------------------------------------------------------------------
+if (explicitBundle) {
+  if (!existsSync(explicitBundle)) {
+    process.stderr.write(`[find-ccd-platform] Bundle not found: ${explicitBundle}\n`);
+    process.exit(1);
+  }
+  scanFile(explicitBundle);
+} else {
+  const indexJs = join(viteBuildDir, 'index.js');
+  if (existsSync(indexJs)) {
+    scanFile(indexJs);
+  }
+
+  if (!found.getHostPlatform) {
+    process.stderr.write(
+      `[find-ccd-platform] getHostPlatform not in index.js — scanning all .js files in ${viteBuildDir}\n`
+    );
+    const jsFiles = findJsFiles(viteBuildDir);
+    // Skip index.js (already scanned) and scan the rest
+    for (const f of jsFiles) {
+      if (f === indexJs) continue;
+      scanFile(f);
+      // Stop early once both targets are found
+      if (TARGETS.every(t => found[t])) break;
     }
-  },
-  // { getHostPlatform: function() { ... } }  or  { getHostPlatform() { ... } }
-  Property(node) {
-    const key = node.key;
-    if (key && (key.name || key.value)) {
-      recordMethod(key.name ?? key.value, node.value);
-    }
-  },
-});
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Report
@@ -100,13 +166,13 @@ if (missing.length > 0) {
 
 const output = {};
 for (const [name, loc] of Object.entries(found)) {
-  output[name] = { file: bundlePath, ...loc };
-  const preview = src.slice(loc.start, Math.min(loc.start + 120, loc.end));
-  process.stderr.write(`[find-ccd-platform] ${name}: [${loc.start}..${loc.end}]\n`);
+  output[name] = loc; // already has { file, start, end }
+  const fileSrc = readFileSync(loc.file, 'utf8');
+  const preview = fileSrc.slice(loc.start, Math.min(loc.start + 120, loc.end));
+  process.stderr.write(`[find-ccd-platform] ${name}: ${loc.file} [${loc.start}..${loc.end}]\n`);
   process.stderr.write(`  preview: ${preview.replace(/\n/g, ' ')}\n`);
 }
 
-const buildDir = process.env.BUILD_DIR || '/tmp/claude-build';
-const outPath  = join(buildDir, 'ccd-platform-location.json');
+const outPath = join(buildDir, 'ccd-platform-location.json');
 writeFileSync(outPath, JSON.stringify(output, null, 2));
 process.stderr.write(`[find-ccd-platform] Written to ${outPath}\n`);
