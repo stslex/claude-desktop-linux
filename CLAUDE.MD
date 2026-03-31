@@ -30,12 +30,14 @@ entirely and run the Claude Code binary directly on the host.
 │   ├── claude-native.js         ← @ant/claude-native replacement
 │   ├── claude-swift.js          ← @ant/claude-swift replacement (Cowork VM API)
 │   ├── platform-headers.js      ← Anthropic API header injection for Cowork
-│   └── ipc-stubs.js             ← ComputerUseTcc IPC handler stubs
+│   ├── ipc-stubs.js             ← ComputerUseTcc IPC handler stubs
+│   └── dispatch-polyfill.js     ← Dispatch IPC stubs + foreground polling
 ├── patches/
 │   ├── find-platform-gate.mjs   ← AST search for the Cowork gate function
 │   ├── fix-tray-icon.mjs        ← AST fix for minifier tray icon variable bug
 │   ├── fix-tray-config.sh       ← ensure menuBarEnabled in user config
 │   ├── fix-bundle-download.mjs  ← AST patch for platform-gated binary download
+│   ├── fix-dispatch-gate.mjs    ← AST patch for Dispatch availability gate
 │   └── path-translator.js       ← /sessions/… → ~/.local/share/… remapping
 ├── packaging/
 │   ├── claude-desktop.spec      ← RPM spec file
@@ -73,6 +75,10 @@ entirely and run the Claude Code binary directly on the host.
 | `COWORK_BACKEND` | `bubblewrap` | Cowork isolation: `bubblewrap` or `host` |
 | `SKIP_DOWNLOAD` | `` | Set to `1` to reuse existing `$BUILD_DIR/claude.dmg` |
 | `ELECTRON_OVERRIDE` | `` | Force a specific Electron version (e.g. `37.0.0`) |
+| `COWORK_DEBUG` | `` | Set to `1` for verbose Cowork/header-injection logging |
+| `DISPATCH_DEBUG` | `` | Set to `1` for Dispatch IPC traffic logging |
+| `DISPATCH_POLL_INTERVAL_MS` | `30000` | Dispatch foreground polling interval (ms) |
+| `SKIP_DISPATCH_POLL` | `` | Set to `1` to disable Dispatch polling |
 
 ## Build Dependencies
 
@@ -165,6 +171,36 @@ Registers stub `ipcMain.handle()` handlers for `ComputerUseTcc.*` channels.
 On macOS these are backed by TCC (Transparency, Consent, and Control).  On Linux
 there is no equivalent — the stubs return `{ status: 'not_applicable' }` to
 prevent repeated IPC errors from destabilising the session.
+
+### Dispatch Polyfill (stubs/dispatch-polyfill.js)
+
+Makes the Dispatch feature work in the foreground on Linux.  Three components:
+
+1. **IPC handler stubs** — registers handlers the renderer expects:
+   `Dispatch.getNotificationPermission`, `Dispatch.requestNotificationPermission`,
+   `Dispatch.registerPushToken`, `Dispatch.getState`, etc.  Prevents IPC errors
+   and makes the Dispatch UI render correctly.
+
+2. **Foreground polling skeleton** — polls for pending Dispatch tasks when a
+   window is focused.  Currently disabled: the polling endpoint has not yet been
+   discovered from the minified code.  Set `DISPATCH_DEBUG=1` to log all
+   Dispatch-related IPC traffic to help with reverse-engineering.
+
+3. **Native notifications** — when a task arrives (via polling or other means),
+   shows a system notification via Electron's Notification API and navigates to
+   the task on click.
+
+Environment variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DISPATCH_POLL_INTERVAL_MS` | `30000` | Polling interval in milliseconds |
+| `SKIP_DISPATCH_POLL` | `` | Set to `1` to disable polling entirely |
+| `DISPATCH_DEBUG` | `` | Set to `1` for verbose IPC/polling logging |
+
+**Limitations:** Background delivery (APNs/FCM push) is not available.  Tasks
+sent from mobile when the app is closed won't arrive until the next launch.
+This is best-effort and may break if Anthropic changes the task-fetch API.
 
 ## Cowork Platform Gate
 
@@ -272,11 +308,14 @@ version string. The DMG is never cached — always fetch fresh.
 
 ## What This Project Intentionally Does Not Do
 
-- **Partial Dispatch support.** UI platform gates are bypassed via IPC
-  interception and `claude-native.js` stubs (`isDispatchSupported`,
-  `getDispatchAvailability`). Electron's Notification API is polyfilled.
-  Background delivery via APNs/FCM push notifications is not available —
-  the app must be running to process Dispatch tasks.
+- **Partial Dispatch support.** Dispatch works while the app is in the
+  foreground. UI platform gates are bypassed, IPC handlers are stubbed
+  (`stubs/dispatch-polyfill.js`), and Electron's Notification API is polyfilled.
+  A foreground polling skeleton is in place but the polling endpoint has not yet
+  been discovered — set `DISPATCH_DEBUG=1` to log IPC traffic for reverse-
+  engineering.  Background delivery via APNs/FCM push notifications is not
+  available; tasks sent from mobile when the app is closed won't arrive until
+  next launch.
 - **No Computer Use.** Requires `xdotool`/`scrot` hacks that are fragile and
   version-sensitive. Out of scope for the initial release.
 - **No KVM isolation.** See Cowork Isolation Backends above.
