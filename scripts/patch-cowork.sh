@@ -263,6 +263,27 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Patch — Bundle download gate: allow download on Linux
+# ---------------------------------------------------------------------------
+log "Checking for platform-gated bundle download..."
+
+BUNDLE_DL_LOG="$BUILD_DIR/patch-bundle-dl.log"
+
+set +e
+node "$PATCHES_DIR/fix-bundle-download.mjs" \
+  2>"$BUNDLE_DL_LOG"
+BUNDLE_DL_EXIT=$?
+set -e
+
+cat "$BUNDLE_DL_LOG" >&2
+
+if [[ $BUNDLE_DL_EXIT -ne 0 ]]; then
+  log "WARNING: fix-bundle-download.mjs failed (exit $BUNDLE_DL_EXIT) — binary download may not work."
+else
+  log "Bundle download gate checked."
+fi
+
+# ---------------------------------------------------------------------------
 # Patch 4 — Find main entry point
 # ---------------------------------------------------------------------------
 log "Locating main entry point..."
@@ -404,6 +425,18 @@ PLAT_OVERRIDE_DEST="$MAIN_ENTRY_DIR/platform-override.js"
 cp "$PLAT_OVERRIDE_SRC" "$PLAT_OVERRIDE_DEST"
 log "Copied platform-override to $PLAT_OVERRIDE_DEST"
 
+# -- platform-headers (already CJS, copy from stubs/) -------------------------
+PLAT_HEADERS_SRC="$REPO_DIR/stubs/platform-headers.js"
+PLAT_HEADERS_DEST="$MAIN_ENTRY_DIR/platform-headers.js"
+cp "$PLAT_HEADERS_SRC" "$PLAT_HEADERS_DEST"
+log "Copied platform-headers to $PLAT_HEADERS_DEST"
+
+# -- ipc-stubs (already CJS, copy from stubs/) --------------------------------
+IPC_STUBS_SRC="$REPO_DIR/stubs/ipc-stubs.js"
+IPC_STUBS_DEST="$MAIN_ENTRY_DIR/ipc-stubs.js"
+cp "$IPC_STUBS_SRC" "$IPC_STUBS_DEST"
+log "Copied ipc-stubs to $IPC_STUBS_DEST"
+
 # -- Prepend all requires (idempotent: skip if already present) ---------------
 if grep -qF 'module-load-patch' "$MAIN_ENTRY"; then
   log "Patches already injected into $MAIN_ENTRY — skipping prepend."
@@ -412,14 +445,16 @@ else
   {
     echo "require('./module-load-patch.js');"
     echo "require('./shell-env-patch.js');"
+    echo "require('./platform-headers.js');"
     echo "require('./platform-override.js');"
+    echo "require('./ipc-stubs.js');"
     echo "require('./native-frame.js');"
     echo "require('./open-url-bridge.js');"
     echo "require('./path-translator.js');"
     cat "$MAIN_ENTRY"
   } > "$TMPFILE"
   mv "$TMPFILE" "$MAIN_ENTRY"
-  log "Prepended module-load-patch + shell-env-patch + platform-override + native-frame + open-url-bridge + path-translator to $MAIN_ENTRY"
+  log "Prepended module-load-patch + shell-env-patch + platform-headers + platform-override + ipc-stubs + native-frame + open-url-bridge + path-translator to $MAIN_ENTRY"
 fi
 
 touch "$GUARD"
@@ -432,12 +467,15 @@ log "Patch summary"
 log "  Platform-gate patch : $GATE_SUMMARY (all gates patched to return {status:\"supported\"})"
 log "  CCD platform patch  : linux-x64/linux-arm64 added to getHostPlatform + getBinaryPathIfReady"
 log "  VM download patch   : download_and_sdk_prepare returns early on Linux"
+log "  Bundle download gate: platform check bypassed for Linux"
 log "  Patches injected    : $MAIN_ENTRY"
-log "    module-load-patch.js (shared Module._load interceptor registry)"
-log "    shell-env-patch.js (fix shell path worker not found on Linux)"
-log "    platform-override.js (runtime fallback for platform gate)"
-log "    native-frame.js    (icon injection + tray click handler for Linux)"
-log "    open-url-bridge.js (second-instance → open-url bridge for Linux OAuth)"
-log "    path-translator.js (/sessions/… path remapping)"
+log "    module-load-patch.js  (shared Module._load interceptor registry)"
+log "    shell-env-patch.js    (fix shell path worker not found on Linux)"
+log "    platform-headers.js   (Anthropic API header injection for Cowork)"
+log "    platform-override.js  (runtime fallback for platform gate)"
+log "    ipc-stubs.js          (ComputerUseTcc stub handlers)"
+log "    native-frame.js       (icon injection + tray click handler for Linux)"
+log "    open-url-bridge.js    (second-instance → open-url bridge for Linux OAuth)"
+log "    path-translator.js    (/sessions/… path remapping)"
 log "------------------------------------------------------------"
 log "Done."
