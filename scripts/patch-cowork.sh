@@ -172,6 +172,32 @@ if [[ $APPLY_EXIT -ne 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Patch — Tray icon: fix minifier variable reference on non-Windows path
+# ---------------------------------------------------------------------------
+# This tray-icon fix is independent of the Cowork feature logic (the bug is
+# in the upstream Vite minifier output), so it runs whenever this script
+# runs, but is still skipped if SKIP_COWORK_PATCH=1 or other earlier exits
+# occur.
+log "Fixing tray icon variable reference..."
+
+TRAY_FIX_LOG="$BUILD_DIR/patch-tray-icon.log"
+TRAY_BUNDLE="${VITE_BUILD_DIR}/index.js"
+
+set +e
+node "$PATCHES_DIR/fix-tray-icon.mjs" "$APP_DIR" --bundle "$TRAY_BUNDLE" \
+  2>"$TRAY_FIX_LOG"
+TRAY_FIX_EXIT=$?
+set -e
+
+cat "$TRAY_FIX_LOG" >&2
+
+if [[ $TRAY_FIX_EXIT -ne 0 ]]; then
+  log "WARNING: fix-tray-icon.mjs failed (exit $TRAY_FIX_EXIT) — tray icon may not appear on Linux."
+else
+  log "Tray icon variable reference patched."
+fi
+
+# ---------------------------------------------------------------------------
 # Patch 2 — CCD platform: add linux-x64/linux-arm64 support
 # ---------------------------------------------------------------------------
 log "Locating CCD getHostPlatform / getBinaryPathIfReady..."
@@ -237,6 +263,48 @@ else
   else
     log "VM download step patched (returns early on Linux)."
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# Patch — Bundle download gate: allow download on Linux
+# ---------------------------------------------------------------------------
+log "Checking for platform-gated bundle download..."
+
+BUNDLE_DL_LOG="$BUILD_DIR/patch-bundle-dl.log"
+
+set +e
+node "$PATCHES_DIR/fix-bundle-download.mjs" \
+  2>"$BUNDLE_DL_LOG"
+BUNDLE_DL_EXIT=$?
+set -e
+
+cat "$BUNDLE_DL_LOG" >&2
+
+if [[ $BUNDLE_DL_EXIT -ne 0 ]]; then
+  log "WARNING: fix-bundle-download.mjs failed (exit $BUNDLE_DL_EXIT) — binary download may not work."
+else
+  log "Bundle download gate checked."
+fi
+
+# ---------------------------------------------------------------------------
+# Patch — Dispatch gate: ensure Dispatch availability on Linux
+# ---------------------------------------------------------------------------
+log "Checking for Dispatch-specific platform gate..."
+
+DISPATCH_GATE_LOG="$BUILD_DIR/patch-dispatch-gate.log"
+
+set +e
+node "$PATCHES_DIR/fix-dispatch-gate.mjs" \
+  2>"$DISPATCH_GATE_LOG"
+DISPATCH_GATE_EXIT=$?
+set -e
+
+cat "$DISPATCH_GATE_LOG" >&2
+
+if [[ $DISPATCH_GATE_EXIT -ne 0 ]]; then
+  log "WARNING: fix-dispatch-gate.mjs failed (exit $DISPATCH_GATE_EXIT) — Dispatch may not activate."
+else
+  log "Dispatch gate checked."
 fi
 
 # ---------------------------------------------------------------------------
@@ -381,6 +449,24 @@ PLAT_OVERRIDE_DEST="$MAIN_ENTRY_DIR/platform-override.js"
 cp "$PLAT_OVERRIDE_SRC" "$PLAT_OVERRIDE_DEST"
 log "Copied platform-override to $PLAT_OVERRIDE_DEST"
 
+# -- platform-headers (already CJS, copy from stubs/) -------------------------
+PLAT_HEADERS_SRC="$REPO_DIR/stubs/platform-headers.js"
+PLAT_HEADERS_DEST="$MAIN_ENTRY_DIR/platform-headers.js"
+cp "$PLAT_HEADERS_SRC" "$PLAT_HEADERS_DEST"
+log "Copied platform-headers to $PLAT_HEADERS_DEST"
+
+# -- ipc-stubs (already CJS, copy from stubs/) --------------------------------
+IPC_STUBS_SRC="$REPO_DIR/stubs/ipc-stubs.js"
+IPC_STUBS_DEST="$MAIN_ENTRY_DIR/ipc-stubs.js"
+cp "$IPC_STUBS_SRC" "$IPC_STUBS_DEST"
+log "Copied ipc-stubs to $IPC_STUBS_DEST"
+
+# -- dispatch-polyfill (already CJS, copy from stubs/) -------------------------
+DISPATCH_SRC="$REPO_DIR/stubs/dispatch-polyfill.js"
+DISPATCH_DEST="$MAIN_ENTRY_DIR/dispatch-polyfill.js"
+cp "$DISPATCH_SRC" "$DISPATCH_DEST"
+log "Copied dispatch-polyfill to $DISPATCH_DEST"
+
 # -- Prepend all requires (idempotent: skip if already present) ---------------
 if grep -qF 'module-load-patch' "$MAIN_ENTRY"; then
   log "Patches already injected into $MAIN_ENTRY — skipping prepend."
@@ -389,14 +475,17 @@ else
   {
     echo "require('./module-load-patch.js');"
     echo "require('./shell-env-patch.js');"
+    echo "require('./platform-headers.js');"
     echo "require('./platform-override.js');"
+    echo "require('./ipc-stubs.js');"
+    echo "require('./dispatch-polyfill.js');"
     echo "require('./native-frame.js');"
     echo "require('./open-url-bridge.js');"
     echo "require('./path-translator.js');"
     cat "$MAIN_ENTRY"
   } > "$TMPFILE"
   mv "$TMPFILE" "$MAIN_ENTRY"
-  log "Prepended module-load-patch + shell-env-patch + platform-override + native-frame + open-url-bridge + path-translator to $MAIN_ENTRY"
+  log "Prepended module-load-patch + shell-env-patch + platform-headers + platform-override + ipc-stubs + dispatch-polyfill + native-frame + open-url-bridge + path-translator to $MAIN_ENTRY"
 fi
 
 touch "$GUARD"
@@ -409,12 +498,17 @@ log "Patch summary"
 log "  Platform-gate patch : $GATE_SUMMARY (all gates patched to return {status:\"supported\"})"
 log "  CCD platform patch  : linux-x64/linux-arm64 added to getHostPlatform + getBinaryPathIfReady"
 log "  VM download patch   : download_and_sdk_prepare returns early on Linux"
+log "  Bundle download gate: platform check bypassed for Linux"
+log "  Dispatch gate       : checked (shared with Cowork gate or patched separately)"
 log "  Patches injected    : $MAIN_ENTRY"
-log "    module-load-patch.js (shared Module._load interceptor registry)"
-log "    shell-env-patch.js (fix shell path worker not found on Linux)"
-log "    platform-override.js (runtime fallback for platform gate)"
-log "    native-frame.js    (icon injection + tray click handler for Linux)"
-log "    open-url-bridge.js (second-instance → open-url bridge for Linux OAuth)"
-log "    path-translator.js (/sessions/… path remapping)"
+log "    module-load-patch.js   (shared Module._load interceptor registry)"
+log "    shell-env-patch.js     (fix shell path worker not found on Linux)"
+log "    platform-headers.js    (Anthropic API header injection for Cowork)"
+log "    platform-override.js   (runtime fallback for platform gate)"
+log "    ipc-stubs.js           (ComputerUseTcc stub handlers)"
+log "    dispatch-polyfill.js   (Dispatch IPC stubs + foreground polling)"
+log "    native-frame.js        (icon injection + tray click handler for Linux)"
+log "    open-url-bridge.js     (second-instance → open-url bridge for Linux OAuth)"
+log "    path-translator.js     (/sessions/… path remapping)"
 log "------------------------------------------------------------"
 log "Done."

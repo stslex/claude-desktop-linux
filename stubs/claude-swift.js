@@ -24,6 +24,84 @@ const SESSION_BASE   = path.join(os.homedir(), '.local', 'share', 'claude-linux'
 // Must stay in sync with the same regex in patches/path-translator.mjs.
 const SESSION_RE = /^\/sessions\/([^/]+)\/mnt\/([^/]+)(\/.*)?$/;
 
+// VM binary path the orchestrator passes → we resolve to the real binary.
+const VM_BINARY_PATHS = ['/usr/local/bin/claude', '/usr/local/bin/claude-code'];
+
+/**
+ * Resolve a single path, translating VM-style paths to real host paths.
+ * @param {string} p
+ * @returns {string}
+ */
+function translatePath(p) {
+  if (typeof p !== 'string') return p;
+  const m = SESSION_RE.exec(p);
+  if (m) {
+    const [, uuid, mountName, rest] = m;
+    return path.join(SESSION_BASE, uuid, mountName) + (rest || '');
+  }
+  return p;
+}
+
+/**
+ * Resolve the claude-code binary path.
+ *
+ * The orchestrator passes /usr/local/bin/claude (the VM path).  On the host
+ * the actual binary lives at ~/.config/Claude/claude-code-vm/<version>/claude
+ * or on PATH as `claude` / `claude-code`.
+ *
+ * @param {string} binary
+ * @returns {string}
+ */
+function resolveBinary(binary) {
+  if (!VM_BINARY_PATHS.includes(binary)) return binary;
+
+  // 1. Check the claude-code-vm directory for the latest version.
+  const vmDir = path.join(os.homedir(), '.config', 'Claude', 'claude-code-vm');
+  try {
+    if (fs.existsSync(vmDir)) {
+      const versions = fs.readdirSync(vmDir)
+        .filter(d => {
+          try { return fs.statSync(path.join(vmDir, d)).isDirectory(); }
+          catch (_) { return false; }
+        })
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+      if (versions.length > 0) {
+        const latest = versions[versions.length - 1];
+        const candidates = ['claude', 'claude-code'];
+        for (const name of candidates) {
+          const fullPath = path.join(vmDir, latest, name);
+          try {
+            fs.accessSync(fullPath, fs.constants.X_OK);
+            if (DEBUG) {
+              process.stderr.write(`[claude-swift stub] resolveBinary: ${binary} → ${fullPath}\n`);
+            }
+            return fullPath;
+          } catch (_) {}
+        }
+      }
+    }
+  } catch (e) {
+    if (DEBUG) process.stderr.write(`[claude-swift stub] resolveBinary scan error: ${e.message}\n`);
+  }
+
+  // 2. Fall back to PATH lookup.
+  const { execFileSync } = require('child_process');
+  for (const name of ['claude', 'claude-code']) {
+    try {
+      const resolved = execFileSync('which', [name], { encoding: 'utf8', timeout: 3000 }).trim();
+      if (resolved) {
+        if (DEBUG) {
+          process.stderr.write(`[claude-swift stub] resolveBinary: ${binary} → ${resolved} (via which)\n`);
+        }
+        return resolved;
+      }
+    } catch (_) {}
+  }
+
+  process.stderr.write(`[claude-swift stub] WARNING: could not resolve ${binary} — using as-is\n`);
+  return binary;
+}
+
 /** Build bwrap argv prefix for the given session directory. */
 function bwrapPrefix(sessionDir) {
   return [
@@ -75,6 +153,20 @@ function translatePaths(opts) {
         process.stderr.write(`[claude-swift stub] translatePaths cwd: ${result.cwd} → ${translated}\n`);
       }
       result.cwd = translated;
+    }
+  }
+
+  // -- Translate env.PATH entries --
+  if (result.env && typeof result.env.PATH === 'string') {
+    const translated = result.env.PATH
+      .split(':')
+      .map(p => translatePath(p))
+      .join(':');
+    if (translated !== result.env.PATH) {
+      if (DEBUG) {
+        process.stderr.write(`[claude-swift stub] translatePaths env.PATH: ${result.env.PATH} → ${translated}\n`);
+      }
+      result.env = { ...result.env, PATH: translated };
     }
   }
 
@@ -135,6 +227,7 @@ const _vmBase = {
    * @returns {Promise<number>}  The child process PID (used as stable handle).
    */
   spawn(binary, args = [], opts = {}) {
+    binary = resolveBinary(binary);
     opts = translatePaths(opts);
     const { cwd, env, additionalMounts = [] } = opts;
 

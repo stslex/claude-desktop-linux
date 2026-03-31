@@ -368,11 +368,14 @@ Release body is auto-generated and includes:
 
 ## Explicit Non-Goals
 
-**No HTTP header / User-Agent spoofing.** Some ports send `darwin` in User-Agent
-or modify request headers to appear as macOS clients. We do not do this. Our stubs
-return `"darwin"` from `getPlatform()` because the in-process JS checks it, but
-we do not touch network-level headers. If Anthropic adds server-side platform
-checks that require macOS headers, Cowork will break and we will document it.
+**Targeted platform header injection (not general spoofing).**
+`stubs/platform-headers.js` injects `Anthropic-Client-OS-Platform: darwin` and
+`Anthropic-Client-OS-Version: 14.0` on HTTP requests to `*.anthropic.com` and
+`*.claude.ai` only.  Anthropic's server checks these headers to decide whether to
+enable Cowork and serve the claude-code binary bundle — without them, Cowork never
+activates regardless of local patches.  Every working Linux Cowork implementation
+sends these headers.  We do NOT modify User-Agent strings, general browsing
+headers, or requests to any non-Anthropic domain.
 
 **Partial Dispatch.** Dispatch's mobile-to-desktop protocol uses push notifications
 via APNs (Apple) and FCM (Google) for background delivery. We bypass the UI
