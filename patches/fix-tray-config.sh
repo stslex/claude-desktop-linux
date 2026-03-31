@@ -7,8 +7,8 @@ set -euo pipefail
 # Ensures menuBarEnabled is set to true in ~/.config/Claude/config.json.
 #
 # Claude Desktop gates tray icon creation behind this config flag, and removes
-# the setting on updates.  This script is called at launch time (not build
-# time) so it re-applies after every update.
+# the setting on updates. Run this script after updates or before launching
+# Claude Desktop to ensure the tray icon remains enabled.
 #
 # Idempotent: safe to run repeatedly.
 # ---------------------------------------------------------------------------

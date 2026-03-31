@@ -72,7 +72,7 @@ if (!global[INIT_SYM] && process.type === 'browser') {
       };
 
       // Copy any properties from the original (unlikely, but be safe)
-      Object.setPrototypeOf(ipcMain.handle, origHandle);
+      Object.assign(ipcMain.handle, _hookedHandle);
 
       process.stderr.write(`[ipc-stubs] Registered ${TCC_CHANNELS.length} ComputerUseTcc stub handlers\n`);
     }

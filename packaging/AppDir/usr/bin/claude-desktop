@@ -125,8 +125,15 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   echo '{"menuBarEnabled":true}' > "$CONFIG_FILE"
 elif ! grep -q '"menuBarEnabled"[[:space:]]*:[[:space:]]*true' "$CONFIG_FILE" 2>/dev/null; then
   if command -v jq &>/dev/null; then
-    TMP="$(mktemp)"
-    jq '.menuBarEnabled = true' "$CONFIG_FILE" > "$TMP" && mv "$TMP" "$CONFIG_FILE"
+    TMP="$(mktemp)" || TMP=""
+    if [[ -n "$TMP" ]]; then
+      if jq '.menuBarEnabled = true' "$CONFIG_FILE" > "$TMP" 2>/dev/null; then
+        mv "$TMP" "$CONFIG_FILE"
+      else
+        echo "[claude-desktop] WARNING: Could not update config.json with jq (is it valid JSON?); leaving unchanged." >&2
+        rm -f "$TMP"
+      fi
+    fi
   elif grep -q '"menuBarEnabled"' "$CONFIG_FILE" 2>/dev/null; then
     sed -i 's/"menuBarEnabled"[[:space:]]*:[[:space:]]*[^,}]*/"menuBarEnabled":true/' "$CONFIG_FILE"
   else

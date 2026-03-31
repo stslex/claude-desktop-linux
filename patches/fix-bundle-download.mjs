@@ -242,14 +242,13 @@ for (const match of matches) {
     continue;
   }
 
-  // Insert a platform alias right after the opening brace:
-  // On Linux, spoof process.platform as "darwin" within this function scope
-  // so the existing platform checks pass.
-  const PATCH = 'const __origPlatform=process.platform;Object.defineProperty(process,"platform",{value:"darwin",configurable:true});try{';
-  const SUFFIX = '}finally{Object.defineProperty(process,"platform",{value:__origPlatform,configurable:true});}';
+  // Shadow `process` with a local variable that reports platform as "darwin"
+  // so the existing platform checks pass, without mutating the global process
+  // (which could affect concurrent async code).
+  const PATCH = 'const __origProcess=globalThis.process;let process={...__origProcess,platform:"darwin"};';
 
   const body = patched.slice(match.start, match.end);
-  const patchedBody = '{' + PATCH + body.slice(1, -1) + SUFFIX + '}';
+  const patchedBody = '{' + PATCH + body.slice(1);
 
   patched = patched.slice(0, match.start) + patchedBody + patched.slice(match.end);
   patchCount++;

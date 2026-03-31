@@ -43,10 +43,20 @@ import { simple } from 'acorn-walk';
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
-const appDir = process.argv[2]
+const rawArgs = process.argv.slice(2);
+
+// --bundle <path>  — explicit bundle path (preferred)
+let bundleOverride = null;
+const bundleIdx = rawArgs.indexOf('--bundle');
+if (bundleIdx !== -1 && bundleIdx + 1 < rawArgs.length) {
+  bundleOverride = rawArgs[bundleIdx + 1];
+}
+
+// Positional arg: app-extracted directory (fallback if --bundle not given)
+const appDir = rawArgs.find((a, i) => !a.startsWith('--') && i !== bundleIdx + 1)
   || join(process.env.BUILD_DIR || '/tmp/claude-build', 'app-extracted');
 
-const bundlePath = join(appDir, '.vite', 'build', 'index.js');
+const bundlePath = bundleOverride || join(appDir, '.vite', 'build', 'index.js');
 
 const log = (msg) => process.stderr.write(`[fix-tray-icon] ${msg}\n`);
 
@@ -74,14 +84,16 @@ try {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers — check if a subtree contains a specific string literal
+// Helpers
 // ---------------------------------------------------------------------------
-function containsString(node, value) {
-  let found = false;
+
+/** Collect all string literal values in a subtree (single walk). */
+function collectStrings(node) {
+  const out = new Set();
   simple(node, {
-    Literal(n) { if (n.value === value) found = true; },
+    Literal(n) { if (typeof n.value === 'string') out.add(n.value); },
   });
-  return found;
+  return out;
 }
 
 /**
@@ -134,12 +146,13 @@ const candidates = [];
 
 simple(ast, {
   ConditionalExpression(node) {
-    // Check if this conditional has both Win32 and Template icon strings
-    // across its consequent/alternate branches.
-    const consHasWin = WIN32_STRINGS.some(s => containsString(node.consequent, s));
-    const consHasTpl = TEMPLATE_STRINGS.some(s => containsString(node.consequent, s));
-    const altHasWin  = WIN32_STRINGS.some(s => containsString(node.alternate, s));
-    const altHasTpl  = TEMPLATE_STRINGS.some(s => containsString(node.alternate, s));
+    // Collect all strings in each branch in a single pass (avoids O(N*subtree)).
+    const consStrings = collectStrings(node.consequent);
+    const altStrings  = collectStrings(node.alternate);
+    const consHasWin = WIN32_STRINGS.some(s => consStrings.has(s));
+    const consHasTpl = TEMPLATE_STRINGS.some(s => consStrings.has(s));
+    const altHasWin  = WIN32_STRINGS.some(s => altStrings.has(s));
+    const altHasTpl  = TEMPLATE_STRINGS.some(s => altStrings.has(s));
 
     let winBranch = null;
     let nonWinBranch = null;

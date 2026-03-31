@@ -125,7 +125,7 @@ if (!global[INIT_SYM]) {
         return req;
       };
 
-      process.stderr.write('[platform-headers] electron.net.request patched\n');
+      debug('electron.net.request patched');
     }
   } catch (e) {
     process.stderr.write(`[platform-headers] electron.net.request patch failed: ${e.message}\n`);
@@ -167,6 +167,18 @@ if (!global[INIT_SYM]) {
           } else if (typeof optionsOrCb === 'object' && optionsOrCb !== null) {
             if (!optionsOrCb.headers) optionsOrCb.headers = {};
             injectHeaders(optionsOrCb.headers, `${modName}://${hostname}`);
+          } else {
+            // URL-only form: request(urlString, cb) — no options object to
+            // mutate.  Inject via setHeader on the returned ClientRequest.
+            const req = origRequest.call(mod, urlOrOptions, optionsOrCb, cb);
+            try {
+              req.setHeader('Anthropic-Client-OS-Platform', PLATFORM_HEADER);
+              req.setHeader('Anthropic-Client-OS-Version', VERSION_HEADER);
+              log(`${modName}.request: injected headers via setHeader for ${hostname}`);
+            } catch (e) {
+              log(`${modName}.request: setHeader failed: ${e.message}`);
+            }
+            return req;
           }
         }
 
@@ -194,6 +206,17 @@ if (!global[INIT_SYM]) {
             } else if (typeof optionsOrCb === 'object' && optionsOrCb !== null) {
               if (!optionsOrCb.headers) optionsOrCb.headers = {};
               injectHeaders(optionsOrCb.headers, `${modName}://${hostname}`);
+            } else {
+              // URL-only form: get(urlString, cb) — inject via setHeader.
+              const req = origGet.call(mod, urlOrOptions, optionsOrCb, cb);
+              try {
+                req.setHeader('Anthropic-Client-OS-Platform', PLATFORM_HEADER);
+                req.setHeader('Anthropic-Client-OS-Version', VERSION_HEADER);
+                log(`${modName}.get: injected headers via setHeader for ${hostname}`);
+              } catch (e) {
+                log(`${modName}.get: setHeader failed: ${e.message}`);
+              }
+              return req;
             }
           }
 
@@ -201,7 +224,7 @@ if (!global[INIT_SYM]) {
         };
       }
 
-      process.stderr.write(`[platform-headers] ${modName}.request patched\n`);
+      debug(`${modName}.request patched`);
     }
   } catch (e) {
     process.stderr.write(`[platform-headers] http/https patch failed: ${e.message}\n`);
@@ -227,7 +250,7 @@ if (!global[INIT_SYM]) {
         }
       );
 
-      process.stderr.write('[platform-headers] session.webRequest.onBeforeSendHeaders patched\n');
+      debug('session.webRequest.onBeforeSendHeaders patched');
     };
 
     if (app.isReady()) {
@@ -239,5 +262,5 @@ if (!global[INIT_SYM]) {
     process.stderr.write(`[platform-headers] webRequest patch failed: ${e.message}\n`);
   }
 
-  process.stderr.write('[platform-headers] Platform header injection installed\n');
+  debug('Platform header injection installed');
 }

@@ -174,14 +174,17 @@ fi
 # ---------------------------------------------------------------------------
 # Patch — Tray icon: fix minifier variable reference on non-Windows path
 # ---------------------------------------------------------------------------
-# This runs unconditionally (not gated on SKIP_COWORK_PATCH) because the bug
-# is in the upstream Vite minifier output, not related to Cowork.
+# This tray-icon fix is independent of the Cowork feature logic (the bug is
+# in the upstream Vite minifier output), so it runs whenever this script
+# runs, but is still skipped if SKIP_COWORK_PATCH=1 or other earlier exits
+# occur.
 log "Fixing tray icon variable reference..."
 
 TRAY_FIX_LOG="$BUILD_DIR/patch-tray-icon.log"
+TRAY_BUNDLE="${VITE_BUILD_DIR}/index.js"
 
 set +e
-node "$PATCHES_DIR/fix-tray-icon.mjs" "$APP_DIR" \
+node "$PATCHES_DIR/fix-tray-icon.mjs" "$APP_DIR" --bundle "$TRAY_BUNDLE" \
   2>"$TRAY_FIX_LOG"
 TRAY_FIX_EXIT=$?
 set -e

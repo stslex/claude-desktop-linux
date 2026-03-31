@@ -65,7 +65,7 @@ if (!global[INIT_SYM] && process.type === 'browser') {
         }),
         'Dispatch.isAvailable':                   () => true,
         'Dispatch.getAvailability':               () => ({
-          status: 'supported',
+          status: 'available',
           supported: true,
         }),
       };

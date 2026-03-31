@@ -64,7 +64,7 @@ function resolveBinary(binary) {
           try { return fs.statSync(path.join(vmDir, d)).isDirectory(); }
           catch (_) { return false; }
         })
-        .sort();  // lexicographic — semver-compatible for typical version strings
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
       if (versions.length > 0) {
         const latest = versions[versions.length - 1];
         const candidates = ['claude', 'claude-code'];
