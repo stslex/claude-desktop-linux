@@ -125,7 +125,7 @@ if (!global[INIT_SYM]) {
         return req;
       };
 
-      debug('electron.net.request patched');
+      log('electron.net.request patched');
     }
   } catch (e) {
     process.stderr.write(`[platform-headers] electron.net.request patch failed: ${e.message}\n`);
@@ -224,7 +224,7 @@ if (!global[INIT_SYM]) {
         };
       }
 
-      debug(`${modName}.request patched`);
+      log(`${modName}.request patched`);
     }
   } catch (e) {
     process.stderr.write(`[platform-headers] http/https patch failed: ${e.message}\n`);
@@ -250,7 +250,7 @@ if (!global[INIT_SYM]) {
         }
       );
 
-      debug('session.webRequest.onBeforeSendHeaders patched');
+      log('session.webRequest.onBeforeSendHeaders patched');
     };
 
     if (app.isReady()) {
@@ -262,5 +262,5 @@ if (!global[INIT_SYM]) {
     process.stderr.write(`[platform-headers] webRequest patch failed: ${e.message}\n`);
   }
 
-  debug('Platform header injection installed');
+  log('Platform header injection installed');
 }
