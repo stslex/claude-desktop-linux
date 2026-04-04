@@ -207,6 +207,7 @@ depend = gtk3
 depend = glib2
 depend = pango
 optdepend = bubblewrap: sandboxed Cowork sessions
+optdepend = cowork-svc-linux: Cowork/Dispatch socket daemon for Linux
 PKGINFO_EOF
 
 # ---------------------------------------------------------------------------

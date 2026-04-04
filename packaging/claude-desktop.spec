@@ -36,6 +36,8 @@ Requires:       gtk3
 Requires:       glib2
 Requires:       pango
 
+Suggests:       cowork-svc-linux
+
 # Source0: patched app.asar (produced by build-rpm.sh)
 # Source1: launcher script
 # Source2: freedesktop .desktop file
