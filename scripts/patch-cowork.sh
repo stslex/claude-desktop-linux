@@ -17,8 +17,11 @@ set -euo pipefail
 # Does NOT repack the ASAR — that is done once by build-packages.sh.
 #
 # Env vars:
-#   BUILD_DIR          default: /tmp/claude-build
-#   SKIP_COWORK_PATCH  set to 1 to skip this script entirely
+#   BUILD_DIR                    default: /tmp/claude-build
+#   SKIP_COWORK_PATCH            set to 1 to skip this script entirely
+#   ENABLE_EXPERIMENTAL_PATCHES  set to 1 to run cowork-socket, dispatch, and
+#                                computer-use-tcc AST patches (disabled by default
+#                                — they currently corrupt the JS bundle)
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -308,31 +311,38 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Patch — Cowork socket transport: named pipe → Unix socket on Linux
+# Experimental patches — Cowork socket, Dispatch flags, ComputerUseTcc
+#
+# These AST patches are gated behind ENABLE_EXPERIMENTAL_PATCHES=1 because
+# they currently corrupt the JS bundle and cause SIGSEGV on launch.
+# See: commits b4ced59, 32ba4a6
 # ---------------------------------------------------------------------------
-log "Patching Cowork socket transport for Linux..."
+if [[ "${ENABLE_EXPERIMENTAL_PATCHES:-}" == "1" ]]; then
+  # -------------------------------------------------------------------------
+  # Patch — Cowork socket transport: named pipe → Unix socket on Linux
+  # -------------------------------------------------------------------------
+  log "Running experimental Cowork socket patch..."
 
-COWORK_SOCKET_LOG="$BUILD_DIR/patch-cowork-socket.log"
+  COWORK_SOCKET_LOG="$BUILD_DIR/patch-cowork-socket.log"
 
-set +e
-node "$PATCHES_DIR/patch-cowork-socket.mjs" "$APP_DIR" \
-  2>"$COWORK_SOCKET_LOG"
-COWORK_SOCKET_EXIT=$?
-set -e
+  set +e
+  node "$PATCHES_DIR/patch-cowork-socket.mjs" "$APP_DIR" \
+    2>"$COWORK_SOCKET_LOG"
+  COWORK_SOCKET_EXIT=$?
+  set -e
 
-cat "$COWORK_SOCKET_LOG" >&2
+  cat "$COWORK_SOCKET_LOG" >&2
 
-if [[ $COWORK_SOCKET_EXIT -ne 0 ]]; then
-  log "WARNING: patch-cowork-socket.mjs failed (exit $COWORK_SOCKET_EXIT) — Cowork socket transport may not work."
-else
-  log "Cowork socket transport patched."
-fi
+  if [[ $COWORK_SOCKET_EXIT -ne 0 ]]; then
+    log "WARNING: patch-cowork-socket.mjs failed (non-fatal)"
+  else
+    log "Cowork socket transport patched."
+  fi
 
-# ---------------------------------------------------------------------------
-# Patch — Dispatch feature flags (GrowthBook gates)
-# ---------------------------------------------------------------------------
-if [[ "${SKIP_DISPATCH_PATCH:-}" != "1" ]]; then
-  log "Patching Dispatch feature flags for Linux..."
+  # -------------------------------------------------------------------------
+  # Patch — Dispatch feature flags (GrowthBook gates)
+  # -------------------------------------------------------------------------
+  log "Running experimental Dispatch patch..."
 
   DISPATCH_FLAGS_LOG="$BUILD_DIR/patch-dispatch-flags.log"
 
@@ -345,33 +355,34 @@ if [[ "${SKIP_DISPATCH_PATCH:-}" != "1" ]]; then
   cat "$DISPATCH_FLAGS_LOG" >&2
 
   if [[ $DISPATCH_FLAGS_EXIT -ne 0 ]]; then
-    log "WARNING: patch-dispatch.mjs failed (exit $DISPATCH_FLAGS_EXIT) — Dispatch feature flags may not be enabled."
+    log "WARNING: patch-dispatch.mjs failed (non-fatal)"
   else
     log "Dispatch feature flags patched."
   fi
+
+  # -------------------------------------------------------------------------
+  # Patch — ComputerUseTcc IPC stubs (AST injection)
+  # -------------------------------------------------------------------------
+  log "Running experimental ComputerUseTcc patch..."
+
+  TCC_PATCH_LOG="$BUILD_DIR/patch-tcc.log"
+
+  set +e
+  node "$PATCHES_DIR/patch-computer-use-tcc.mjs" "$APP_DIR" \
+    2>"$TCC_PATCH_LOG"
+  TCC_PATCH_EXIT=$?
+  set -e
+
+  cat "$TCC_PATCH_LOG" >&2
+
+  if [[ $TCC_PATCH_EXIT -ne 0 ]]; then
+    log "WARNING: patch-computer-use-tcc.mjs failed (non-fatal)"
+  else
+    log "ComputerUseTcc IPC handlers patched."
+  fi
 else
-  log "Skipping Dispatch feature flag patches (SKIP_DISPATCH_PATCH=1)."
-fi
-
-# ---------------------------------------------------------------------------
-# Patch — ComputerUseTcc IPC stubs (AST injection)
-# ---------------------------------------------------------------------------
-log "Patching ComputerUseTcc IPC handlers..."
-
-TCC_PATCH_LOG="$BUILD_DIR/patch-tcc.log"
-
-set +e
-node "$PATCHES_DIR/patch-computer-use-tcc.mjs" "$APP_DIR" \
-  2>"$TCC_PATCH_LOG"
-TCC_PATCH_EXIT=$?
-set -e
-
-cat "$TCC_PATCH_LOG" >&2
-
-if [[ $TCC_PATCH_EXIT -ne 0 ]]; then
-  log "WARNING: patch-computer-use-tcc.mjs failed (exit $TCC_PATCH_EXIT) — ComputerUseTcc stubs may not be injected."
-else
-  log "ComputerUseTcc IPC handlers patched."
+  log "Skipping experimental patches (Cowork socket, Dispatch flags, ComputerUseTcc)."
+  log "Set ENABLE_EXPERIMENTAL_PATCHES=1 to enable them."
 fi
 
 # ---------------------------------------------------------------------------
@@ -642,9 +653,9 @@ log "  CCD platform patch  : linux-x64/linux-arm64 added to getHostPlatform + ge
 log "  VM download patch   : download_and_sdk_prepare returns early on Linux"
 log "  Bundle download gate: platform check bypassed for Linux"
 log "  Dispatch gate       : checked (shared with Cowork gate or patched separately)"
-log "  Cowork socket       : named pipe → Unix domain socket on Linux"
-log "  Dispatch flags      : GrowthBook feature flags force-enabled for Linux"
-log "  ComputerUseTcc      : IPC stubs injected into main bundle"
+log "  Cowork socket       : $(if [[ "${ENABLE_EXPERIMENTAL_PATCHES:-}" == "1" ]]; then echo "named pipe → Unix domain socket on Linux"; else echo "SKIPPED (experimental)"; fi)"
+log "  Dispatch flags      : $(if [[ "${ENABLE_EXPERIMENTAL_PATCHES:-}" == "1" ]]; then echo "GrowthBook feature flags force-enabled for Linux"; else echo "SKIPPED (experimental)"; fi)"
+log "  ComputerUseTcc      : $(if [[ "${ENABLE_EXPERIMENTAL_PATCHES:-}" == "1" ]]; then echo "IPC stubs injected into main bundle"; else echo "SKIPPED (experimental)"; fi)"
 log "  Patches injected    : $MAIN_ENTRY"
 log "    module-load-patch.js   (shared Module._load interceptor registry)"
 log "    shell-env-patch.js     (fix shell path worker not found on Linux)"
