@@ -83,7 +83,7 @@ entirely and run the Claude Code binary directly on the host.
 | `DISPATCH_DEBUG` | `` | Set to `1` for Dispatch IPC traffic logging |
 | `DISPATCH_POLL_INTERVAL_MS` | `30000` | Dispatch foreground polling interval (ms) |
 | `SKIP_DISPATCH_POLL` | `` | Set to `1` to disable Dispatch polling |
-| `SKIP_DISPATCH_PATCH` | `` | Set to `1` to skip Dispatch GrowthBook feature flag patches |
+| `ENABLE_EXPERIMENTAL_PATCHES` | `` | Set to `1` to run cowork-socket, dispatch, and computer-use-tcc AST patches (off by default — they corrupt the JS bundle) |
 
 ## Build Dependencies
 
