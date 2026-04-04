@@ -93,8 +93,8 @@ rm -rf "$DEB_ROOT"
 mkdir -p "$DEB_ROOT/DEBIAN"
 
 # DEBIAN/postinst
-# Note: the /sessions symlink is NOT created here — the launcher script
-# handles it per-user at runtime (~/.local/share/claude-linux/sessions).
+# Note: No /sessions symlink is needed — path-translator.mjs handles all
+# /sessions/… → ~/.local/share/claude-linux/sessions/… remapping in-process.
 cat > "$DEB_ROOT/DEBIAN/postinst" <<'POST_EOF'
 #!/bin/sh
 set -e

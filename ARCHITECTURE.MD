@@ -206,20 +206,20 @@ We also wrap `fs.promises.open`, `fs.promises.readFile`, etc. for the same
 prefix — because some code builds paths manually with string concatenation rather
 than `path.join`.
 
-**The `/sessions` symlink:**
+**No `/sessions` symlink needed:**
 
-Some paths are constructed before they pass through our translator. The simplest
-fix is a symlink:
+Previous versions required a `sudo ln -sf … /sessions` symlink because some
+code paths constructed absolute `/sessions/…` paths before they reached the
+translator.  The translator now intercepts all Node.js APIs that accept file
+paths — `fs` (sync, async callback, and promises variants), `child_process`
+(`spawn`, `execFile`, `exec` — translating `cwd` and args), `net.connect`
+(socket paths), and `path` (`join`, `resolve`, `normalize`).  Session
+directories under `~/.local/share/claude-linux/sessions/` are auto-created on
+first encounter.
 
-```
-/sessions → ~/.local/share/claude-linux/sessions
-```
-
-This requires `sudo` once at install time. The RPM `%post` scriptlet creates it.
-For AppImage, the launcher script creates it if missing, prompting for sudo.
-
-An alternative is to run the Electron process with a user namespace that remounts
-`/sessions` — but this adds complexity for minimal benefit.
+This eliminates the need for root access at runtime, which is critical for
+immutable distros (Fedora Silverblue, Kinoite, Universal Blue) where the root
+filesystem is read-only.
 
 ---
 
@@ -424,7 +424,7 @@ Release body is auto-generated and includes:
 | Electron version incompatible | App crashes immediately | RPM: runtime. AppImage: build | `ELECTRON_VERSION` file; easy to override |
 | `@ant/claude-swift` API changed | Cowork tab appears but sessions fail | Runtime | Stub logs unknown method calls to stderr |
 | Path translator misses a path | File not found errors in Cowork | Runtime | `COWORK_DEBUG=1` logs all intercepted paths |
-| `/sessions` symlink missing | Cowork fails on first run | Runtime | Launcher script checks and prompts to create |
+| Session dir missing | Cowork fails on first run | Runtime | Launcher runs `mkdir -p`; path translator auto-creates on demand |
 | `xdg-open` not available | OAuth flow broken | Runtime | Stub checks and falls back to printing the URL |
 | bubblewrap not installed | Cowork silently uses host backend | `--doctor` flag | Launcher warns; falls back to `host` |
 | DMG URL changed | `fetch-dmg.sh` exits 1 | CI fails | Update URL in `fetch-dmg.sh` |
