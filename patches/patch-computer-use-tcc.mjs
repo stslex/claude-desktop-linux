@@ -195,18 +195,29 @@ log(`Found ${ipcHandleSites.length} ipcMain.handle() call site(s)`);
 
 let patched = false;
 
-// Resolve the main entry point
-let mainEntry = join(viteDir, 'index.js');
+// Resolve the main entry point — prefer package.json main field (matches
+// patch-cowork.sh behaviour), fall back to viteDir/index.js.
+let mainEntry = null;
 try {
-  readFileSync(mainEntry, 'utf8');
-} catch {
-  // Try package.json main field
+  const pkg = JSON.parse(readFileSync(join(appDir, 'package.json'), 'utf8'));
+  if (pkg.main) {
+    const pkgMainEntry = join(appDir, pkg.main);
+    readFileSync(pkgMainEntry, 'utf8'); // verify it exists
+    mainEntry = pkgMainEntry;
+  }
+} catch {}
+
+if (!mainEntry) {
   try {
-    const pkg = JSON.parse(readFileSync(join(appDir, 'package.json'), 'utf8'));
-    if (pkg.main) {
-      mainEntry = join(appDir, pkg.main);
-    }
+    const viteMainEntry = join(viteDir, 'index.js');
+    readFileSync(viteMainEntry, 'utf8'); // verify it exists
+    mainEntry = viteMainEntry;
   } catch {}
+}
+
+if (!mainEntry) {
+  log('WARNING: Could not locate main entry point — skipping TCC stub injection.');
+  process.exit(0);
 }
 
 try {
