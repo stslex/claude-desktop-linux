@@ -308,6 +308,73 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Patch — Cowork socket transport: named pipe → Unix socket on Linux
+# ---------------------------------------------------------------------------
+log "Patching Cowork socket transport for Linux..."
+
+COWORK_SOCKET_LOG="$BUILD_DIR/patch-cowork-socket.log"
+
+set +e
+node "$PATCHES_DIR/patch-cowork-socket.mjs" "$APP_DIR" \
+  2>"$COWORK_SOCKET_LOG"
+COWORK_SOCKET_EXIT=$?
+set -e
+
+cat "$COWORK_SOCKET_LOG" >&2
+
+if [[ $COWORK_SOCKET_EXIT -ne 0 ]]; then
+  log "WARNING: patch-cowork-socket.mjs failed (exit $COWORK_SOCKET_EXIT) — Cowork socket transport may not work."
+else
+  log "Cowork socket transport patched."
+fi
+
+# ---------------------------------------------------------------------------
+# Patch — Dispatch feature flags (GrowthBook gates)
+# ---------------------------------------------------------------------------
+if [[ "${SKIP_DISPATCH_PATCH:-}" != "1" ]]; then
+  log "Patching Dispatch feature flags for Linux..."
+
+  DISPATCH_FLAGS_LOG="$BUILD_DIR/patch-dispatch-flags.log"
+
+  set +e
+  node "$PATCHES_DIR/patch-dispatch.mjs" "$APP_DIR" \
+    2>"$DISPATCH_FLAGS_LOG"
+  DISPATCH_FLAGS_EXIT=$?
+  set -e
+
+  cat "$DISPATCH_FLAGS_LOG" >&2
+
+  if [[ $DISPATCH_FLAGS_EXIT -ne 0 ]]; then
+    log "WARNING: patch-dispatch.mjs failed (exit $DISPATCH_FLAGS_EXIT) — Dispatch feature flags may not be enabled."
+  else
+    log "Dispatch feature flags patched."
+  fi
+else
+  log "Skipping Dispatch feature flag patches (SKIP_DISPATCH_PATCH=1)."
+fi
+
+# ---------------------------------------------------------------------------
+# Patch — ComputerUseTcc IPC stubs (AST injection)
+# ---------------------------------------------------------------------------
+log "Patching ComputerUseTcc IPC handlers..."
+
+TCC_PATCH_LOG="$BUILD_DIR/patch-tcc.log"
+
+set +e
+node "$PATCHES_DIR/patch-computer-use-tcc.mjs" "$APP_DIR" \
+  2>"$TCC_PATCH_LOG"
+TCC_PATCH_EXIT=$?
+set -e
+
+cat "$TCC_PATCH_LOG" >&2
+
+if [[ $TCC_PATCH_EXIT -ne 0 ]]; then
+  log "WARNING: patch-computer-use-tcc.mjs failed (exit $TCC_PATCH_EXIT) — ComputerUseTcc stubs may not be injected."
+else
+  log "ComputerUseTcc IPC handlers patched."
+fi
+
+# ---------------------------------------------------------------------------
 # Patch 4 — Find main entry point
 # ---------------------------------------------------------------------------
 log "Locating main entry point..."
@@ -500,6 +567,9 @@ log "  CCD platform patch  : linux-x64/linux-arm64 added to getHostPlatform + ge
 log "  VM download patch   : download_and_sdk_prepare returns early on Linux"
 log "  Bundle download gate: platform check bypassed for Linux"
 log "  Dispatch gate       : checked (shared with Cowork gate or patched separately)"
+log "  Cowork socket       : named pipe → Unix domain socket on Linux"
+log "  Dispatch flags      : GrowthBook feature flags force-enabled for Linux"
+log "  ComputerUseTcc      : IPC stubs injected into main bundle"
 log "  Patches injected    : $MAIN_ENTRY"
 log "    module-load-patch.js   (shared Module._load interceptor registry)"
 log "    shell-env-patch.js     (fix shell path worker not found on Linux)"

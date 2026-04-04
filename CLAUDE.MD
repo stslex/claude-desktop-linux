@@ -25,6 +25,7 @@ entirely and run the Claude Code binary directly on the host.
 │   ├── extract-asar.sh          ← DMG → app.asar + detect versions
 │   ├── inject-stubs.sh          ← replace native modules with JS stubs
 │   ├── patch-cowork.sh          ← unlock Cowork on Linux
+│   ├── install-cowork-service.sh ← install claude-cowork-service daemon
 │   └── build-packages.sh        ← RPM + AppImage assembly
 ├── stubs/
 │   ├── claude-native.js         ← @ant/claude-native replacement
@@ -38,6 +39,9 @@ entirely and run the Claude Code binary directly on the host.
 │   ├── fix-tray-config.sh       ← ensure menuBarEnabled in user config
 │   ├── fix-bundle-download.mjs  ← AST patch for platform-gated binary download
 │   ├── fix-dispatch-gate.mjs    ← AST patch for Dispatch availability gate
+│   ├── patch-cowork-socket.mjs  ← AST patch: named pipe → Unix socket
+│   ├── patch-dispatch.mjs       ← AST patch: GrowthBook feature flag overrides
+│   ├── patch-computer-use-tcc.mjs ← AST injection of ComputerUseTcc stubs
 │   └── path-translator.js       ← /sessions/… → ~/.local/share/… remapping
 ├── packaging/
 │   ├── claude-desktop.spec      ← RPM spec file
@@ -79,6 +83,7 @@ entirely and run the Claude Code binary directly on the host.
 | `DISPATCH_DEBUG` | `` | Set to `1` for Dispatch IPC traffic logging |
 | `DISPATCH_POLL_INTERVAL_MS` | `30000` | Dispatch foreground polling interval (ms) |
 | `SKIP_DISPATCH_POLL` | `` | Set to `1` to disable Dispatch polling |
+| `SKIP_DISPATCH_PATCH` | `` | Set to `1` to skip Dispatch GrowthBook feature flag patches |
 
 ## Build Dependencies
 
@@ -95,6 +100,7 @@ Resolved at runtime if missing; the scripts will print install instructions.
 | `icns2png` or `magick` | Convert macOS icon to PNG |
 | `bubblewrap` (`bwrap`) | Cowork sandbox (runtime, not build) |
 | `electron` | Runtime; bundled inside AppImage |
+| `cowork-svc-linux` | Optional: Cowork/Dispatch socket daemon (runtime) |
 
 ## Key Files Inside the Extracted ASAR
 
@@ -260,6 +266,57 @@ KVM/QEMU is intentionally not implemented. Anthropic blocks VM image downloads
 for Linux; the infrastructure would be complex; and bubblewrap provides adequate
 isolation for personal use.
 
+## Socket IPC Protocol (Cowork/Dispatch daemon)
+
+Claude Desktop communicates with a backend daemon over a socket-based IPC
+protocol using length-prefixed JSON messages (4-byte big-endian length header
+followed by UTF-8 JSON payload).
+
+**Transport per platform:**
+
+```
+macOS:   Desktop → @ant/claude-swift → VZVirtualMachine → vsock → sdk-daemon
+Windows: Desktop → cowork-svc.exe    → Named Pipe       → Hyper-V VM → vsock → sdk-daemon
+Linux:   Desktop → Unix socket       → cowork-svc-linux  → os/exec (no VM)
+```
+
+On Linux the `claude-cowork-service` daemon (MIT, from
+`patrickjaja/claude-cowork-service`) listens on a Unix domain socket at
+`$XDG_RUNTIME_DIR/cowork-vm-service.sock` and handles process lifecycle
+directly via `os/exec` — no VM needed.
+
+**Known protocol methods** (length-prefixed JSON-RPC style):
+
+| Method | Description |
+|---|---|
+| `isRunning` | Check if the daemon is alive |
+| `vmStarted` | Check if the (virtual) environment is ready |
+| `apiReachable` | Check API connectivity |
+| `isGuestConnected` | Check if the guest agent is connected |
+| `subscribeEvents` | Subscribe to lifecycle events |
+| `writeStdin` | Write to a process's stdin |
+| `spawn` | Start a new process |
+| `kill` | Kill a running process |
+| `readFile` | Read a file from the session filesystem |
+| `writeFile` | Write a file to the session filesystem |
+| `listDir` | List directory contents |
+| `getSystemInfo` | Get system information |
+| `getNetworkInfo` | Get network configuration |
+| `ping` | Health check |
+| `shutdown` | Gracefully stop the daemon |
+| `getVersion` | Get daemon version |
+| `configure` | Update runtime configuration |
+
+**Installation:**
+
+```sh
+./scripts/install-cowork-service.sh
+```
+
+This downloads the pre-built binary, installs it to `~/.local/bin/`, creates
+a systemd user service, and verifies the socket appears.  The launcher scripts
+warn if the service is not running but do not block app launch.
+
 ## Packaging Notes
 
 ### RPM
@@ -308,14 +365,14 @@ version string. The DMG is never cached — always fetch fresh.
 
 ## What This Project Intentionally Does Not Do
 
-- **Partial Dispatch support.** Dispatch works while the app is in the
-  foreground. UI platform gates are bypassed, IPC handlers are stubbed
-  (`stubs/dispatch-polyfill.js`), and Electron's Notification API is polyfilled.
-  A foreground polling skeleton is in place but the polling endpoint has not yet
-  been discovered — set `DISPATCH_DEBUG=1` to log IPC traffic for reverse-
-  engineering.  Background delivery via APNs/FCM push notifications is not
-  available; tasks sent from mobile when the app is closed won't arrive until
-  next launch.
+- **Dispatch — partially supported.** Dispatch works via SSE when the app is
+  open.  GrowthBook feature flags are force-enabled by `patches/patch-dispatch.mjs`
+  (sessions-bridge init, remote session control, hostLoopMode).  UI platform gates
+  are bypassed, IPC handlers are stubbed (`stubs/dispatch-polyfill.js`), and
+  Electron's Notification API is polyfilled.  The `claude-cowork-service` daemon
+  provides the socket backend that Dispatch's session management requires.
+  Background delivery (APNs/FCM push wake-up) is not available; tasks sent from
+  mobile when the app is closed won't arrive until next launch.
 - **No Computer Use.** Requires `xdotool`/`scrot` hacks that are fragile and
   version-sensitive. Out of scope for the initial release.
 - **No KVM isolation.** See Cowork Isolation Backends above.

@@ -34,6 +34,8 @@ See [ARCHITECTURE.MD](ARCHITECTURE.MD) for design decisions and trade-offs.
 - **MCP** — Model Context Protocol support works as-is (it is pure JS)
 - **Cowork (Claude Code)** — unlocked and functional via `bubblewrap` sandbox
   or direct host execution
+- **Dispatch** — partially supported; works via SSE when the app is open
+  (requires `claude-cowork-service` daemon — see below)
 - **Auto-update pipeline** — GitHub Actions polls for new releases every 6 hours
   and publishes automatically; AppImage supports delta updates via `AppImageUpdate`
 
@@ -43,7 +45,7 @@ See [ARCHITECTURE.MD](ARCHITECTURE.MD) for design decisions and trade-offs.
 
 | Feature | Reason |
 |---|---|
-| **Dispatch** | Partially supported — UI gates are bypassed and notifications polyfilled, but background delivery via APNs/FCM is not available; Dispatch tasks that rely on push notifications to wake the desktop app will not arrive when the app is closed |
+| **Dispatch** | Partially supported — works via SSE when the app is open; GrowthBook feature flags are force-enabled and `claude-cowork-service` provides the socket backend; background delivery (APNs/FCM push) is not available so tasks won't arrive when the app is closed |
 | **Computer Use** | macOS implementation uses `AXUIElement`; an `xdotool`/`scrot` replacement would be fragile across desktop environments |
 | **ARM64** | Electron binary selection and AppImage build are x86_64 only; ARM64 is a future milestone |
 
@@ -188,6 +190,21 @@ Pre-built Nix-compatible tarballs are available in each GitHub Release:
 # Download and extract
 curl -fLO https://github.com/stslex/claude-desktop-linux/releases/latest/download/claude-desktop-<version>-repack-<N>-x86_64-nix.tar.gz
 ```
+
+### Cowork Service (optional — enables Cowork and Dispatch)
+
+The `claude-cowork-service` daemon provides the socket backend that Cowork and
+Dispatch use for session management.  Install it for full Cowork/Dispatch support:
+
+```sh
+./scripts/install-cowork-service.sh
+```
+
+This downloads the pre-built binary from
+[patrickjaja/claude-cowork-service](https://github.com/patrickjaja/claude-cowork-service),
+installs it to `~/.local/bin/`, and creates a systemd user service.  The app
+will warn on launch if the service is not running, but Chat and MCP still work
+without it.
 
 ### First Run
 
