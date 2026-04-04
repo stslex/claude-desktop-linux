@@ -128,10 +128,9 @@ if command -v gtk-update-icon-cache &>/dev/null; then
     gtk-update-icon-cache -qf /usr/share/icons/hicolor || true
 fi
 
-# NOTE: The /sessions symlink is created by the launcher script at runtime
-# (as the invoking user), not here.  This scriptlet runs as root and cannot
-# know the end user's $HOME, so it cannot point the symlink at the correct
-# target ($HOME/.local/share/claude-linux/sessions).
+# NOTE: No /sessions symlink is needed — path-translator.mjs handles all
+# /sessions/… → ~/.local/share/claude-linux/sessions/… remapping in-process.
+# The launcher script creates the session directory via mkdir -p.
 
 # Conditional GPG verification message (signing performed by build-rpm.sh).
 %{?gpg_sign:echo "claude-desktop: package is GPG-signed."}

@@ -42,7 +42,7 @@ entirely and run the Claude Code binary directly on the host.
 │   ├── patch-cowork-socket.mjs  ← AST patch: named pipe → Unix socket
 │   ├── patch-dispatch.mjs       ← AST patch: GrowthBook feature flag overrides
 │   ├── patch-computer-use-tcc.mjs ← AST injection of ComputerUseTcc stubs
-│   └── path-translator.js       ← /sessions/… → ~/.local/share/… remapping
+│   └── path-translator.mjs      ← /sessions/… → ~/.local/share/… remapping
 ├── packaging/
 │   ├── claude-desktop.spec      ← RPM spec file
 │   ├── AppDir/                  ← AppImage skeleton
@@ -239,18 +239,19 @@ On Linux there is no VM, so we redirect these paths to:
 ~/.local/share/claude-linux/sessions/<session-id>/<mount-name>/…
 ```
 
-A symlink `sudo ln -sf ~/.local/share/claude-linux/sessions /sessions` is needed
-to handle absolute paths the app constructs before our translation layer sees
-them.  The symlink is created by the **launcher script** at runtime (as the
-invoking user), not by the RPM/pacman post-install scriptlet.  Package scriptlets
-run as root and do not know the end user's `$HOME`, so they cannot set the correct
-symlink target.  Both `packaging/AppDir/usr/bin/claude-desktop` (RPM/system
-launcher) and `packaging/AppDir/AppRun` (AppImage) handle this identically.
+No `/sessions` symlink is needed — all path translation happens in-process.
+The launcher scripts just ensure `~/.local/share/claude-linux/sessions/` exists
+(a regular `mkdir -p`, no sudo required).  This works on immutable distros
+(Fedora Silverblue, Kinoite, Universal Blue) where the root filesystem is
+read-only.
 
-`patches/path-translator.js` is injected as the first `require` in the main
-process bundle via a one-line prepend. It monkey-patches `path.join` and
-`path.resolve` for the specific prefix, and wraps `fs.promises` methods for
-the same prefix. Keep the patch as small as possible.
+`patches/path-translator.mjs` is injected as the first `import` in the main
+process bundle via a one-line prepend. It monkey-patches `path.join`,
+`path.resolve`, and `path.normalize` for the `/sessions/` prefix, wraps all
+`fs` methods (sync, async callbacks, and promises), intercepts
+`child_process.spawn`/`execFile`/`exec` (translating `cwd` and args), and
+wraps `net.connect`/`net.createConnection` for socket paths. Session
+directories are auto-created on first encounter.
 
 ## Cowork Isolation Backends
 

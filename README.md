@@ -208,9 +208,8 @@ without it.
 
 ### First Run
 
-1. On first launch the app prompts to create the `/sessions` symlink
-   (`sudo ln -sf ~/.local/share/claude-linux/sessions /sessions`).
-   The RPM `%post` scriptlet creates this automatically.
+1. No special setup needed — the app creates `~/.local/share/claude-linux/sessions/`
+   automatically. No sudo or root symlinks required.
 2. Complete the OAuth flow in your browser — the `claude://` URI scheme is
    registered by the `.desktop` file and `xdg-mime`.
 
