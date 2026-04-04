@@ -14,6 +14,9 @@ let _callbacks = {};
 /** @type {Map<number, import('child_process').ChildProcess>} */
 const _procs = new Map();
 
+/** Lifecycle state — set by startVM, cleared by stopVM. */
+let _started = false;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -209,6 +212,7 @@ const _vmBase = {
    * @returns {Promise<void>}
    */
   startVM(_config) {
+    _started = true;
     return new Promise((resolve) => {
       setImmediate(() => {
         if (typeof _callbacks.onReady === 'function') _callbacks.onReady();
@@ -301,30 +305,70 @@ const _vmBase = {
   },
 
   /**
+   * Report whether the "guest" (VM/process) is connected.
+   * On Linux we spawn processes directly, so if started, the guest is always connected.
+   * @returns {boolean}
+   */
+  isGuestConnected() {
+    return _started;
+  },
+
+  /**
+   * Stop the VM — on Linux, kill all tracked child processes and reset state.
+   */
+  stopVM() {
+    for (const [, child] of _procs) {
+      try { child.kill('SIGTERM'); } catch {}
+    }
+    _procs.clear();
+    _started = false;
+    setImmediate(() => {
+      if (typeof _callbacks.onExit === 'function') _callbacks.onExit();
+    });
+  },
+
+  /**
    * Report whether the VM is running.
-   * On Linux there is no VM — always return true.
    * @returns {boolean}
    */
   isRunning() {
-    return true;
+    return _started;
   },
 
   /**
    * Report whether the VM is ready.
-   * On Linux there is no VM — always return true.
    * @returns {boolean}
    */
   isReady() {
-    return true;
+    return _started;
   },
 };
+
+// Getter-style properties that the orchestrator may check as properties or methods.
+Object.defineProperty(_vmBase, 'vmStarted', {
+  get() { return _started; },
+  enumerable: true,
+});
+Object.defineProperty(_vmBase, 'apiReachable', {
+  get() { return _started; },
+  enumerable: true,
+});
 
 // Wrap vm in a Proxy so unknown method calls are logged to stderr.
 const vm = new Proxy(_vmBase, {
   get(target, prop) {
     if (prop in target) return target[prop];
-    process.stderr.write(`[claude-swift stub] unknown vm method called: ${String(prop)}\n`);
-    return function noop() {};
+    if (typeof prop === 'symbol') return target[prop];
+    process.stderr.write(
+      `[claude-swift stub] MISSING METHOD: ${String(prop)} — ` +
+      `add explicit implementation to stubs/claude-swift.js\n`
+    );
+    return function noop(...args) {
+      process.stderr.write(
+        `[claude-swift stub] noop call: ${String(prop)}(${args.length} args)\n`
+      );
+      return undefined;
+    };
   },
 });
 
