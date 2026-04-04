@@ -39,15 +39,19 @@ const TCC_CHANNELS = [
   'ComputerUseTcc.requestScreenRecording',
 ];
 
-const STUB_SNIPPET = `
-;(function(){try{var e=require("electron"),m=e.ipcMain;if(m){
-var ch=["ComputerUseTcc:getState","ComputerUseTcc:requestAccess",
-"ComputerUseTcc.getState","ComputerUseTcc.requestPermission",
-"ComputerUseTcc.checkAccessibility","ComputerUseTcc.checkScreenRecording",
-"ComputerUseTcc.requestAccessibility","ComputerUseTcc.requestScreenRecording"];
-var r={status:"not_applicable"};
-ch.forEach(function(c){try{m.handle(c,function(){return r})}catch(x){}});
-}}catch(x){}})();`;
+// IMPORTANT: The snippet must start with a semicolon (no leading newline) so
+// it is safe to prepend to a minified bundle.  A leading newline followed by
+// `;` can trigger ASI issues if the previous token was mid-expression.  By
+// starting with `;` on the same (first) line we guarantee a clean statement
+// boundary regardless of what precedes it.
+const STUB_SNIPPET = `;(function(){try{var e=require("electron"),m=e.ipcMain;if(m){` +
+  `var ch=["ComputerUseTcc:getState","ComputerUseTcc:requestAccess",` +
+  `"ComputerUseTcc.getState","ComputerUseTcc.requestPermission",` +
+  `"ComputerUseTcc.checkAccessibility","ComputerUseTcc.checkScreenRecording",` +
+  `"ComputerUseTcc.requestAccessibility","ComputerUseTcc.requestScreenRecording"];` +
+  `var r={status:"not_applicable"};` +
+  `ch.forEach(function(c){try{m.handle(c,function(){return r})}catch(x){}});` +
+  `}}catch(x){}})();\n`;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -177,62 +181,58 @@ log(`Found ${ipcHandleSites.length} ipcMain.handle() call site(s)`);
 // ---------------------------------------------------------------------------
 // The runtime stubs/ipc-stubs.js already handles ComputerUseTcc at module
 // load time.  This AST patch adds a belt-and-suspenders injection directly
-// into the main bundle, near existing ipcMain.handle() calls.
+// into the main bundle.
 //
-// If we find ipcMain.handle() sites in the main bundle (index.js), we inject
-// our stub snippet right before the first one.
-// If not, we prepend it to the main entry point file.
+// IMPORTANT: We always PREPEND the snippet to the file instead of injecting
+// at an ipcMain.handle() CallExpression offset.  In minified code, a
+// CallExpression can appear inside a larger expression (e.g.
+// `var x=ipcMain.handle(...)` or `a(),ipcMain.handle(...)`).  Injecting a
+// statement (`;\n(function(){...})();`) at a CallExpression offset that is
+// mid-expression produces invalid JS (e.g. `var x=;(function...`).
+//
+// Prepending is safe because the snippet is a self-contained IIFE wrapped in
+// try/catch, preceded by `;` for ASI safety.
 
 let patched = false;
 
-// Preferred: inject near existing ipcMain.handle() in the main bundle
-const mainBundle = join(viteDir, 'index.js');
-let mainBundleSite = ipcHandleSites.find((s) => s.file === mainBundle);
+// Resolve the main entry point — prefer package.json main field (matches
+// patch-cowork.sh behaviour), fall back to viteDir/index.js.
+let mainEntry = null;
+try {
+  const pkg = JSON.parse(readFileSync(join(appDir, 'package.json'), 'utf8'));
+  if (pkg.main) {
+    const pkgMainEntry = join(appDir, pkg.main);
+    readFileSync(pkgMainEntry, 'utf8'); // verify it exists
+    mainEntry = pkgMainEntry;
+  }
+} catch {}
 
-if (mainBundleSite) {
-  let src = readFileSync(mainBundle, 'utf8');
+if (!mainEntry) {
+  try {
+    const viteMainEntry = join(viteDir, 'index.js');
+    readFileSync(viteMainEntry, 'utf8'); // verify it exists
+    mainEntry = viteMainEntry;
+  } catch {}
+}
 
-  // Check if our stubs are already injected
+if (!mainEntry) {
+  log('WARNING: Could not locate main entry point — skipping TCC stub injection.');
+  process.exit(0);
+}
+
+try {
+  let src = readFileSync(mainEntry, 'utf8');
   if (src.includes('ComputerUseTcc:getState') && src.includes('not_applicable')) {
-    log('ComputerUseTcc stubs already present in main bundle — skipping.');
+    log('ComputerUseTcc stubs already present — skipping.');
   } else {
-    // Inject before the first ipcMain.handle() call
-    const injectionPoint = mainBundleSite.offset;
-    const result = src.slice(0, injectionPoint) + STUB_SNIPPET + src.slice(injectionPoint);
-    writeFileSync(mainBundle, result, 'utf8');
-    log(`Injected ComputerUseTcc stubs at offset ${injectionPoint} in ${relative(appDir, mainBundle)}`);
+    const result = STUB_SNIPPET + src;
+    writeFileSync(mainEntry, result, 'utf8');
+    log(`Prepended ComputerUseTcc stubs to ${relative(appDir, mainEntry)}`);
     log(`File size: ${src.length} → ${result.length} bytes`);
     patched = true;
   }
-} else {
-  // Fallback: check if the main entry exists and prepend
-  let mainEntry = mainBundle;
-  try {
-    readFileSync(mainEntry, 'utf8');
-  } catch {
-    // Try package.json main field
-    try {
-      const pkg = JSON.parse(readFileSync(join(appDir, 'package.json'), 'utf8'));
-      if (pkg.main) {
-        mainEntry = join(appDir, pkg.main);
-      }
-    } catch {}
-  }
-
-  try {
-    let src = readFileSync(mainEntry, 'utf8');
-    if (src.includes('ComputerUseTcc:getState') && src.includes('not_applicable')) {
-      log('ComputerUseTcc stubs already present — skipping.');
-    } else {
-      const result = STUB_SNIPPET + '\n' + src;
-      writeFileSync(mainEntry, result, 'utf8');
-      log(`Prepended ComputerUseTcc stubs to ${relative(appDir, mainEntry)}`);
-      log(`File size: ${src.length} → ${result.length} bytes`);
-      patched = true;
-    }
-  } catch (e) {
-    log(`WARNING: Could not read main entry ${mainEntry}: ${e.message}`);
-  }
+} catch (e) {
+  log(`WARNING: Could not read main entry ${mainEntry}: ${e.message}`);
 }
 
 // ---------------------------------------------------------------------------

@@ -555,6 +555,81 @@ else
   log "Prepended module-load-patch + shell-env-patch + platform-headers + platform-override + ipc-stubs + dispatch-polyfill + native-frame + open-url-bridge + path-translator to $MAIN_ENTRY"
 fi
 
+# ---------------------------------------------------------------------------
+# Post-patch validation — ensure all patched JS files still parse correctly
+# ---------------------------------------------------------------------------
+log "Validating patched JavaScript..."
+VALIDATION_FAILED=0
+
+# Collect all JS files that could have been touched by patches:
+#   1. Recursively find *.js and *.mjs under the Vite build dir
+#   2. Explicitly add $MAIN_ENTRY and the helper files copied into its directory
+VALIDATION_FILES=()
+
+add_validation_file() {
+  local candidate="$1"
+  [[ -f "$candidate" ]] || return 0
+
+  local existing
+  for existing in "${VALIDATION_FILES[@]}"; do
+    [[ "$existing" == "$candidate" ]] && return 0
+  done
+
+  VALIDATION_FILES+=("$candidate")
+}
+
+while IFS= read -r -d '' js_file; do
+  add_validation_file "$js_file"
+done < <(find "$VITE_BUILD_DIR" -type f \( -name '*.js' -o -name '*.mjs' \) -print0)
+
+add_validation_file "$MAIN_ENTRY"
+
+for helper_file in \
+  module-load-patch.js \
+  shell-env-patch.js \
+  platform-headers.js \
+  platform-override.js \
+  ipc-stubs.js \
+  dispatch-polyfill.js \
+  native-frame.js \
+  open-url-bridge.js \
+  path-translator.js
+do
+  add_validation_file "$MAIN_ENTRY_DIR/$helper_file"
+done
+
+for js_file in "${VALIDATION_FILES[@]}"; do
+  if ! (
+    cd "$REPO_DIR" &&
+    node -e "
+      const acorn = require('acorn');
+      const fs = require('fs');
+      const src = fs.readFileSync(process.argv[1], 'utf8');
+      try {
+        acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'module' });
+      } catch (e1) {
+        try {
+          acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'script' });
+        } catch (e2) {
+          console.error('PARSE ERROR in ' + process.argv[1] + ': ' + e2.message);
+          process.exit(1);
+        }
+      }
+    " -- "$js_file"
+  ) 2>&1; then
+    log "ERROR: Patch produced invalid JavaScript in $(basename "$js_file")"
+    VALIDATION_FAILED=1
+  fi
+done
+
+if [[ "$VALIDATION_FAILED" -ne 0 ]]; then
+  log "ERROR: One or more patched JS files failed syntax validation. The build would produce a broken app.asar."
+  log "Check the patch scripts for off-by-one offsets, overlapping replacements, or injected code with syntax errors."
+  exit 1
+fi
+
+log "All patched files pass syntax validation."
+
 touch "$GUARD"
 
 # ---------------------------------------------------------------------------
