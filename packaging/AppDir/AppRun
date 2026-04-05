@@ -35,8 +35,9 @@ mkdir -p "$HOME/.local/share/claude-linux/sessions"
 # Cowork service check (optional — Cowork/Dispatch via socket protocol).
 # ---------------------------------------------------------------------------
 if ! pgrep -x cowork-svc-linux &>/dev/null && \
-   ! systemctl --user is-active claude-cowork &>/dev/null 2>&1; then
-  echo "[claude-desktop] WARN: claude-cowork service not running. Cowork features will not work." >&2
+   { ! command -v systemctl &>/dev/null || ! systemctl --user is-active claude-cowork &>/dev/null 2>&1; }; then
+  echo "[claude-desktop] WARN: claude-cowork service not running. Socket-based and Dispatch Cowork features will be unavailable." >&2
+  echo "  Other Cowork backends (stub/bwrap/host) remain functional." >&2
   echo "  Run: scripts/install-cowork-service.sh" >&2
 fi
 

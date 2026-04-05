@@ -50,6 +50,8 @@ check_dep() {
   fi
 }
 
+check_dep node "Install Node.js (required for JSON parsing)."
+check_dep systemctl "This script requires systemd. Non-systemd systems are not supported."
 check_dep sha256sum "Install coreutils."
 
 DOWNLOADER=""
