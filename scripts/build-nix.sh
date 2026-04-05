@@ -9,8 +9,10 @@ set -euo pipefail
 # that can be consumed via the bundled flake.nix or other Nix packaging steps.
 #
 # Env vars:
-#   BUILD_DIR      default: /tmp/claude-build
-#   OUTPUT_DIR     default: ./output  (relative to repo root)
+#   BUILD_DIR        default: /tmp/claude-build
+#   OUTPUT_DIR       default: ./output  (relative to repo root)
+#   VERSION_SUFFIX   optional: appended to version in filename/metadata
+#                    (e.g. "~dev.20260404.abc1234" for dev channel)
 # ---------------------------------------------------------------------------
 
 log() { echo "[build-nix] $*"; }

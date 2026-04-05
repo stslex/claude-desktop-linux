@@ -7,9 +7,11 @@ set -euo pipefail
 # Build an Arch Linux .pkg.tar.zst package for Claude Desktop Linux.
 #
 # Env vars:
-#   BUILD_DIR      default: /tmp/claude-build
-#   OUTPUT_DIR     default: ./output  (relative to repo root)
-#   REPACK         default: 1  (repack number, used as pkgrel)
+#   BUILD_DIR        default: /tmp/claude-build
+#   OUTPUT_DIR       default: ./output  (relative to repo root)
+#   REPACK           default: 1  (repack number, used as pkgrel)
+#   VERSION_SUFFIX   optional: appended to version in filename/metadata
+#                    (e.g. "~dev.20260404.abc1234" for dev channel)
 # ---------------------------------------------------------------------------
 
 log() { echo "[build-pacman] $*"; }

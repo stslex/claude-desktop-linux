@@ -11,6 +11,8 @@ set -euo pipefail
 #   BUILD_DIR           default: /tmp/claude-build
 #   OUTPUT_DIR          default: ./output  (relative to repo root)
 #   ELECTRON_OVERRIDE   force a specific Electron version (e.g. 37.0.0)
+#   VERSION_SUFFIX      optional: appended to version in filename
+#                       (e.g. "~dev.20260404.abc1234" for dev channel)
 # ---------------------------------------------------------------------------
 
 log() { echo "[build-appimage] $*"; }

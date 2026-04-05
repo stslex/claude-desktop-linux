@@ -7,9 +7,11 @@ set -euo pipefail
 # Re-pack the patched ASAR and build an RPM from it.
 #
 # Env vars:
-#   BUILD_DIR      default: /tmp/claude-build
-#   OUTPUT_DIR     default: ./output  (relative to repo root)
-#   GPG_KEY_ID     optional: sign the RPM with this key ID
+#   BUILD_DIR        default: /tmp/claude-build
+#   OUTPUT_DIR       default: ./output  (relative to repo root)
+#   GPG_KEY_ID       optional: sign the RPM with this key ID
+#   VERSION_SUFFIX   optional: appended to version in filename/metadata
+#                    (e.g. "~dev.20260404.abc1234" for dev channel)
 # ---------------------------------------------------------------------------
 
 log() { echo "[build-rpm] $*"; }

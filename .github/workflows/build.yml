@@ -11,9 +11,6 @@ on:
     branches: ['dev', 'main']
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Override version (leave empty to auto-detect from DMG)'
-        required: false
       channel:
         description: 'Release channel'
         type: choice
@@ -36,7 +33,8 @@ jobs:
     outputs:
       channel: ${{ steps.channel.outputs.channel }}
       version_suffix: ${{ steps.channel.outputs.version_suffix }}
-      release_name_prefix: ${{ steps.channel.outputs.release_name_prefix }}
+      dev_build_date: ${{ steps.channel.outputs.dev_build_date }}
+      dev_short_sha: ${{ steps.channel.outputs.dev_short_sha }}
     steps:
       - id: channel
         run: |
@@ -60,16 +58,15 @@ jobs:
 
           if [[ "$CH" == "stable" ]]; then
             echo "version_suffix=" >> $GITHUB_OUTPUT
-            echo "release_name_prefix=" >> $GITHUB_OUTPUT
           elif [[ "$CH" == "dev" ]]; then
             DATE=$(date -u +%Y%m%d)
             SHA="${GITHUB_SHA:0:7}"
             echo "version_suffix=~dev.${DATE}.${SHA}" >> $GITHUB_OUTPUT
-            echo "release_name_prefix=[BETA] " >> $GITHUB_OUTPUT
+            echo "dev_build_date=${DATE}" >> $GITHUB_OUTPUT
+            echo "dev_short_sha=${SHA}" >> $GITHUB_OUTPUT
           else
             # PR — artifacts only, no release
             echo "version_suffix=" >> $GITHUB_OUTPUT
-            echo "release_name_prefix=" >> $GITHUB_OUTPUT
           fi
 
           echo "Channel: $CH"
@@ -87,6 +84,8 @@ jobs:
       OUTPUT_DIR: ${{ github.workspace }}/output
       CHANNEL: ${{ needs.determine-channel.outputs.channel }}
       VERSION_SUFFIX: ${{ needs.determine-channel.outputs.version_suffix }}
+      DEV_BUILD_DATE: ${{ needs.determine-channel.outputs.dev_build_date }}
+      DEV_SHORT_SHA: ${{ needs.determine-channel.outputs.dev_short_sha }}
 
     steps:
       - name: Checkout
@@ -330,12 +329,10 @@ jobs:
           NIX_SHA:     ${{ steps.sums.outputs.nix }}
           AI_SHA:      ${{ steps.sums.outputs.appimage }}
         run: |
-          BUILD_DATE="$(date -u +%Y%m%d)"
-          SHORT_SHA="${GITHUB_SHA:0:7}"
-          TAG="v${VERSION}-dev.${BUILD_DATE}.${SHORT_SHA}"
+          TAG="v${VERSION}-dev.${DEV_BUILD_DATE}.${DEV_SHORT_SHA}"
           BASE="output/claude-desktop-${FULL_VERSION}-repack-${REPACK}-x86_64"
           NOTES=$(cat <<NOTES_EOF
-          ## [BETA] Claude Desktop Linux v${VERSION} dev.${BUILD_DATE}.${SHORT_SHA}
+          ## [BETA] Claude Desktop Linux v${VERSION} dev.${DEV_BUILD_DATE}.${DEV_SHORT_SHA}
 
           > **This is an untested development build from the \`dev\` branch.**
           >
@@ -349,7 +346,6 @@ jobs:
 
           Branch: \`dev\`
           Commit: ${GITHUB_SHA}
-          Build date: $(date -u +"%Y-%m-%d %H:%M UTC")
 
           | Asset | SHA256 |
           |---|---|
@@ -384,7 +380,7 @@ jobs:
 
           gh release create "${TAG}" \
             --repo "${{ github.repository }}" \
-            --title "[BETA] Claude Desktop Linux v${VERSION} dev.${BUILD_DATE}.${SHORT_SHA}" \
+            --title "[BETA] Claude Desktop Linux v${VERSION} dev.${DEV_BUILD_DATE}.${DEV_SHORT_SHA}" \
             --prerelease \
             --notes "$NOTES" \
             "${ASSETS[@]}"
@@ -417,10 +413,8 @@ jobs:
             REPO_NAME_SUFFIX=""
             REPO_DISPLAY="Claude Desktop Linux (Stable)"
           else
-            BUILD_DATE="$(date -u +%Y%m%d)"
-            SHORT_SHA="${GITHUB_SHA:0:7}"
             CH_DIR="dev"
-            TAG="v${VERSION}-dev.${BUILD_DATE}.${SHORT_SHA}"
+            TAG="v${VERSION}-dev.${DEV_BUILD_DATE}.${DEV_SHORT_SHA}"
             PKG_VERSION="${FULL_VERSION}"
             REPO_NAME_SUFFIX="-dev"
             REPO_DISPLAY="Claude Desktop Linux (Beta / Development)"
@@ -631,14 +625,21 @@ jobs:
 
           # -------------------------------------------------------------------
           # Backward-compatible aliases for stable channel
-          #   Users who already have claude-desktop.repo pointing to /rpm/
-          #   should still work. Symlink /rpm/ → /stable/rpm/ etc.
+          #   Users who already have repos pointing to /rpm/, /deb/, /nix/
+          #   (without /stable/ prefix) should still work.
           # -------------------------------------------------------------------
           if [[ "$CHANNEL" == "stable" ]]; then
-            # Create redirect aliases so old /rpm/ URLs still work
             if [[ -d "$PAGES_DIR/stable/rpm" ]]; then
               mkdir -p "$PAGES_DIR/rpm"
               cp -a "$PAGES_DIR/stable/rpm/repodata" "$PAGES_DIR/rpm/" 2>/dev/null || true
+            fi
+            if [[ -d "$PAGES_DIR/stable/deb" ]]; then
+              mkdir -p "$PAGES_DIR/deb"
+              cp -a "$PAGES_DIR/stable/deb/." "$PAGES_DIR/deb/" 2>/dev/null || true
+            fi
+            if [[ -d "$PAGES_DIR/stable/nix" ]]; then
+              mkdir -p "$PAGES_DIR/nix"
+              cp -a "$PAGES_DIR/stable/nix/." "$PAGES_DIR/nix/" 2>/dev/null || true
             fi
           fi
 
