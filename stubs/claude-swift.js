@@ -14,9 +14,6 @@ let _callbacks = {};
 /** @type {Map<number, import('child_process').ChildProcess>} */
 const _procs = new Map();
 
-/** Lifecycle state — set by startVM, cleared by stopVM. */
-let _started = false;
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -212,7 +209,6 @@ const _vmBase = {
    * @returns {Promise<void>}
    */
   startVM(_config) {
-    _started = true;
     return new Promise((resolve) => {
       setImmediate(() => {
         if (typeof _callbacks.onReady === 'function') _callbacks.onReady();
@@ -306,11 +302,11 @@ const _vmBase = {
 
   /**
    * Report whether the "guest" (VM/process) is connected.
-   * On Linux we spawn processes directly, so if started, the guest is always connected.
+   * On Linux there is no VM — always return true so the orchestrator proceeds.
    * @returns {boolean}
    */
   isGuestConnected() {
-    return _started;
+    return true;
   },
 
   /**
@@ -321,7 +317,6 @@ const _vmBase = {
       try { child.kill('SIGTERM'); } catch {}
     }
     _procs.clear();
-    _started = false;
     setImmediate(() => {
       if (typeof _callbacks.onExit === 'function') _callbacks.onExit();
     });
@@ -329,28 +324,31 @@ const _vmBase = {
 
   /**
    * Report whether the VM is running.
+   * On Linux there is no VM — always return true.
    * @returns {boolean}
    */
   isRunning() {
-    return _started;
+    return true;
   },
 
   /**
    * Report whether the VM is ready.
+   * On Linux there is no VM — always return true.
    * @returns {boolean}
    */
   isReady() {
-    return _started;
+    return true;
   },
 };
 
 // Getter-style properties that the orchestrator may check as properties or methods.
+// On Linux there is no VM — always report started/reachable.
 Object.defineProperty(_vmBase, 'vmStarted', {
-  get() { return _started; },
+  get() { return true; },
   enumerable: true,
 });
 Object.defineProperty(_vmBase, 'apiReachable', {
-  get() { return _started; },
+  get() { return true; },
   enumerable: true,
 });
 
