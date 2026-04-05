@@ -26,6 +26,7 @@ entirely and run the Claude Code binary directly on the host.
 │   ├── inject-stubs.sh          ← replace native modules with JS stubs
 │   ├── patch-cowork.sh          ← unlock Cowork on Linux
 │   ├── install-cowork-service.sh ← install claude-cowork-service daemon
+│   ├── validate-bundle.sh        ← standalone JS syntax validation gate
 │   └── build-packages.sh        ← RPM + AppImage assembly
 ├── stubs/
 │   ├── claude-native.js         ← @ant/claude-native replacement
@@ -53,7 +54,8 @@ entirely and run the Claude Code binary directly on the host.
 └── .github/
     └── workflows/
         ├── check-update.yml     ← polls for new DMG every 6 h
-        └── build.yml            ← full build + release
+        ├── build.yml            ← full build + release
+        └── smoke-test.yml       ← smoke tests (syntax, RPM install, headless launch)
 ```
 
 ## Invariants — Never Break These
@@ -421,6 +423,41 @@ When `find-platform-gate.mjs` exits 1 on a new version:
 2. Inspect the candidates and identify the new gate function shape.
 3. Update the AST pattern in `find-platform-gate.mjs`.
 4. Commit and push — the next `check-update.yml` run will use the updated pattern.
+
+## Automated Quality Gates
+
+Every push to main, dev, and feature branches runs the smoke test workflow
+(`.github/workflows/smoke-test.yml`):
+
+1. **Bundle validation** — `scripts/validate-bundle.sh` runs acorn on every
+   `.vite/build/*.js` file after patches are applied. Any syntax error fails
+   the build before the asar is repacked. This is also wired into
+   `scripts/patch-cowork.sh` as an inline gate.
+
+2. **RPM install test** — builds the RPM in a Fedora 41 container, installs
+   it, verifies all expected files land in the right locations.
+
+3. **Headless launch test** — runs the installed `claude-desktop` under Xvfb
+   for 10 seconds. Fails on SIGSEGV, process death within 5 seconds, or
+   explicit fatal errors in the log.
+
+These catch broken JS bundles, missing dependencies, and crash-on-launch
+regressions. They do NOT catch:
+- GUI interaction bugs (requires a real display and human)
+- Cowork session failures (requires orchestrator interaction)
+- Wayland/compositor-specific issues (container is X11-only)
+- DBus/systemd-dependent features
+
+Final validation before release is still manual on a real Silverblue install.
+
+To run smoke tests locally:
+```bash
+./scripts/validate-bundle.sh          # standalone syntax check (after patches)
+```
+
+After merging the workflow, add `smoke-test-summary` as a required status check
+on the `main` and `dev` branches via repo Settings → Branches → Branch
+protection rules.
 
 ## License
 

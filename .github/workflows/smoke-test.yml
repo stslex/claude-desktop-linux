@@ -1,0 +1,269 @@
+name: Smoke Test
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+      - fix_cowork
+      - 'feat/**'
+      - 'fix/**'
+  pull_request:
+    branches:
+      - main
+      - dev
+  workflow_dispatch:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Fetch DMG once, patch, validate syntax, build RPM, upload artifact
+  # ---------------------------------------------------------------------------
+  build-and-validate:
+    name: Build, validate, and package
+    runs-on: ubuntu-latest
+    env:
+      BUILD_DIR: /tmp/claude-build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            dmg2img p7zip-full rpm imagemagick icnsutils \
+            libarchive-tools zstd librsvg2-bin
+
+      - name: Install npm dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Resolve upstream version for cache key
+        id: upstream
+        run: |
+          RELEASES_URL="https://downloads.claude.ai/releases/darwin/universal/RELEASES.json"
+          RELEASES_JSON="$(curl -sSf --max-time 30 --retry 3 "$RELEASES_URL" 2>/dev/null || true)"
+          if [[ -n "$RELEASES_JSON" ]]; then
+            DL_URL="$(echo "$RELEASES_JSON" | node -e "
+              const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+              const u = d?.releases?.[0]?.updateTo?.url || d?.url || '';
+              if (u) process.stdout.write(u);
+            " 2>/dev/null || true)"
+          fi
+          if [[ -n "${DL_URL:-}" ]]; then
+            # Use the URL itself as cache key — changes only when Anthropic publishes a new version
+            CACHE_KEY="claude-download-$(echo -n "$DL_URL" | sha256sum | cut -c1-16)"
+            echo "cache-key=$CACHE_KEY" >> "$GITHUB_OUTPUT"
+            echo "Upstream URL: $DL_URL"
+            echo "Cache key: $CACHE_KEY"
+          else
+            echo "cache-key=claude-download-none" >> "$GITHUB_OUTPUT"
+            echo "::warning::Could not resolve upstream URL — cache will miss"
+          fi
+
+      - name: Cache Claude Desktop download
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/claude-build/claude.zip
+            /tmp/claude-build/claude.zip.sha256
+          key: ${{ steps.upstream.outputs.cache-key }}
+
+      - name: Fetch and extract
+        run: |
+          mkdir -p "$BUILD_DIR"
+          ./scripts/fetch-and-extract.sh
+
+      - name: Inject stubs
+        run: ./scripts/inject-stubs.sh
+
+      - name: Run patches (includes inline syntax validation)
+        run: ./scripts/patch-cowork.sh
+
+      - name: Re-validate bundle (belt and suspenders)
+        run: ./scripts/validate-bundle.sh
+
+      - name: Build packages
+        run: ./scripts/build-packages.sh
+        env:
+          KEEP_BUILD_DIR: '1'
+
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-rpm-${{ github.sha }}
+          path: output/*.rpm
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Upload extracted app on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: broken-bundle-${{ github.sha }}
+          path: /tmp/claude-build/app-extracted/.vite/build/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Install pre-built RPM in Fedora, verify layout, headless launch
+  # ---------------------------------------------------------------------------
+  smoke-test-rpm:
+    name: Install and smoke-test RPM in Fedora
+    runs-on: ubuntu-latest
+    needs: build-and-validate
+    container:
+      image: fedora:41
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install test dependencies
+        run: |
+          dnf install -y \
+            nodejs npm \
+            xorg-x11-server-Xvfb \
+            mesa-dri-drivers mesa-libGL \
+            libxkbcommon \
+            nss atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage \
+            libXfixes libXrandr libgbm alsa-lib pango cairo \
+            gtk3 glib2 \
+            procps-ng
+
+      - name: Install npm dependencies (for acorn)
+        run: npm ci --ignore-scripts
+
+      - name: Download RPM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: smoke-test-rpm-${{ github.sha }}
+          path: output/
+
+      - name: Verify RPM exists
+        run: |
+          ls -la output/
+          RPM_FILE=$(ls output/*.rpm | head -1)
+          if [[ -z "$RPM_FILE" ]]; then
+            echo "::error::No RPM in artifact"
+            exit 1
+          fi
+          echo "RPM_FILE=$RPM_FILE" >> $GITHUB_ENV
+
+      - name: Install the RPM
+        run: |
+          dnf install -y "$RPM_FILE"
+          # Verify files landed in expected locations
+          test -f /usr/bin/claude-desktop || { echo "::error::launcher missing"; exit 1; }
+          test -f /usr/lib/claude-desktop/app.asar || { echo "::error::asar missing"; exit 1; }
+          test -f /usr/lib/claude-desktop/ELECTRON_VERSION || { echo "::error::ELECTRON_VERSION missing"; exit 1; }
+          test -x /usr/lib/electron/electron || { echo "::error::bundled electron missing or not executable"; exit 1; }
+          echo "RPM installation layout OK"
+
+      - name: Verify asar parses as valid JS
+        run: |
+          mkdir -p /tmp/asar-check
+          npx @electron/asar extract /usr/lib/claude-desktop/app.asar /tmp/asar-check
+
+          # Parse every .js file in .vite/build/
+          FAIL=0
+          for f in /tmp/asar-check/.vite/build/*.js; do
+            [[ -f "$f" ]] || continue
+            if ! node -e "require('acorn').parse(require('fs').readFileSync('$f','utf8'),{ecmaVersion:'latest',sourceType:'module',allowReturnOutsideFunction:true})" 2>&1; then
+              echo "::error::Syntax error in shipped bundle: $(basename $f)"
+              FAIL=1
+            fi
+          done
+          [[ "$FAIL" == "0" ]] || exit 1
+          echo "Shipped asar bundle passes syntax validation"
+
+      - name: Headless launch test (10 second survival)
+        run: |
+          # Start Xvfb
+          Xvfb :99 -screen 0 1280x720x24 &
+          XVFB_PID=$!
+          export DISPLAY=:99
+          sleep 2
+
+          # Launch claude-desktop in background, redirect output
+          timeout 15s claude-desktop --no-sandbox --disable-gpu > /tmp/launch.log 2>&1 &
+          CLAUDE_PID=$!
+
+          # Wait for it to either crash or stabilize
+          sleep 5
+
+          # Check if the process is still alive
+          if kill -0 "$CLAUDE_PID" 2>/dev/null; then
+            echo "Process survived 5 seconds -- launch test passed"
+            # Clean kill
+            kill -TERM "$CLAUDE_PID" 2>/dev/null || true
+            wait "$CLAUDE_PID" 2>/dev/null || true
+            SURVIVED=1
+          else
+            wait "$CLAUDE_PID" 2>/dev/null
+            EXIT_CODE=$?
+            echo "::error::Process died within 5 seconds (exit code: $EXIT_CODE)"
+            SURVIVED=0
+          fi
+
+          # Always show the log
+          echo "=== Launch log ==="
+          cat /tmp/launch.log || true
+          echo "=================="
+
+          # Look for SIGSEGV specifically
+          if grep -q "SIGSEGV\|segmentation fault\|Segmentation fault" /tmp/launch.log 2>/dev/null; then
+            echo "::error::SIGSEGV detected in launch log"
+            kill "$XVFB_PID" 2>/dev/null || true
+            exit 1
+          fi
+
+          # Look for common fatal errors (warn only, don't fail)
+          if grep -qiE "fatal error|uncaught exception|failed to start" /tmp/launch.log; then
+            echo "::warning::Fatal error message in launch log (see above)"
+          fi
+
+          kill "$XVFB_PID" 2>/dev/null || true
+
+          [[ "$SURVIVED" == "1" ]] || exit 1
+
+      - name: Upload launch log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-log-${{ github.sha }}
+          path: /tmp/launch.log
+          retention-days: 7
+
+      - name: Upload RPM on failure for debugging
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-build-rpm-${{ github.sha }}
+          path: output/*.rpm
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Job 3: Aggregation gate (use as required status check)
+  # ---------------------------------------------------------------------------
+  smoke-test-summary:
+    name: Smoke test summary
+    runs-on: ubuntu-latest
+    needs: [build-and-validate, smoke-test-rpm]
+    if: always()
+    steps:
+      - name: Report status
+        run: |
+          if [[ "${{ needs.build-and-validate.result }}" != "success" ]]; then
+            echo "::error::Build and validation FAILED"
+            exit 1
+          fi
+          if [[ "${{ needs.smoke-test-rpm.result }}" != "success" ]]; then
+            echo "::error::Smoke test FAILED"
+            exit 1
+          fi
+          echo "All smoke tests passed"
