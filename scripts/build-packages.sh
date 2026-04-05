@@ -10,6 +10,8 @@ set -euo pipefail
 #   BUILD_DIR        default: /tmp/claude-build
 #   OUTPUT_DIR       default: ./output  (relative to repo root)
 #   KEEP_BUILD_DIR   set to 1 to preserve BUILD_DIR after the run
+#   VERSION_SUFFIX   optional: appended to version in filenames/metadata
+#                    (e.g. "~dev.20260404.abc1234" for dev channel)
 # ---------------------------------------------------------------------------
 
 log() { echo "[build-packages] $*"; }
@@ -47,7 +49,11 @@ if [[ ! -f "$BUILD_DIR/VERSION" ]]; then
 fi
 
 APP_VERSION="$(cat "$BUILD_DIR/VERSION")"
+VERSION_SUFFIX="${VERSION_SUFFIX:-}"
+FULL_VERSION="${APP_VERSION}${VERSION_SUFFIX}"
 log "Claude Desktop : $APP_VERSION"
+[[ -n "$VERSION_SUFFIX" ]] && log "Version suffix : $VERSION_SUFFIX"
+log "Full version   : $FULL_VERSION"
 
 # ---------------------------------------------------------------------------
 # Re-pack the patched app into app-patched.asar
@@ -63,7 +69,7 @@ mkdir -p "$OUTPUT_DIR"
 # ---------------------------------------------------------------------------
 log "--- RPM ---"
 RPM_OK=false
-if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" REPACK_NUM="${REPACK_NUM:-0}" "$SCRIPT_DIR/build-rpm.sh"; then
+if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" REPACK_NUM="${REPACK_NUM:-0}" VERSION_SUFFIX="$VERSION_SUFFIX" "$SCRIPT_DIR/build-rpm.sh"; then
     RPM_OK=true
     log "RPM build succeeded."
 else
@@ -75,7 +81,7 @@ fi
 # ---------------------------------------------------------------------------
 log "--- DEB ---"
 DEB_OK=false
-if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" REPACK_NUM="${REPACK_NUM:-0}" "$SCRIPT_DIR/build-deb.sh"; then
+if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" REPACK_NUM="${REPACK_NUM:-0}" VERSION_SUFFIX="$VERSION_SUFFIX" "$SCRIPT_DIR/build-deb.sh"; then
     DEB_OK=true
     log "DEB build succeeded."
 else
@@ -87,7 +93,7 @@ fi
 # ---------------------------------------------------------------------------
 log "--- Pacman ---"
 PACMAN_OK=false
-if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" REPACK="${REPACK_NUM:-0}" "$SCRIPT_DIR/build-pacman.sh"; then
+if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" REPACK="${REPACK_NUM:-0}" VERSION_SUFFIX="$VERSION_SUFFIX" "$SCRIPT_DIR/build-pacman.sh"; then
     PACMAN_OK=true
     log "Pacman build succeeded."
 else
@@ -99,7 +105,7 @@ fi
 # ---------------------------------------------------------------------------
 log "--- Nix ---"
 NIX_OK=false
-if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" "$SCRIPT_DIR/build-nix.sh"; then
+if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" VERSION_SUFFIX="$VERSION_SUFFIX" "$SCRIPT_DIR/build-nix.sh"; then
     NIX_OK=true
     log "Nix build succeeded."
 else
@@ -111,7 +117,7 @@ fi
 # ---------------------------------------------------------------------------
 log "--- AppImage ---"
 APPIMAGE_OK=false
-if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" "$SCRIPT_DIR/build-appimage.sh"; then
+if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" VERSION_SUFFIX="$VERSION_SUFFIX" "$SCRIPT_DIR/build-appimage.sh"; then
     APPIMAGE_OK=true
     log "AppImage build succeeded."
 else
@@ -151,11 +157,11 @@ verify_sha256() {
     fi
 }
 
-RPM_PKG="$OUTPUT_DIR/claude-desktop-${APP_VERSION}-x86_64.rpm"
-DEB_PKG="$OUTPUT_DIR/claude-desktop-${APP_VERSION}-x86_64.deb"
-PACMAN_PKG="$OUTPUT_DIR/claude-desktop-${APP_VERSION}-x86_64.pkg.tar.zst"
-NIX_PKG="$OUTPUT_DIR/claude-desktop-${APP_VERSION}-x86_64-nix.tar.gz"
-APPIMAGE_PKG="$OUTPUT_DIR/claude-desktop-${APP_VERSION}-x86_64.AppImage"
+RPM_PKG="$OUTPUT_DIR/claude-desktop-${FULL_VERSION}-x86_64.rpm"
+DEB_PKG="$OUTPUT_DIR/claude-desktop-${FULL_VERSION}-x86_64.deb"
+PACMAN_PKG="$OUTPUT_DIR/claude-desktop-${FULL_VERSION}-x86_64.pkg.tar.zst"
+NIX_PKG="$OUTPUT_DIR/claude-desktop-${FULL_VERSION}-x86_64-nix.tar.gz"
+APPIMAGE_PKG="$OUTPUT_DIR/claude-desktop-${FULL_VERSION}-x86_64.AppImage"
 
 [[ -f "$RPM_PKG"      ]] && verify_sha256 "$RPM_PKG"      || true
 [[ -f "$DEB_PKG"      ]] && verify_sha256 "$DEB_PKG"      || true

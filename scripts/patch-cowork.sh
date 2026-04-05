@@ -17,8 +17,11 @@ set -euo pipefail
 # Does NOT repack the ASAR — that is done once by build-packages.sh.
 #
 # Env vars:
-#   BUILD_DIR          default: /tmp/claude-build
-#   SKIP_COWORK_PATCH  set to 1 to skip this script entirely
+#   BUILD_DIR                    default: /tmp/claude-build
+#   SKIP_COWORK_PATCH            set to 1 to skip this script entirely
+#   ENABLE_EXPERIMENTAL_PATCHES  set to 1 to run cowork-socket, dispatch, and
+#                                computer-use-tcc AST patches (disabled by default
+#                                — they currently corrupt the JS bundle)
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -308,6 +311,81 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Experimental patches — Cowork socket, Dispatch flags, ComputerUseTcc
+#
+# These AST patches are gated behind ENABLE_EXPERIMENTAL_PATCHES=1 because
+# they currently corrupt the JS bundle and cause SIGSEGV on launch.
+# See: commits b4ced59, 32ba4a6
+# ---------------------------------------------------------------------------
+if [[ "${ENABLE_EXPERIMENTAL_PATCHES:-}" == "1" ]]; then
+  # -------------------------------------------------------------------------
+  # Patch — Cowork socket transport: named pipe → Unix socket on Linux
+  # -------------------------------------------------------------------------
+  log "Running experimental Cowork socket patch..."
+
+  COWORK_SOCKET_LOG="$BUILD_DIR/patch-cowork-socket.log"
+
+  set +e
+  node "$PATCHES_DIR/patch-cowork-socket.mjs" "$APP_DIR" \
+    2>"$COWORK_SOCKET_LOG"
+  COWORK_SOCKET_EXIT=$?
+  set -e
+
+  cat "$COWORK_SOCKET_LOG" >&2
+
+  if [[ $COWORK_SOCKET_EXIT -ne 0 ]]; then
+    log "WARNING: patch-cowork-socket.mjs failed (non-fatal)"
+  else
+    log "Cowork socket transport patched."
+  fi
+
+  # -------------------------------------------------------------------------
+  # Patch — Dispatch feature flags (GrowthBook gates)
+  # -------------------------------------------------------------------------
+  log "Running experimental Dispatch patch..."
+
+  DISPATCH_FLAGS_LOG="$BUILD_DIR/patch-dispatch-flags.log"
+
+  set +e
+  node "$PATCHES_DIR/patch-dispatch.mjs" "$APP_DIR" \
+    2>"$DISPATCH_FLAGS_LOG"
+  DISPATCH_FLAGS_EXIT=$?
+  set -e
+
+  cat "$DISPATCH_FLAGS_LOG" >&2
+
+  if [[ $DISPATCH_FLAGS_EXIT -ne 0 ]]; then
+    log "WARNING: patch-dispatch.mjs failed (non-fatal)"
+  else
+    log "Dispatch feature flags patched."
+  fi
+
+  # -------------------------------------------------------------------------
+  # Patch — ComputerUseTcc IPC stubs (AST injection)
+  # -------------------------------------------------------------------------
+  log "Running experimental ComputerUseTcc patch..."
+
+  TCC_PATCH_LOG="$BUILD_DIR/patch-tcc.log"
+
+  set +e
+  node "$PATCHES_DIR/patch-computer-use-tcc.mjs" "$APP_DIR" \
+    2>"$TCC_PATCH_LOG"
+  TCC_PATCH_EXIT=$?
+  set -e
+
+  cat "$TCC_PATCH_LOG" >&2
+
+  if [[ $TCC_PATCH_EXIT -ne 0 ]]; then
+    log "WARNING: patch-computer-use-tcc.mjs failed (non-fatal)"
+  else
+    log "ComputerUseTcc IPC handlers patched."
+  fi
+else
+  log "Skipping experimental patches (Cowork socket, Dispatch flags, ComputerUseTcc)."
+  log "Set ENABLE_EXPERIMENTAL_PATCHES=1 to enable them."
+fi
+
+# ---------------------------------------------------------------------------
 # Patch 4 — Find main entry point
 # ---------------------------------------------------------------------------
 log "Locating main entry point..."
@@ -488,6 +566,81 @@ else
   log "Prepended module-load-patch + shell-env-patch + platform-headers + platform-override + ipc-stubs + dispatch-polyfill + native-frame + open-url-bridge + path-translator to $MAIN_ENTRY"
 fi
 
+# ---------------------------------------------------------------------------
+# Post-patch validation — ensure all patched JS files still parse correctly
+# ---------------------------------------------------------------------------
+log "Validating patched JavaScript..."
+VALIDATION_FAILED=0
+
+# Collect all JS files that could have been touched by patches:
+#   1. Recursively find *.js and *.mjs under the Vite build dir
+#   2. Explicitly add $MAIN_ENTRY and the helper files copied into its directory
+VALIDATION_FILES=()
+
+add_validation_file() {
+  local candidate="$1"
+  [[ -f "$candidate" ]] || return 0
+
+  local existing
+  for existing in "${VALIDATION_FILES[@]}"; do
+    [[ "$existing" == "$candidate" ]] && return 0
+  done
+
+  VALIDATION_FILES+=("$candidate")
+}
+
+while IFS= read -r -d '' js_file; do
+  add_validation_file "$js_file"
+done < <(find "$VITE_BUILD_DIR" -type f \( -name '*.js' -o -name '*.mjs' \) -print0)
+
+add_validation_file "$MAIN_ENTRY"
+
+for helper_file in \
+  module-load-patch.js \
+  shell-env-patch.js \
+  platform-headers.js \
+  platform-override.js \
+  ipc-stubs.js \
+  dispatch-polyfill.js \
+  native-frame.js \
+  open-url-bridge.js \
+  path-translator.js
+do
+  add_validation_file "$MAIN_ENTRY_DIR/$helper_file"
+done
+
+for js_file in "${VALIDATION_FILES[@]}"; do
+  if ! (
+    cd "$REPO_DIR" &&
+    node -e "
+      const acorn = require('acorn');
+      const fs = require('fs');
+      const src = fs.readFileSync(process.argv[1], 'utf8');
+      try {
+        acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'module' });
+      } catch (e1) {
+        try {
+          acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'script' });
+        } catch (e2) {
+          console.error('PARSE ERROR in ' + process.argv[1] + ': ' + e2.message);
+          process.exit(1);
+        }
+      }
+    " -- "$js_file"
+  ) 2>&1; then
+    log "ERROR: Patch produced invalid JavaScript in $(basename "$js_file")"
+    VALIDATION_FAILED=1
+  fi
+done
+
+if [[ "$VALIDATION_FAILED" -ne 0 ]]; then
+  log "ERROR: One or more patched JS files failed syntax validation. The build would produce a broken app.asar."
+  log "Check the patch scripts for off-by-one offsets, overlapping replacements, or injected code with syntax errors."
+  exit 1
+fi
+
+log "All patched files pass syntax validation."
+
 touch "$GUARD"
 
 # ---------------------------------------------------------------------------
@@ -500,6 +653,9 @@ log "  CCD platform patch  : linux-x64/linux-arm64 added to getHostPlatform + ge
 log "  VM download patch   : download_and_sdk_prepare returns early on Linux"
 log "  Bundle download gate: platform check bypassed for Linux"
 log "  Dispatch gate       : checked (shared with Cowork gate or patched separately)"
+log "  Cowork socket       : $(if [[ "${ENABLE_EXPERIMENTAL_PATCHES:-}" == "1" ]]; then echo "named pipe → Unix domain socket on Linux"; else echo "SKIPPED (experimental)"; fi)"
+log "  Dispatch flags      : $(if [[ "${ENABLE_EXPERIMENTAL_PATCHES:-}" == "1" ]]; then echo "GrowthBook feature flags force-enabled for Linux"; else echo "SKIPPED (experimental)"; fi)"
+log "  ComputerUseTcc      : $(if [[ "${ENABLE_EXPERIMENTAL_PATCHES:-}" == "1" ]]; then echo "IPC stubs injected into main bundle"; else echo "SKIPPED (experimental)"; fi)"
 log "  Patches injected    : $MAIN_ENTRY"
 log "    module-load-patch.js   (shared Module._load interceptor registry)"
 log "    shell-env-patch.js     (fix shell path worker not found on Linux)"
@@ -509,6 +665,6 @@ log "    ipc-stubs.js           (ComputerUseTcc stub handlers)"
 log "    dispatch-polyfill.js   (Dispatch IPC stubs + foreground polling)"
 log "    native-frame.js        (icon injection + tray click handler for Linux)"
 log "    open-url-bridge.js     (second-instance → open-url bridge for Linux OAuth)"
-log "    path-translator.js     (/sessions/… path remapping)"
+log "    path-translator.mjs    (/sessions/… path remapping — no symlink needed)"
 log "------------------------------------------------------------"
 log "Done."

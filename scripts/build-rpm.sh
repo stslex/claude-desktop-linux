@@ -7,9 +7,11 @@ set -euo pipefail
 # Re-pack the patched ASAR and build an RPM from it.
 #
 # Env vars:
-#   BUILD_DIR      default: /tmp/claude-build
-#   OUTPUT_DIR     default: ./output  (relative to repo root)
-#   GPG_KEY_ID     optional: sign the RPM with this key ID
+#   BUILD_DIR        default: /tmp/claude-build
+#   OUTPUT_DIR       default: ./output  (relative to repo root)
+#   GPG_KEY_ID       optional: sign the RPM with this key ID
+#   VERSION_SUFFIX   optional: appended to version in filename/metadata
+#                    (e.g. "~dev.20260404.abc1234" for dev channel)
 # ---------------------------------------------------------------------------
 
 log() { echo "[build-rpm] $*"; }
@@ -39,8 +41,10 @@ if ! command -v rpmbuild &>/dev/null; then
 fi
 
 VERSION="$(cat "$BUILD_DIR/VERSION")"
+VERSION_SUFFIX="${VERSION_SUFFIX:-}"
+FULL_VERSION="${VERSION}${VERSION_SUFFIX}"
 ELECTRON_VERSION="${ELECTRON_OVERRIDE:-$(cat "$BUILD_DIR/ELECTRON_VERSION")}"
-log "Version      : $VERSION"
+log "Version      : $FULL_VERSION"
 log "Electron     : $ELECTRON_VERSION"
 
 # ---------------------------------------------------------------------------
@@ -140,14 +144,14 @@ cp "$REPO_DIR/packaging/claude-desktop.spec" "$RPM_ROOT/SPECS/claude-desktop.spe
 # ---------------------------------------------------------------------------
 # Build RPM
 # ---------------------------------------------------------------------------
-log "Running rpmbuild $VERSION ..."
+log "Running rpmbuild $FULL_VERSION ..."
 
 REPACK_NUM="${REPACK_NUM:-0}"
 log "Repack       : $REPACK_NUM"
 
 RPMBUILD_ARGS=(
     --define "_topdir $RPM_ROOT"
-    --define "_version $VERSION"
+    --define "_version $FULL_VERSION"
     --define "_repack $REPACK_NUM"
     -bb "$RPM_ROOT/SPECS/claude-desktop.spec"
 )
@@ -170,7 +174,7 @@ if [[ -z "$RPM_FILE" ]]; then
 fi
 
 mkdir -p "$OUTPUT_DIR"
-DEST_RPM="$OUTPUT_DIR/claude-desktop-${VERSION}-x86_64.rpm"
+DEST_RPM="$OUTPUT_DIR/claude-desktop-${FULL_VERSION}-x86_64.rpm"
 cp "$RPM_FILE" "$DEST_RPM"
 sha256sum "$DEST_RPM" | awk '{print $1}' > "${DEST_RPM}.sha256"
 

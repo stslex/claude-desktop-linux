@@ -206,20 +206,20 @@ We also wrap `fs.promises.open`, `fs.promises.readFile`, etc. for the same
 prefix — because some code builds paths manually with string concatenation rather
 than `path.join`.
 
-**The `/sessions` symlink:**
+**No `/sessions` symlink needed:**
 
-Some paths are constructed before they pass through our translator. The simplest
-fix is a symlink:
+Previous versions required a `sudo ln -sf … /sessions` symlink because some
+code paths constructed absolute `/sessions/…` paths before they reached the
+translator.  The translator now intercepts all Node.js APIs that accept file
+paths — `fs` (sync, async callback, and promises variants), `child_process`
+(`spawn`, `execFile`, `exec` — translating `cwd` and args), `net.connect`
+(socket paths), and `path` (`join`, `resolve`, `normalize`).  Session
+directories under `~/.local/share/claude-linux/sessions/` are auto-created on
+first encounter.
 
-```
-/sessions → ~/.local/share/claude-linux/sessions
-```
-
-This requires `sudo` once at install time. The RPM `%post` scriptlet creates it.
-For AppImage, the launcher script creates it if missing, prompting for sudo.
-
-An alternative is to run the Electron process with a user namespace that remounts
-`/sessions` — but this adds complexity for minimal benefit.
+This eliminates the need for root access at runtime, which is critical for
+immutable distros (Fedora Silverblue, Kinoite, Universal Blue) where the root
+filesystem is read-only.
 
 ---
 
@@ -265,6 +265,71 @@ default. On Fedora Silverblue this works out of the box.
 motivated exploit in `claude-code` could escape via kernel vulnerabilities. For
 personal development use this is an acceptable trade-off. Do not use this for
 processing untrusted third-party content in production.
+
+---
+
+## Socket IPC Protocol
+
+Claude Desktop's Cowork and Dispatch features communicate with a backend daemon
+over a socket-based IPC protocol.  The protocol uses length-prefixed JSON
+messages: a 4-byte big-endian unsigned integer specifying the payload length,
+followed by the UTF-8 JSON payload.
+
+```
+macOS:   Desktop → @ant/claude-swift → VZVirtualMachine → vsock → sdk-daemon
+Windows: Desktop → cowork-svc.exe    → Named Pipe (\\.\\pipe\\cowork-vm-service) → Hyper-V VM → vsock → sdk-daemon
+Linux:   Desktop → Unix socket ($XDG_RUNTIME_DIR/cowork-vm-service.sock) → cowork-svc-linux → os/exec
+```
+
+On macOS and Windows the daemon runs inside a VM.  On Linux we skip the VM
+entirely: the `claude-cowork-service` daemon (MIT licensed, from
+`patrickjaja/claude-cowork-service`) listens on a Unix domain socket and
+delegates process management to `os/exec`.
+
+`patches/patch-cowork-socket.mjs` rewrites the app's named pipe path
+(`\\.\pipe\cowork-vm-service`) to a platform-aware expression that uses the
+Unix socket on Linux and preserves the named pipe on Windows.
+
+**Why we use the external daemon instead of reimplementing the protocol:**
+
+The socket protocol has 17+ methods and non-trivial lifecycle management
+(process tracking, stdin forwarding, event subscriptions).  The Go daemon
+already implements all of this correctly and is MIT-licensed.  Reimplementing
+in JS would duplicate effort and introduce bugs.  Our job is to make the
+Electron app connect to it — not to rewrite it.
+
+---
+
+## Dispatch on Linux
+
+Dispatch is Anthropic's mobile-to-desktop task delegation feature.  It uses
+server-sent events (SSE) for real-time delivery when the app is open, and
+push notifications (APNs/FCM) for background delivery when the app is closed.
+
+On Linux:
+
+1. **SSE delivery works** — when the app is open, Dispatch tasks arrive via
+   the same SSE connection used for other real-time features.
+2. **Push delivery does not work** — APNs is Apple-only, FCM requires a
+   registered application identity.  We do not attempt to register with either
+   service.
+
+To make Dispatch functional, several GrowthBook feature flags must be
+force-enabled.  `patches/patch-dispatch.mjs` finds these by their stable
+hash constants (which survive minification) and flips the associated boolean
+initializers:
+
+| Sub-patch | Hash constant | Purpose |
+|---|---|---|
+| A | `3572572142` | Sessions-bridge init gate |
+| B | `2216414644` | Remote session control check |
+| C | *(structural)* | Platform label ("Darwin"/"Windows" → add "Linux") |
+| D | `1143815894` | hostLoopMode — use native host paths instead of VM paths |
+
+Additionally, `stubs/dispatch-polyfill.js` registers IPC handlers for the
+Dispatch UI channels so the renderer can render the Dispatch panel without
+errors, and `patches/fix-dispatch-gate.mjs` patches any Dispatch-specific
+platform gate (separate from the Cowork gate).
 
 ---
 
@@ -359,12 +424,24 @@ Release body is auto-generated and includes:
 | Electron version incompatible | App crashes immediately | RPM: runtime. AppImage: build | `ELECTRON_VERSION` file; easy to override |
 | `@ant/claude-swift` API changed | Cowork tab appears but sessions fail | Runtime | Stub logs unknown method calls to stderr |
 | Path translator misses a path | File not found errors in Cowork | Runtime | `COWORK_DEBUG=1` logs all intercepted paths |
-| `/sessions` symlink missing | Cowork fails on first run | Runtime | Launcher script checks and prompts to create |
+| Session dir missing | Cowork fails on first run | Runtime | Launcher runs `mkdir -p`; path translator auto-creates on demand |
 | `xdg-open` not available | OAuth flow broken | Runtime | Stub checks and falls back to printing the URL |
 | bubblewrap not installed | Cowork silently uses host backend | `--doctor` flag | Launcher warns; falls back to `host` |
 | DMG URL changed | `fetch-dmg.sh` exits 1 | CI fails | Update URL in `fetch-dmg.sh` |
+| `cowork-svc-linux` not running | Cowork/Dispatch socket features fail | Runtime | Launcher warns; `scripts/install-cowork-service.sh` |
+| GrowthBook flag hash changed | `patch-dispatch.mjs` finds 0 matches | CI warning | Update hash constants in `patch-dispatch.mjs` |
 
 ---
+
+## Partial Support
+
+**Dispatch — partially supported.** Dispatch works via SSE when the app is open.
+GrowthBook feature flags are force-enabled (`patches/patch-dispatch.mjs`), UI
+platform gates are bypassed, and IPC handlers are stubbed.  The
+`claude-cowork-service` daemon provides the socket backend that Dispatch's session
+management requires.  Background delivery (APNs/FCM push wake-up) is not
+available — tasks sent from mobile when the app is closed won't arrive until the
+next launch.  See "Dispatch on Linux" section above for details.
 
 ## Explicit Non-Goals
 
@@ -376,15 +453,6 @@ enable Cowork and serve the claude-code binary bundle — without them, Cowork n
 activates regardless of local patches.  Every working Linux Cowork implementation
 sends these headers.  We do NOT modify User-Agent strings, general browsing
 headers, or requests to any non-Anthropic domain.
-
-**Partial Dispatch.** Dispatch's mobile-to-desktop protocol uses push notifications
-via APNs (Apple) and FCM (Google) for background delivery. We bypass the UI
-platform gates (via IPC interception in `platform-override.js` and Dispatch stubs
-in `claude-native.js`) and polyfill the Electron Notification API so the Dispatch
-UI is available. However, tasks that rely on APNs/FCM push notifications to wake
-the desktop app when it is closed will not be delivered — the app must be running.
-Registering a real application identifier with Apple/Google push services or
-reverse-engineering the token exchange is not in scope.
 
 **No Computer Use.** Requires capturing the screen and injecting mouse/keyboard
 events. The current Cowork architecture on macOS uses `AXUIElement` (macOS

@@ -26,20 +26,18 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Ensure the /sessions symlink exists.
+# Ensure the session directory exists (no /sessions symlink needed —
+# path-translator.mjs handles all /sessions/… → ~/.local/share/… remapping).
 # ---------------------------------------------------------------------------
-SESSION_TARGET="$HOME/.local/share/claude-linux/sessions"
-mkdir -p "$SESSION_TARGET"
+mkdir -p "$HOME/.local/share/claude-linux/sessions"
 
-if [[ ! -L /sessions ]]; then
-  echo "[claude-desktop] Creating /sessions symlink (requires sudo)..." >&2
-  if command -v sudo &>/dev/null; then
-    sudo ln -sf "$SESSION_TARGET" /sessions || \
-      echo "[claude-desktop] WARNING: Could not create /sessions. Cowork paths may fail." >&2
-  else
-    echo "[claude-desktop] WARNING: sudo not available. Create symlink manually:" >&2
-    echo "  sudo ln -sf $SESSION_TARGET /sessions" >&2
-  fi
+# ---------------------------------------------------------------------------
+# Cowork service check (optional — Cowork/Dispatch via socket protocol).
+# ---------------------------------------------------------------------------
+if ! pgrep -x cowork-svc-linux &>/dev/null && \
+   ! systemctl --user is-active claude-cowork &>/dev/null 2>&1; then
+  echo "[claude-desktop] WARN: claude-cowork service not running. Cowork features will not work." >&2
+  echo "  Run: scripts/install-cowork-service.sh" >&2
 fi
 
 # ---------------------------------------------------------------------------
