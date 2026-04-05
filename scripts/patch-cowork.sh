@@ -454,6 +454,8 @@ sed \
   -e "s/^import path from 'path';/const path = require('path');/" \
   -e "s/^import fs   from 'fs';/const fs   = require('fs');/" \
   -e "s/^import os   from 'os';/const os   = require('os');/" \
+  -e "s/^import child_process from 'child_process';/const child_process = require('child_process');/" \
+  -e "s/^import net  from 'net';/const net  = require('net');/" \
   -e "s/^export function translatePath/module.exports.translatePath = function translatePath/" \
   "$TRANSLATOR_SRC" > "$TRANSLATOR_DEST"
 log "Copied path-translator to $TRANSLATOR_DEST"
