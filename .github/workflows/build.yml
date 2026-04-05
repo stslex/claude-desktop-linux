@@ -380,6 +380,10 @@ jobs:
             exit 1
           fi
 
+          # Delete existing release if this is a re-run for the same commit
+          gh release delete "${TAG}" --repo "${{ github.repository }}" --yes 2>/dev/null || true
+          git push origin :"refs/tags/${TAG}" 2>/dev/null || true
+
           gh release create "${TAG}" \
             --repo "${{ github.repository }}" \
             --title "[BETA] Claude Desktop Linux v${VERSION} dev.${DEV_BUILD_DATE}.${DEV_SHORT_SHA}" \
@@ -656,9 +660,7 @@ jobs:
   # ---------------------------------------------------------------------------
   deploy-pages:
     needs: [determine-channel, build]
-    if: >
-      needs.determine-channel.outputs.channel == 'stable' ||
-      needs.determine-channel.outputs.channel == 'dev'
+    if: needs.determine-channel.outputs.channel == 'stable'
     runs-on: ubuntu-latest
     permissions:
       pages: write
