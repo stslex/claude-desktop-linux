@@ -660,7 +660,9 @@ jobs:
   # ---------------------------------------------------------------------------
   deploy-pages:
     needs: [determine-channel, build]
-    if: needs.determine-channel.outputs.channel == 'stable'
+    if: >
+      needs.determine-channel.outputs.channel == 'stable' ||
+      needs.determine-channel.outputs.channel == 'dev'
     runs-on: ubuntu-latest
     permissions:
       pages: write
