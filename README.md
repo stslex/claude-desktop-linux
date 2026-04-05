@@ -206,6 +206,69 @@ installs it to `~/.local/bin/`, and creates a systemd user service.  The app
 will warn on launch if the service is not running, but Chat and MCP still work
 without it.
 
+---
+
+### Beta / Development Channel (Testers Only)
+
+> **Not recommended for normal use.** The beta channel contains untested
+> development builds. They may be broken, crash on launch, or have incomplete
+> features. Use the [stable release](#installation) unless you are actively
+> testing changes.
+
+If you want to help test new features before they reach the stable channel:
+
+#### RPM / Fedora / Silverblue
+
+```sh
+sudo curl -o /etc/yum.repos.d/claude-desktop-dev.repo \
+  https://stslex.github.io/claude-desktop-linux/claude-desktop-dev.repo
+sudo dnf install claude-desktop
+```
+
+#### DEB / Debian / Ubuntu
+
+```sh
+sudo curl -o /etc/apt/sources.list.d/claude-desktop-dev.list \
+  https://stslex.github.io/claude-desktop-linux/claude-desktop-dev.list
+sudo apt update
+sudo apt install claude-desktop
+```
+
+#### Pacman / Arch Linux
+
+Add to `/etc/pacman.conf`:
+
+```ini
+[claude-desktop-dev]
+SigLevel = Optional TrustAll
+Server = https://github.com/stslex/claude-desktop-linux/releases/download/<dev-tag>
+```
+
+#### Rollback to stable
+
+If a beta build breaks your install:
+
+```sh
+# Fedora
+sudo dnf downgrade claude-desktop
+# or remove the dev repo and reinstall:
+sudo rm /etc/yum.repos.d/claude-desktop-dev.repo
+sudo dnf reinstall claude-desktop
+
+# Debian / Ubuntu
+sudo rm /etc/apt/sources.list.d/claude-desktop-dev.list
+sudo apt update
+sudo apt install claude-desktop --reinstall
+```
+
+#### Reporting beta issues
+
+Beta issues should be filed with the `beta` label on GitHub Issues.
+Include the exact version string from `rpm -q claude-desktop` or
+`claude-desktop --version`.
+
+---
+
 ### First Run
 
 1. No special setup needed — the app creates `~/.local/share/claude-linux/sessions/`

@@ -35,8 +35,10 @@ if [[ ! -d "$BUILD_DIR/app-extracted" ]]; then
 fi
 
 VERSION="$(cat "$BUILD_DIR/VERSION")"
+VERSION_SUFFIX="${VERSION_SUFFIX:-}"
+FULL_VERSION="${VERSION}${VERSION_SUFFIX}"
 ELECTRON_VERSION="${ELECTRON_OVERRIDE:-$(cat "$BUILD_DIR/ELECTRON_VERSION")}"
-log "Version      : $VERSION"
+log "Version      : $FULL_VERSION"
 log "Electron     : $ELECTRON_VERSION"
 
 # ---------------------------------------------------------------------------
@@ -156,13 +158,13 @@ if [[ -f "$SVG_ICON" ]]; then
 fi
 
 # Write version metadata
-echo "$VERSION" > "$NIX_ROOT/lib/claude-desktop/VERSION"
+echo "$FULL_VERSION" > "$NIX_ROOT/lib/claude-desktop/VERSION"
 
 # ---------------------------------------------------------------------------
 # Build tarball
 # ---------------------------------------------------------------------------
 mkdir -p "$OUTPUT_DIR"
-DEST_TAR="$OUTPUT_DIR/claude-desktop-${VERSION}-x86_64-nix.tar.gz"
+DEST_TAR="$OUTPUT_DIR/claude-desktop-${FULL_VERSION}-x86_64-nix.tar.gz"
 
 log "Building nix tarball..."
 tar -czf "$DEST_TAR" -C "$NIX_ROOT" .

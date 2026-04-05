@@ -43,9 +43,11 @@ for cmd in bsdtar zstd unzip; do
 done
 
 VERSION="$(cat "$BUILD_DIR/VERSION")"
+VERSION_SUFFIX="${VERSION_SUFFIX:-}"
+FULL_VERSION="${VERSION}${VERSION_SUFFIX}"
 ELECTRON_VERSION="${ELECTRON_OVERRIDE:-$(cat "$BUILD_DIR/ELECTRON_VERSION")}"
 PKGREL="${REPACK:-1}"
-log "Version      : $VERSION"
+log "Version      : $FULL_VERSION"
 log "Electron     : $ELECTRON_VERSION"
 log "Pkg release  : $PKGREL"
 
@@ -172,7 +174,7 @@ INSTALL_SIZE="$(du -sb "$PKG_ROOT/usr" | awk '{print $1}')"
 cat > "$PKG_ROOT/.PKGINFO" <<PKGINFO_EOF
 pkgname = claude-desktop
 pkgbase = claude-desktop
-pkgver = ${VERSION}-${PKGREL}
+pkgver = ${FULL_VERSION}-${PKGREL}
 xdata = pkgtype=pkg
 pkgdesc = Claude Desktop for Linux (unofficial rebuild)
 url = https://github.com/stslex/claude-desktop-linux
@@ -271,7 +273,7 @@ fi
 # Build .pkg.tar.zst using bsdtar
 # ---------------------------------------------------------------------------
 mkdir -p "$OUTPUT_DIR"
-DEST_PKG="$OUTPUT_DIR/claude-desktop-${VERSION}-x86_64.pkg.tar.zst"
+DEST_PKG="$OUTPUT_DIR/claude-desktop-${FULL_VERSION}-x86_64.pkg.tar.zst"
 
 log "Building pacman package..."
 # bsdtar must run from the package root so paths are relative

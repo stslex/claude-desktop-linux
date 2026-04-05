@@ -40,9 +40,11 @@ if [[ ! -f "$BUILD_DIR/ELECTRON_VERSION" ]]; then
 fi
 
 APP_VERSION="$(cat "$BUILD_DIR/VERSION")"
+VERSION_SUFFIX="${VERSION_SUFFIX:-}"
+FULL_VERSION="${APP_VERSION}${VERSION_SUFFIX}"
 ELECTRON_VERSION="${ELECTRON_OVERRIDE:-$(cat "$BUILD_DIR/ELECTRON_VERSION")}"
 
-log "Claude Desktop : $APP_VERSION"
+log "Claude Desktop : $FULL_VERSION"
 log "Electron       : $ELECTRON_VERSION"
 
 mkdir -p "$OUTPUT_DIR"
@@ -210,7 +212,7 @@ fi
 # ---------------------------------------------------------------------------
 # Build AppImage
 # ---------------------------------------------------------------------------
-APPIMAGE_OUT="$OUTPUT_DIR/claude-desktop-${APP_VERSION}-x86_64.AppImage"
+APPIMAGE_OUT="$OUTPUT_DIR/claude-desktop-${FULL_VERSION}-x86_64.AppImage"
 
 # Embed zsync update info so AppImageUpdate can fetch the latest release.
 # Pattern matches the repack-N filename used in GitHub releases.
