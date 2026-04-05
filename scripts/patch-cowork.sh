@@ -643,6 +643,12 @@ fi
 
 log "All patched files pass syntax validation."
 
+# ---------------------------------------------------------------------------
+# Standalone bundle validation (belt-and-suspenders — also runnable from CI)
+# ---------------------------------------------------------------------------
+log "Running standalone bundle validation..."
+"$SCRIPT_DIR/validate-bundle.sh"
+
 touch "$GUARD"
 
 # ---------------------------------------------------------------------------
