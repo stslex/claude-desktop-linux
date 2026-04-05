@@ -7,9 +7,11 @@ set -euo pipefail
 # Build an Arch Linux .pkg.tar.zst package for Claude Desktop Linux.
 #
 # Env vars:
-#   BUILD_DIR      default: /tmp/claude-build
-#   OUTPUT_DIR     default: ./output  (relative to repo root)
-#   REPACK         default: 1  (repack number, used as pkgrel)
+#   BUILD_DIR        default: /tmp/claude-build
+#   OUTPUT_DIR       default: ./output  (relative to repo root)
+#   REPACK           default: 1  (repack number, used as pkgrel)
+#   VERSION_SUFFIX   optional: appended to version in filename/metadata
+#                    (e.g. "~dev.20260404.abc1234" for dev channel)
 # ---------------------------------------------------------------------------
 
 log() { echo "[build-pacman] $*"; }
@@ -43,9 +45,11 @@ for cmd in bsdtar zstd unzip; do
 done
 
 VERSION="$(cat "$BUILD_DIR/VERSION")"
+VERSION_SUFFIX="${VERSION_SUFFIX:-}"
+FULL_VERSION="${VERSION}${VERSION_SUFFIX}"
 ELECTRON_VERSION="${ELECTRON_OVERRIDE:-$(cat "$BUILD_DIR/ELECTRON_VERSION")}"
 PKGREL="${REPACK:-1}"
-log "Version      : $VERSION"
+log "Version      : $FULL_VERSION"
 log "Electron     : $ELECTRON_VERSION"
 log "Pkg release  : $PKGREL"
 
@@ -172,7 +176,7 @@ INSTALL_SIZE="$(du -sb "$PKG_ROOT/usr" | awk '{print $1}')"
 cat > "$PKG_ROOT/.PKGINFO" <<PKGINFO_EOF
 pkgname = claude-desktop
 pkgbase = claude-desktop
-pkgver = ${VERSION}-${PKGREL}
+pkgver = ${FULL_VERSION}-${PKGREL}
 xdata = pkgtype=pkg
 pkgdesc = Claude Desktop for Linux (unofficial rebuild)
 url = https://github.com/stslex/claude-desktop-linux
@@ -271,7 +275,7 @@ fi
 # Build .pkg.tar.zst using bsdtar
 # ---------------------------------------------------------------------------
 mkdir -p "$OUTPUT_DIR"
-DEST_PKG="$OUTPUT_DIR/claude-desktop-${VERSION}-x86_64.pkg.tar.zst"
+DEST_PKG="$OUTPUT_DIR/claude-desktop-${FULL_VERSION}-x86_64.pkg.tar.zst"
 
 log "Building pacman package..."
 # bsdtar must run from the package root so paths are relative

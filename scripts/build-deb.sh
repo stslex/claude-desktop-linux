@@ -7,8 +7,10 @@ set -euo pipefail
 # Build a .deb package for Claude Desktop Linux.
 #
 # Env vars:
-#   BUILD_DIR      default: /tmp/claude-build
-#   OUTPUT_DIR     default: ./output  (relative to repo root)
+#   BUILD_DIR        default: /tmp/claude-build
+#   OUTPUT_DIR       default: ./output  (relative to repo root)
+#   VERSION_SUFFIX   optional: appended to version in filename/metadata
+#                    (e.g. "~dev.20260404.abc1234" for dev channel)
 # ---------------------------------------------------------------------------
 
 log() { echo "[build-deb] $*"; }
@@ -38,8 +40,10 @@ if ! command -v dpkg-deb &>/dev/null; then
 fi
 
 VERSION="$(cat "$BUILD_DIR/VERSION")"
+VERSION_SUFFIX="${VERSION_SUFFIX:-}"
+FULL_VERSION="${VERSION}${VERSION_SUFFIX}"
 ELECTRON_VERSION="${ELECTRON_OVERRIDE:-$(cat "$BUILD_DIR/ELECTRON_VERSION")}"
-log "Version      : $VERSION"
+log "Version      : $FULL_VERSION"
 log "Electron     : $ELECTRON_VERSION"
 
 # ---------------------------------------------------------------------------
@@ -206,7 +210,7 @@ fi
 # Installed-Size is in KB, computed from the actual installed tree.
 INSTALLED_SIZE="$(du -sk "$DEB_ROOT/usr" | cut -f1)"
 # Include repack number in Debian version so apt detects newer repacks.
-DEB_VERSION="${VERSION}+repack${REPACK_NUM:-0}"
+DEB_VERSION="${FULL_VERSION}+repack${REPACK_NUM:-0}"
 
 cat > "$DEB_ROOT/DEBIAN/control" <<CTRL_EOF
 Package: claude-desktop
@@ -234,7 +238,7 @@ CTRL_EOF
 # Build .deb
 # ---------------------------------------------------------------------------
 mkdir -p "$OUTPUT_DIR"
-DEST_DEB="$OUTPUT_DIR/claude-desktop-${VERSION}-x86_64.deb"
+DEST_DEB="$OUTPUT_DIR/claude-desktop-${FULL_VERSION}-x86_64.deb"
 
 log "Building .deb package..."
 dpkg-deb --build --root-owner-group "$DEB_ROOT" "$DEST_DEB"

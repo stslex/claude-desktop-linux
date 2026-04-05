@@ -84,6 +84,7 @@ entirely and run the Claude Code binary directly on the host.
 | `DISPATCH_POLL_INTERVAL_MS` | `30000` | Dispatch foreground polling interval (ms) |
 | `SKIP_DISPATCH_POLL` | `` | Set to `1` to disable Dispatch polling |
 | `ENABLE_EXPERIMENTAL_PATCHES` | `` | Set to `1` to run cowork-socket, dispatch, and computer-use-tcc AST patches (off by default — they corrupt the JS bundle) |
+| `VERSION_SUFFIX` | `` | Appended to version in filenames and package metadata (e.g. `~dev.20260404.abc1234`); set automatically by CI |
 
 ## Build Dependencies
 
@@ -337,6 +338,31 @@ warn if the service is not running but do not block app launch.
 - Run with `--no-sandbox` because the AppImage FUSE mount prevents the
   `chrome-sandbox` setuid bit from taking effect.
 - Output filename: `claude-desktop-<version>-x86_64.AppImage`
+
+## Release Channels
+
+This project has two release channels that share the same codebase:
+
+| Channel | Branch | GitHub Release | gh-pages path | .repo file |
+|---------|--------|----------------|---------------|------------|
+| Stable  | `main` | Regular (Latest) | `/stable/` | `claude-desktop.repo` |
+| Dev     | `dev`  | Pre-release | `/dev/` | `claude-desktop-dev.repo` |
+
+Feature branches (`fix_cowork`, `feat/**`, `fix/**`) produce workflow artifacts
+only, never published. Download them from the Actions tab for local testing.
+
+The channel is determined automatically by `.github/workflows/build.yml` via
+the `determine-channel` job. Manual dispatch can override with the `channel`
+input (choices: `auto`, `stable`, `dev`, `none`).
+
+Dev releases use version suffix `~dev.YYYYMMDD.shortsha` (tilde ensures
+correct RPM/DEB version sorting so `dnf upgrade` / `apt upgrade` never moves
+stable users to dev). The `prerelease: true` flag on GitHub Releases ensures:
+- `/releases/latest` API skips dev releases
+- "Latest Release" badge on the repo page stays on stable
+- Yellow "Pre-release" badge appears on dev releases
+- Package manager repos (`claude-desktop.repo` vs `claude-desktop-dev.repo`)
+  point to separate gh-pages subdirectories (`/stable/` vs `/dev/`)
 
 ## GitHub Actions
 
