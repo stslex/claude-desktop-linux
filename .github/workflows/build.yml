@@ -5,9 +5,6 @@ on:
     branches:
       - main
       - dev
-      - fix_cowork
-      - 'feat/**'
-      - 'fix/**'
     tags:
       - 'v*'
   pull_request:
@@ -70,10 +67,8 @@ jobs:
             echo "version_suffix=~dev.${DATE}.${SHA}" >> $GITHUB_OUTPUT
             echo "release_name_prefix=[BETA] " >> $GITHUB_OUTPUT
           else
-            # Feature branch — artifacts only, no release
-            SAFE_BRANCH="${GITHUB_REF_NAME//[^a-zA-Z0-9]/-}"
-            SHA="${GITHUB_SHA:0:7}"
-            echo "version_suffix=~${SAFE_BRANCH}.${SHA}" >> $GITHUB_OUTPUT
+            # PR — artifacts only, no release
+            echo "version_suffix=" >> $GITHUB_OUTPUT
             echo "release_name_prefix=" >> $GITHUB_OUTPUT
           fi
 
