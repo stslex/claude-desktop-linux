@@ -24,6 +24,8 @@ jobs:
   build-and-validate:
     name: Build, validate, and package
     runs-on: ubuntu-latest
+    env:
+      BUILD_DIR: /tmp/claude-build
     steps:
       - uses: actions/checkout@v4
 
@@ -42,8 +44,41 @@ jobs:
       - name: Install npm dependencies
         run: npm ci --ignore-scripts
 
-      - name: Fetch and extract DMG
-        run: ./scripts/fetch-and-extract.sh
+      - name: Resolve upstream version for cache key
+        id: upstream
+        run: |
+          RELEASES_URL="https://downloads.claude.ai/releases/darwin/universal/RELEASES.json"
+          RELEASES_JSON="$(curl -sSf --max-time 30 --retry 3 "$RELEASES_URL" 2>/dev/null || true)"
+          if [[ -n "$RELEASES_JSON" ]]; then
+            DL_URL="$(echo "$RELEASES_JSON" | node -e "
+              const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+              const u = d?.releases?.[0]?.updateTo?.url || d?.url || '';
+              if (u) process.stdout.write(u);
+            " 2>/dev/null || true)"
+          fi
+          if [[ -n "${DL_URL:-}" ]]; then
+            # Use the URL itself as cache key — changes only when Anthropic publishes a new version
+            CACHE_KEY="claude-download-$(echo -n "$DL_URL" | sha256sum | cut -c1-16)"
+            echo "cache-key=$CACHE_KEY" >> "$GITHUB_OUTPUT"
+            echo "Upstream URL: $DL_URL"
+            echo "Cache key: $CACHE_KEY"
+          else
+            echo "cache-key=claude-download-none" >> "$GITHUB_OUTPUT"
+            echo "::warning::Could not resolve upstream URL — cache will miss"
+          fi
+
+      - name: Cache Claude Desktop download
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/claude-build/claude.zip
+            /tmp/claude-build/claude.zip.sha256
+          key: ${{ steps.upstream.outputs.cache-key }}
+
+      - name: Fetch and extract
+        run: |
+          mkdir -p "$BUILD_DIR"
+          ./scripts/fetch-and-extract.sh
 
       - name: Inject stubs
         run: ./scripts/inject-stubs.sh
