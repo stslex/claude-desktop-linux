@@ -38,7 +38,14 @@ SERVICE_FILE="$SYSTEMD_DIR/${SERVICE_NAME}.service"
 SOCKET_NAME="cowork-vm-service.sock"
 
 GITHUB_REPO="patrickjaja/claude-cowork-service"
-GITHUB_API="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
+# Pin to a specific release tag for reproducibility and security.
+# Update this when upgrading to a new version.
+PINNED_VERSION="${COWORK_SERVICE_VERSION:-v0.1.0}"
+GITHUB_API="https://api.github.com/repos/$GITHUB_REPO/releases/tags/$PINNED_VERSION"
+
+# Set SKIP_CHECKSUM_VERIFY=1 to allow installation without a .sha256 file
+# (not recommended — only use for testing unreleased builds).
+SKIP_CHECKSUM_VERIFY="${SKIP_CHECKSUM_VERIFY:-}"
 
 # ---------------------------------------------------------------------------
 # Dependency checks
@@ -82,7 +89,7 @@ log "Detected architecture: $ARCH ($ARCH_SUFFIX)"
 # ---------------------------------------------------------------------------
 # Fetch latest release info
 # ---------------------------------------------------------------------------
-log "Fetching latest release from $GITHUB_REPO..."
+log "Fetching release $PINNED_VERSION from $GITHUB_REPO..."
 
 RELEASE_JSON=""
 if [[ "$DOWNLOADER" == "curl" ]]; then
@@ -199,8 +206,14 @@ if [[ -n "$SHA256_URL" ]]; then
   fi
   log "SHA256 verified: $ACTUAL_SHA256"
 else
-  log "WARNING: No .sha256 file found in release. Recording checksum for audit."
-  log "SHA256: $ACTUAL_SHA256"
+  if [[ "$SKIP_CHECKSUM_VERIFY" == "1" ]]; then
+    log "WARNING: No .sha256 file found in release. SKIP_CHECKSUM_VERIFY=1, continuing anyway."
+    log "SHA256: $ACTUAL_SHA256"
+  else
+    log "ERROR: No .sha256 file found in release. Refusing to install unverified binary."
+    log "  Set SKIP_CHECKSUM_VERIFY=1 to override (not recommended)."
+    exit 1
+  fi
 fi
 
 # Store checksum alongside binary

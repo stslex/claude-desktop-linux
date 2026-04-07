@@ -17,10 +17,10 @@
  * Exits 0 on success, 1 if the pattern is not found.
  */
 
-import { readFileSync, writeFileSync, readdirSync, statSync } from 'fs';
+import { readFileSync, writeFileSync } from 'fs';
 import { join, relative } from 'path';
-import * as acorn from 'acorn';
 import * as walk from 'acorn-walk';
+import { collectJsFiles, tryParse, createLogger } from './patch-utils.mjs';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -42,40 +42,7 @@ const PLATFORM_LINUX_ADDITION = `||process.platform==="linux"`;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-const log = (msg) => process.stderr.write(`[patch-cowork-socket] ${msg}\n`);
-
-function collectJsFiles(dir) {
-  const files = [];
-  try {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        files.push(...collectJsFiles(full));
-      } else if (entry.name.endsWith('.js')) {
-        files.push(full);
-      }
-    }
-  } catch (e) {
-    log(`WARNING: Cannot read ${dir}: ${e.message}`);
-  }
-  return files;
-}
-
-function tryParse(src, file) {
-  for (const sourceType of ['module', 'script']) {
-    try {
-      return acorn.parse(src, {
-        ecmaVersion: 'latest',
-        sourceType,
-        locations: true,
-      });
-    } catch (_) {
-      // try next sourceType
-    }
-  }
-  log(`WARNING: Could not parse ${file} — skipping.`);
-  return null;
-}
+const log = createLogger('patch-cowork-socket');
 
 function collectStrings(node) {
   const strings = new Set();
@@ -131,7 +98,7 @@ for (const scanDir of scanDirs) {
 
     if (!hasPipeRef && !hasPlatformGuard) continue;
 
-    const ast = tryParse(src, file);
+    const ast = tryParse(src, file, { locations: true }, log);
     if (!ast) continue;
 
     const relFile = relative(appDir, file);
@@ -291,7 +258,7 @@ if (pipeMatches.length === 0 && platformGuardMatches.length === 0) {
       }
       if (!src.includes('cowork') && !src.includes('pipe')) continue;
 
-      const ast = tryParse(src, file);
+      const ast = tryParse(src, file, { locations: true }, log);
       if (!ast) continue;
 
       const relFile = relative(appDir, file);

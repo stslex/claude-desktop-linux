@@ -17,10 +17,10 @@
  * Exits 0 on success, 1 if critical sub-patches fail.
  */
 
-import { readFileSync, writeFileSync, readdirSync, statSync } from 'fs';
+import { readFileSync, writeFileSync } from 'fs';
 import { join, relative } from 'path';
-import * as acorn from 'acorn';
 import * as walk from 'acorn-walk';
+import { collectJsFiles, tryParse, createLogger } from './patch-utils.mjs';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -34,40 +34,7 @@ const FLAG_HASHES = {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-const log = (msg) => process.stderr.write(`[patch-dispatch] ${msg}\n`);
-
-function collectJsFiles(dir) {
-  const files = [];
-  try {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        files.push(...collectJsFiles(full));
-      } else if (entry.name.endsWith('.js')) {
-        files.push(full);
-      }
-    }
-  } catch (e) {
-    log(`WARNING: Cannot read ${dir}: ${e.message}`);
-  }
-  return files;
-}
-
-function tryParse(src, file) {
-  for (const sourceType of ['module', 'script']) {
-    try {
-      return acorn.parse(src, {
-        ecmaVersion: 'latest',
-        sourceType,
-        locations: true,
-      });
-    } catch (_) {
-      // try next sourceType
-    }
-  }
-  log(`WARNING: Could not parse ${file} — skipping.`);
-  return null;
-}
+const log = createLogger('patch-dispatch');
 
 /**
  * Walk ancestors to find the nearest enclosing scope (function or block).
@@ -97,8 +64,11 @@ function findEnclosingScope(ancestors) {
 function findNearbyBooleanInit(ast, src, flagNode, scope) {
   const candidates = [];
 
-  walk.simple(scope, {
-    UnaryExpression(node) {
+  // Use ancestor walk so we can verify the boolean is in a VariableDeclarator
+  // init or AssignmentExpression right-hand side — not an arbitrary expression
+  // like a function argument or conditional test.
+  walk.ancestor(scope, {
+    UnaryExpression(node, _state, ancestors) {
       // Match `!0` (true) or `!1` (false)
       if (
         node.operator === '!' &&
@@ -106,6 +76,17 @@ function findNearbyBooleanInit(ast, src, flagNode, scope) {
         node.argument.type === 'Literal' &&
         (node.argument.value === 0 || node.argument.value === 1)
       ) {
+        // Verify this boolean is an initializer or assignment target, not
+        // an arbitrary expression (e.g. function argument, return value).
+        const parent = ancestors[ancestors.length - 2];
+        const isVarInit = parent &&
+          parent.type === 'VariableDeclarator' &&
+          parent.init === node;
+        const isAssignment = parent &&
+          parent.type === 'AssignmentExpression' &&
+          parent.right === node;
+        if (!isVarInit && !isAssignment) return;
+
         candidates.push({
           start: node.start,
           end: node.end,
@@ -222,7 +203,7 @@ for (const scanDir of scanDirs) {
 
     if (!hasAnyHash && !hasPlatformLabel) continue;
 
-    const ast = tryParse(src, file);
+    const ast = tryParse(src, file, { locations: true }, log);
     if (!ast) continue;
 
     const relFile = relative(appDir, file);
