@@ -1,0 +1,248 @@
+name: Smoke Test
+
+# Channel-gated smoke tests. Mirrors the stable/dev split used by the main
+# build pipeline:
+#
+#   main branch / PRs to main → stable channel  (nix build .#default)
+#   dev  branch / PRs to dev  → dev    channel  (nix build .#dev)
+#
+# Feature branches are intentionally NOT matched here — nothing ships from
+# them, so we don't run smoke tests on them either.
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Channel to smoke-test (stable|dev). Leave blank to auto-detect from branch.'
+        required: false
+  push:
+    branches: ['main', 'dev']
+  pull_request:
+    branches: ['main', 'dev']
+
+permissions: {}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Nix smoke test — builds the flake output for the relevant channel and
+  # launches the binary under Xvfb for 10 seconds.
+  #
+  # Channel selection matches the main build pipeline:
+  #   - push to main  / PR into main → .#default (stable)
+  #   - push to dev   / PR into dev  → .#dev
+  #   - workflow_dispatch → inputs.channel, defaults to branch mapping above
+  # ---------------------------------------------------------------------------
+  nix-smoke-test:
+    name: Nix smoke test (${{ github.base_ref || github.ref_name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve target channel
+        id: channel
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME:   ${{ github.ref_name }}
+          BASE_REF:   ${{ github.base_ref }}
+          INPUT_CH:   ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+
+          # Manual override always wins.
+          if [[ -n "${INPUT_CH:-}" ]]; then
+            CH="$INPUT_CH"
+          else
+            # PR uses the target branch; push/dispatch uses the ref branch.
+            BR="${BASE_REF:-$REF_NAME}"
+            case "$BR" in
+              main) CH="stable" ;;
+              dev)  CH="dev"    ;;
+              *)
+                echo "ERROR: smoke test invoked on unsupported branch: $BR" >&2
+                echo "Only main (stable) and dev (dev) branches are gated." >&2
+                exit 1
+                ;;
+            esac
+          fi
+
+          case "$CH" in
+            stable) ATTR="default" ;;
+            dev)    ATTR="dev"     ;;
+            *)
+              echo "ERROR: unknown channel: $CH (expected: stable|dev)" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "channel=$CH"   >> "$GITHUB_OUTPUT"
+          echo "attr=$ATTR"    >> "$GITHUB_OUTPUT"
+          echo "Resolved channel: $CH (flake attr: .#$ATTR)"
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            experimental-features = nix-command flakes
+
+      - name: Enable Nix store cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      # Share the DMG download cache with the build-and-validate job so
+      # that repeat runs on the same commit don't re-download the DMG.
+      # The Nix flake itself fetches a pre-built tarball from GitHub
+      # Releases rather than the DMG, so this cache is only hydrated here
+      # to keep the key-space aligned with the rest of the smoke-test
+      # pipeline — the miss is cheap and the hit is shared.
+      - name: Restore DMG download cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/claude-build/claude.dmg
+          key: dmg-${{ hashFiles('scripts/fetch-and-extract.sh') }}
+          restore-keys: |
+            dmg-
+
+      - name: nix flake check
+        run: |
+          set -euo pipefail
+          nix flake check --show-trace
+
+      - name: Verify dev version sorts lower than stable
+        run: |
+          set -euo pipefail
+          STABLE="$(nix eval --raw '.#default.version')"
+          DEV="$(nix eval --raw '.#dev.version')"
+          echo "stable version: $STABLE"
+          echo "dev    version: $DEV"
+          CMP="$(nix eval --expr "builtins.compareVersions \"$DEV\" \"$STABLE\"")"
+          echo "compareVersions dev stable = $CMP"
+          if [ "$CMP" != "-1" ]; then
+            echo "FAIL: dev version must sort strictly lower than stable" >&2
+            echo "  builtins.compareVersions returned $CMP, expected -1" >&2
+            exit 1
+          fi
+
+      - name: nix build .#${{ steps.channel.outputs.attr }}
+        id: nixbuild
+        env:
+          ATTR: ${{ steps.channel.outputs.attr }}
+        run: |
+          set -euo pipefail
+          # Use --no-link so the store path is queried explicitly below,
+          # matching the rpm --compare analogue requested in the task.
+          nix build --print-build-logs --no-link ".#${ATTR}"
+          STORE_PATH="$(nix path-info ".#${ATTR}")"
+          echo "store_path=$STORE_PATH" >> "$GITHUB_OUTPUT"
+          echo "Built store path: $STORE_PATH"
+
+          # rpm --compare analogue using nix-store --query.
+          REQUISITES_COUNT="$(nix-store --query --requisites "$STORE_PATH" | wc -l)"
+          echo "requisites count: $REQUISITES_COUNT"
+          if [ "$REQUISITES_COUNT" -lt 5 ]; then
+            echo "FAIL: store path has suspiciously few requisites ($REQUISITES_COUNT)" >&2
+            exit 1
+          fi
+
+      - name: Install Xvfb
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends xvfb procps
+
+      # -----------------------------------------------------------------------
+      # Survival check — same shape as the Fedora RPM job in build-and-validate:
+      #
+      #   1. start Xvfb on :99
+      #   2. launch the binary with --no-sandbox (runner has no userns)
+      #   3. wait 5 s. If the process is already dead, fail (survival floor).
+      #      If exit code is 139 (SIGSEGV) at any point, fail immediately.
+      #   4. wait the remaining 5 s (10 s total runtime).
+      #   5. kill TERM, then KILL if it doesn't exit.
+      #   6. re-check exit code for SIGSEGV.
+      # -----------------------------------------------------------------------
+      - name: Survival check under Xvfb (10 s)
+        env:
+          STORE_PATH: ${{ steps.nixbuild.outputs.store_path }}
+        run: |
+          set -euo pipefail
+
+          BIN="$STORE_PATH/bin/claude-desktop"
+          if [ ! -x "$BIN" ]; then
+            echo "ERROR: expected launcher at $BIN — not found or not executable" >&2
+            ls -la "$STORE_PATH/bin" || true
+            exit 1
+          fi
+          echo "Launching: $BIN"
+
+          # Start Xvfb.
+          Xvfb :99 -screen 0 1280x720x24 &
+          XVFB_PID=$!
+          trap 'kill -TERM "${APP_PID:-0}" 2>/dev/null || true; kill -TERM "$XVFB_PID" 2>/dev/null || true' EXIT
+          export DISPLAY=:99
+          # Give Xvfb a moment to come up.
+          for _ in 1 2 3 4 5; do
+            if xdpyinfo -display :99 >/dev/null 2>&1; then break; fi
+            sleep 0.2
+          done
+
+          # Launch the binary. Electron inside the nix store may try to
+          # use its bundled sandbox helper; the GitHub runner has no
+          # user namespaces exposed, so --no-sandbox is required.
+          LOG="$(mktemp)"
+          "$BIN" --no-sandbox >"$LOG" 2>&1 &
+          APP_PID=$!
+          echo "app pid: $APP_PID"
+
+          # Phase 1: 5 s survival floor.
+          sleep 5
+          if ! kill -0 "$APP_PID" 2>/dev/null; then
+            wait "$APP_PID" 2>/dev/null || true
+            EC=$?
+            echo "FAIL: app died within 5 s (exit code $EC)" >&2
+            if [ "$EC" -eq 139 ]; then
+              echo "FAIL: SIGSEGV detected in early phase" >&2
+            fi
+            echo "---- app log ----" >&2
+            tail -n 200 "$LOG" >&2 || true
+            exit 1
+          fi
+          echo "survived 5 s"
+
+          # Phase 2: additional 5 s → 10 s total runtime.
+          sleep 5
+          if ! kill -0 "$APP_PID" 2>/dev/null; then
+            wait "$APP_PID" 2>/dev/null || true
+            EC=$?
+            echo "FAIL: app died between 5 s and 10 s (exit code $EC)" >&2
+            if [ "$EC" -eq 139 ]; then
+              echo "FAIL: SIGSEGV detected in late phase" >&2
+            fi
+            echo "---- app log ----" >&2
+            tail -n 200 "$LOG" >&2 || true
+            exit 1
+          fi
+          echo "survived 10 s"
+
+          # Graceful shutdown.
+          kill -TERM "$APP_PID" 2>/dev/null || true
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if ! kill -0 "$APP_PID" 2>/dev/null; then break; fi
+            sleep 0.5
+          done
+          if kill -0 "$APP_PID" 2>/dev/null; then
+            kill -KILL "$APP_PID" 2>/dev/null || true
+          fi
+          wait "$APP_PID" 2>/dev/null || true
+          EC=$?
+          echo "app exit code: $EC"
+          if [ "$EC" -eq 139 ]; then
+            echo "FAIL: SIGSEGV detected on shutdown" >&2
+            tail -n 200 "$LOG" >&2 || true
+            exit 1
+          fi
+
+          echo "---- last 40 lines of app log ----"
+          tail -n 40 "$LOG" || true
+          echo "Nix smoke test PASSED"
