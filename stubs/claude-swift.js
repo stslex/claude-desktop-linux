@@ -313,14 +313,16 @@ const _vmBase = {
    * Stop the VM — on Linux, kill all tracked child processes and reset state.
    */
   stopVM() {
-    for (const [pid, child] of _procs) {
+    // Snapshot PIDs before clearing so callbacks fire with correct data.
+    const entries = [..._procs.entries()];
+    _procs.clear();
+    for (const [pid, child] of entries) {
       try { child.kill('SIGTERM'); } catch {}
-      // Fire per-child onExit with consistent signature
       if (typeof _callbacks.onExit === 'function') {
-        setImmediate(() => _callbacks.onExit(pid, null, 'SIGTERM'));
+        const cbPid = pid;
+        process.nextTick(() => _callbacks.onExit(cbPid, null, 'SIGTERM'));
       }
     }
-    _procs.clear();
   },
 
   /**

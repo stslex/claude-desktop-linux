@@ -106,13 +106,44 @@ while IFS= read -r -d '' js_file; do
 done < <(find "$VITE_BUILD_DIR" -type f \( -name '*.js' -o -name '*.mjs' \) -print0)
 
 # ---------------------------------------------------------------------------
-# Validate native module stubs
+# Validate native module stubs (using acorn for consistency with bundle checks)
 # ---------------------------------------------------------------------------
 for stub_file in "$APP_DIR/node_modules/@ant/claude-native/index.js" \
                  "$APP_DIR/node_modules/@ant/claude-swift/index.js"; do
   [[ -f "$stub_file" ]] || continue
   CHECKED=$((CHECKED + 1))
-  if ! node -c "$stub_file" 2>/dev/null; then
+  if ! (
+    cd "$REPO_DIR" &&
+    node -e "
+      const acorn = require('acorn');
+      const fs = require('fs');
+      const path = require('path');
+      const file = process.argv[1];
+      const src = fs.readFileSync(file, 'utf8');
+      try {
+        acorn.parse(src, {
+          ecmaVersion: 'latest',
+          sourceType: 'module',
+          allowHashBang: true,
+          allowReturnOutsideFunction: true,
+        });
+      } catch (e1) {
+        try {
+          acorn.parse(src, {
+            ecmaVersion: 'latest',
+            sourceType: 'script',
+            allowHashBang: true,
+            allowReturnOutsideFunction: true,
+          });
+        } catch (e2) {
+          console.error('SYNTAX ERROR in ' + path.basename(file) + ':');
+          console.error('  ' + e2.message);
+          console.error('  at byte offset ' + (e2.pos || 'unknown'));
+          process.exit(1);
+        }
+      }
+    " "$stub_file"
+  ) 2>&1; then
     log "FAIL: stub $(basename "$(dirname "$stub_file")")/index.js has syntax errors"
     FAILED=1
   fi

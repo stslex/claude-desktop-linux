@@ -272,9 +272,19 @@ if (!global[INIT_SYM] && process.type === 'browser') {
 
   const _origExec = child_process.exec.bind(child_process);
   child_process.exec = (cmd, ...rest) => {
-    // exec takes a command string — translate any /sessions/ paths in it
+    // exec takes a command string — translate any /sessions/ paths in it.
+    // We handle both unquoted and quoted paths:
+    //   unquoted: /sessions/uuid/mnt/name/file.txt  (stop at whitespace or shell metachar)
+    //   single-quoted: '/sessions/uuid/mnt/name/file with spaces.txt'
+    //   double-quoted: "/sessions/uuid/mnt/name/file with spaces.txt"
     if (typeof cmd === 'string') {
-      cmd = cmd.replace(/\/sessions\/[^\s'"]+/g, (match) => translatePath(match));
+      cmd = cmd
+        // Single-quoted paths: translate content, re-wrap in single quotes
+        .replace(/'(\/sessions\/[^']+)'/g, (_m, p) => `'${translatePath(p)}'`)
+        // Double-quoted paths: translate content, re-wrap in double quotes
+        .replace(/"(\/sessions\/[^"]+)"/g, (_m, p) => `"${translatePath(p)}"`)
+        // Unquoted paths: stop at whitespace, quotes, or common shell metacharacters
+        .replace(/(?<=['"\s]|^)(\/sessions\/[^\s'";&|<>()]+)/g, (_m, p) => translatePath(p));
     }
     return _origExec(cmd, ...rest);
   };

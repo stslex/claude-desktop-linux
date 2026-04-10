@@ -20,10 +20,10 @@
  *   node patches/patch-computer-use-tcc.mjs <app-extracted-dir>
  */
 
-import { readFileSync, writeFileSync, readdirSync } from 'fs';
+import { readFileSync, writeFileSync } from 'fs';
 import { join, relative } from 'path';
-import * as acorn from 'acorn';
 import * as walk from 'acorn-walk';
+import { collectJsFiles, tryParse, createLogger } from './patch-utils.mjs';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -44,48 +44,18 @@ const TCC_CHANNELS = [
 // `;` can trigger ASI issues if the previous token was mid-expression.  By
 // starting with `;` on the same (first) line we guarantee a clean statement
 // boundary regardless of what precedes it.
-const STUB_SNIPPET = `;(function(){try{var e=require("electron"),m=e.ipcMain;if(m){` +
-  `var ch=["ComputerUseTcc:getState","ComputerUseTcc:requestAccess",` +
-  `"ComputerUseTcc.getState","ComputerUseTcc.requestPermission",` +
-  `"ComputerUseTcc.checkAccessibility","ComputerUseTcc.checkScreenRecording",` +
-  `"ComputerUseTcc.requestAccessibility","ComputerUseTcc.requestScreenRecording"];` +
-  `var r={status:"not_applicable"};` +
-  `ch.forEach(function(c){try{m.handle(c,function(){return r})}catch(x){}});` +
-  `}}catch(x){}})();\n`;
+const STUB_SNIPPET = [
+  `;(function(){try{var e=require("electron"),m=e.ipcMain;if(m){`,
+  `var ch=${JSON.stringify(TCC_CHANNELS)};`,
+  `var r={status:"not_applicable"};`,
+  `ch.forEach(function(c){try{m.handle(c,function(){return r})}catch(x){}});`,
+  `}}catch(x){}})();\n`,
+].join('');
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-const log = (msg) => process.stderr.write(`[patch-computer-use-tcc] ${msg}\n`);
-
-function collectJsFiles(dir) {
-  const files = [];
-  try {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        files.push(...collectJsFiles(full));
-      } else if (entry.name.endsWith('.js')) {
-        files.push(full);
-      }
-    }
-  } catch (e) {
-    log(`WARNING: Cannot read ${dir}: ${e.message}`);
-  }
-  return files;
-}
-
-function tryParse(src, file) {
-  for (const sourceType of ['module', 'script']) {
-    try {
-      return acorn.parse(src, {
-        ecmaVersion: 'latest',
-        sourceType,
-      });
-    } catch (_) {}
-  }
-  return null;
-}
+const log = createLogger('patch-computer-use-tcc');
 
 // ---------------------------------------------------------------------------
 // Main
@@ -118,7 +88,7 @@ for (const scanDir of scanDirs) {
 
     if (!src.includes('ComputerUseTcc') && !src.includes('ipcMain')) continue;
 
-    const ast = tryParse(src, file);
+    const ast = tryParse(src, file, {}, log);
     if (!ast) continue;
 
     const relFile = relative(appDir, file);
