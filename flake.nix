@@ -110,19 +110,47 @@
               bash
             ];
 
-            unpackPhase = ''
-              mkdir -p $out
-              tar -xzf $src -C $out
-            '';
-
+            # Bundled Electron lives in $out/lib/electron and finds its
+            # sibling .so files via $ORIGIN relative RPATH. autoPatchelfHook
+            # preserves $ORIGIN entries, so no extra appendRunpaths needed.
+            # LD_LIBRARY_PATH is set in the launcher wrapper below as a
+            # belt-and-suspenders measure for Electron's dlopen'd helpers.
+            dontUnpack = true;
             dontBuild = true;
 
             installPhase = ''
-              # autoPatchelfHook handles ELF patching automatically.
-              # Fix up the launcher to use the bundled electron.
+              runHook preInstall
+
+              mkdir -p $out
+              tar -xzf $src -C $out
+
+              # The launcher script ships with hardcoded /usr/lib paths
+              # (inherited from the RPM packaging layout). Rewrite them to
+              # the store path so it finds the bundled ASAR and Electron.
+              substituteInPlace $out/bin/claude-desktop \
+                --replace-quiet '/usr/lib/claude-desktop/app.asar'         "$out/lib/claude-desktop/app.asar" \
+                --replace-quiet '/usr/lib/claude-desktop/ELECTRON_VERSION' "$out/lib/claude-desktop/ELECTRON_VERSION"
+
+              # wrapProgram:
+              #   - PATH           → xdg-utils + bubblewrap for the launcher's
+              #                      xdg-mime / bwrap invocations
+              #   - LD_LIBRARY_PATH → bundled Electron's private .so files
               wrapProgram $out/bin/claude-desktop \
-                --prefix PATH : ${lib.makeBinPath [ pkgs.xdg-utils pkgs.bubblewrap ]}
+                --prefix PATH            : ${lib.makeBinPath [ pkgs.xdg-utils pkgs.bubblewrap ]} \
+                --prefix LD_LIBRARY_PATH : "$out/lib/electron"
+
+              runHook postInstall
             '';
+
+            # Electron ships a few libraries that reference ICU + swiftshader
+            # via weak dlopen. autoPatchelfHook can't always resolve them;
+            # ignore missing deps only on those files to keep the build
+            # reproducible without masking real unresolved libraries.
+            autoPatchelfIgnoreMissingDeps = [
+              "libvk_swiftshader.so"
+              "libGLESv2.so"
+              "libEGL.so"
+            ];
 
             passthru = {
               inherit channel;

@@ -1,30 +1,93 @@
 name: Build Claude Desktop Linux
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Claude Desktop version to build (blank = auto-detect)'
-        required: false
-      release:
-        description: 'Upload to GitHub Releases'
-        type: boolean
-        default: false
   push:
-    branches: ['main', 'dev']
+    branches:
+      - main
+      - dev
+    tags:
+      - 'v*'
+      - '!v*-repack-*'
+      - '!v*~dev.*'
   pull_request:
     branches: ['dev', 'main']
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Release channel'
+        type: choice
+        options:
+          - auto
+          - stable
+          - dev
+          - none
+        default: auto
 
 permissions: {}
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Determine release channel
+  # ---------------------------------------------------------------------------
+  determine-channel:
+    name: Determine release channel
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.channel.outputs.channel }}
+      version_suffix: ${{ steps.channel.outputs.version_suffix }}
+      dev_build_date: ${{ steps.channel.outputs.dev_build_date }}
+      dev_short_sha: ${{ steps.channel.outputs.dev_short_sha }}
+    steps:
+      - id: channel
+        run: |
+          # Manual dispatch override
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] && \
+             [[ "${{ inputs.channel }}" != "auto" ]] && \
+             [[ -n "${{ inputs.channel }}" ]]; then
+            CH="${{ inputs.channel }}"
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            CH="none"
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]] || \
+               [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            CH="stable"
+          elif [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
+            CH="dev"
+          else
+            CH="none"
+          fi
+
+          echo "channel=$CH" >> $GITHUB_OUTPUT
+
+          if [[ "$CH" == "stable" ]]; then
+            echo "version_suffix=" >> $GITHUB_OUTPUT
+          elif [[ "$CH" == "dev" ]]; then
+            DATE=$(date -u +%Y%m%d)
+            SHA="${GITHUB_SHA:0:7}"
+            echo "version_suffix=~dev.${DATE}.${SHA}" >> $GITHUB_OUTPUT
+            echo "dev_build_date=${DATE}" >> $GITHUB_OUTPUT
+            echo "dev_short_sha=${SHA}" >> $GITHUB_OUTPUT
+          else
+            # PR — artifacts only, no release
+            echo "version_suffix=" >> $GITHUB_OUTPUT
+          fi
+
+          echo "Channel: $CH"
+
+  # ---------------------------------------------------------------------------
+  # Build all packages
+  # ---------------------------------------------------------------------------
   build:
+    needs: determine-channel
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
       BUILD_DIR:  /tmp/claude-build
       OUTPUT_DIR: ${{ github.workspace }}/output
+      CHANNEL: ${{ needs.determine-channel.outputs.channel }}
+      VERSION_SUFFIX: ${{ needs.determine-channel.outputs.version_suffix }}
+      DEV_BUILD_DATE: ${{ needs.determine-channel.outputs.dev_build_date }}
+      DEV_SHORT_SHA: ${{ needs.determine-channel.outputs.dev_short_sha }}
 
     steps:
       - name: Checkout
@@ -56,6 +119,33 @@ jobs:
       # -----------------------------------------------------------------------
       # Build pipeline
       # -----------------------------------------------------------------------
+      - name: Resolve upstream version for cache key
+        id: upstream
+        run: |
+          RELEASES_URL="https://downloads.claude.ai/releases/darwin/universal/RELEASES.json"
+          RELEASES_JSON="$(curl -sSf --max-time 30 --retry 3 "$RELEASES_URL" 2>/dev/null || true)"
+          if [[ -n "$RELEASES_JSON" ]]; then
+            DL_URL="$(echo "$RELEASES_JSON" | node -e "
+              const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+              const u = d?.releases?.[0]?.updateTo?.url || d?.url || '';
+              if (u) process.stdout.write(u);
+            " 2>/dev/null || true)"
+          fi
+          if [[ -n "${DL_URL:-}" ]]; then
+            CACHE_KEY="claude-download-$(echo -n "$DL_URL" | sha256sum | cut -c1-16)"
+            echo "cache-key=$CACHE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            echo "cache-key=claude-download-none" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cache Claude Desktop download
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.BUILD_DIR }}/claude.zip
+            ${{ env.BUILD_DIR }}/claude.zip.sha256
+          key: ${{ steps.upstream.outputs.cache-key }}
+
       - name: fetch-and-extract
         run: bash scripts/fetch-and-extract.sh
 
@@ -64,6 +154,8 @@ jobs:
         run: |
           echo "version=$(cat "$BUILD_DIR/VERSION")"         >> "$GITHUB_OUTPUT"
           echo "electron=$(cat "$BUILD_DIR/ELECTRON_VERSION")" >> "$GITHUB_OUTPUT"
+          FULL="${{ env.VERSION_SUFFIX }}"
+          echo "full_version=$(cat "$BUILD_DIR/VERSION")${FULL}" >> "$GITHUB_OUTPUT"
 
       - name: Cache Electron binary
         uses: actions/cache@v4
@@ -92,10 +184,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION:  ${{ steps.ver.outputs.version }}
         run: |
-          # Count existing repacks for this exact Claude version.
           REPACK=0
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]] || \
-             [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.release }}" == "true" ]]; then
+          if [[ "$CHANNEL" == "stable" ]]; then
             EXISTING="$(gh release list --repo "${{ github.repository }}" \
               --limit 200 --json tagName --jq '.[].tagName' 2>/dev/null || true)"
             while IFS= read -r tag; do
@@ -104,40 +194,39 @@ jobs:
                 (( N + 1 > REPACK )) && REPACK=$(( N + 1 ))
               fi
             done <<< "$EXISTING"
+          elif [[ "$CHANNEL" == "dev" ]]; then
+            # Dev builds always use repack 0 — the suffix distinguishes them
+            REPACK=0
           fi
           echo "num=${REPACK}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${VERSION}-repack-${REPACK}" >> "$GITHUB_OUTPUT"
           echo "Computed repack number: ${REPACK}"
 
       - name: build-packages
         env:
-          KEEP_BUILD_DIR: '1'   # preserve BUILD_DIR so electron-cache can be saved
+          KEEP_BUILD_DIR: '1'
           REPACK_NUM: ${{ steps.repack.outputs.num }}
+          VERSION_SUFFIX: ${{ env.VERSION_SUFFIX }}
         run: bash scripts/build-packages.sh
 
       # -----------------------------------------------------------------------
-      # CI artifact (always — useful for dev/PR builds too)
+      # CI artifact (always — useful for dev/PR/feature builds)
       # -----------------------------------------------------------------------
       - name: Upload build artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: claude-desktop-${{ steps.ver.outputs.version }}
+          name: claude-desktop-${{ env.CHANNEL }}-${{ steps.ver.outputs.full_version }}
           path: output/
           if-no-files-found: warn
+          retention-days: ${{ env.CHANNEL == 'stable' && '90' || (env.CHANNEL == 'dev' && '30' || '7') }}
 
       # -----------------------------------------------------------------------
-      # GitHub Release
-      #   • push to main  → always release
-      #   • workflow_dispatch with release=true  → release
-      #   • push to dev / PR  → skip
+      # Rename assets to include repack suffix (stable + dev)
       # -----------------------------------------------------------------------
       - name: Rename assets to include repack suffix
-        if: >
-          github.ref == 'refs/heads/main' ||
-          (github.event_name == 'workflow_dispatch' && inputs.release == true)
+        if: env.CHANNEL == 'stable' || env.CHANNEL == 'dev'
         env:
-          VERSION: ${{ steps.ver.outputs.version }}
+          VERSION: ${{ steps.ver.outputs.full_version }}
           REPACK:  ${{ steps.repack.outputs.num }}
         run: |
           for ext in rpm deb pkg.tar.zst AppImage; do
@@ -148,15 +237,14 @@ jobs:
             sha256sum "$dst" | awk '{print $1}' > "${dst}.sha256"
             rm -f "${src}.sha256"
           done
-          # Create a pacman-compatible named copy (no "repack" — pacman requires
-          # {name}-{pkgver}-{pkgrel}-{arch}.pkg.tar.ext filename format).
+          # Create a pacman-compatible named copy
           REPACK_PKG="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.pkg.tar.zst"
           PACMAN_PKG="output/claude-desktop-${VERSION}-${REPACK}-x86_64.pkg.tar.zst"
           if [[ -f "$REPACK_PKG" ]]; then
             cp "$REPACK_PKG" "$PACMAN_PKG"
             cp "${REPACK_PKG}.sha256" "${PACMAN_PKG}.sha256"
           fi
-          # Rename the Nix tarball (different naming convention).
+          # Rename the Nix tarball
           NIX_SRC="output/claude-desktop-${VERSION}-x86_64-nix.tar.gz"
           NIX_DST="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64-nix.tar.gz"
           if [[ -f "$NIX_SRC" ]]; then
@@ -164,8 +252,7 @@ jobs:
             sha256sum "$NIX_DST" | awk '{print $1}' > "${NIX_DST}.sha256"
             rm -f "${NIX_SRC}.sha256"
           fi
-          # Remove the stale zsync (it has the wrong embedded filename) and
-          # regenerate it from the renamed AppImage so the internal URL matches.
+          # Regenerate zsync from renamed AppImage
           rm -f "output/claude-desktop-${VERSION}-x86_64.AppImage.zsync"
           APPIMAGE="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.AppImage"
           ZSYNC="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.AppImage.zsync"
@@ -175,11 +262,9 @@ jobs:
 
       - name: Compute checksums for release notes
         id: sums
-        if: >
-          github.ref == 'refs/heads/main' ||
-          (github.event_name == 'workflow_dispatch' && inputs.release == true)
+        if: env.CHANNEL == 'stable' || env.CHANNEL == 'dev'
         env:
-          VERSION: ${{ steps.ver.outputs.version }}
+          VERSION: ${{ steps.ver.outputs.full_version }}
           REPACK:  ${{ steps.repack.outputs.num }}
         run: |
           BASE="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64"
@@ -194,22 +279,23 @@ jobs:
           echo "nix=${NIX_SHA}"       >> "$GITHUB_OUTPUT"
           echo "appimage=${AI_SHA}"   >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub Release
-        if: >
-          github.ref == 'refs/heads/main' ||
-          (github.event_name == 'workflow_dispatch' && inputs.release == true)
+      # -----------------------------------------------------------------------
+      # Stable GitHub Release
+      # -----------------------------------------------------------------------
+      - name: Create stable GitHub Release
+        if: env.CHANNEL == 'stable'
         env:
           GH_TOKEN:  ${{ github.token }}
           VERSION:   ${{ steps.ver.outputs.version }}
           ELECTRON:  ${{ steps.ver.outputs.electron }}
           REPACK:    ${{ steps.repack.outputs.num }}
-          TAG:       ${{ steps.repack.outputs.tag }}
           RPM_SHA:   ${{ steps.sums.outputs.rpm }}
           DEB_SHA:   ${{ steps.sums.outputs.deb }}
           PKG_SHA:   ${{ steps.sums.outputs.pacman }}
           NIX_SHA:   ${{ steps.sums.outputs.nix }}
           AI_SHA:    ${{ steps.sums.outputs.appimage }}
         run: |
+          TAG="v${VERSION}-repack-${REPACK}"
           BASE="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64"
           NOTES=$(cat <<'NOTES_EOF'
           ## Claude Desktop Linux v${VERSION} (repack-${REPACK})
@@ -230,10 +316,8 @@ jobs:
           > Claude Desktop is Anthropic's proprietary software.
           NOTES_EOF
           )
-          # Expand only our known vars (prevents leaking runner env into notes).
           NOTES="$(echo "$NOTES" | envsubst '${VERSION} ${REPACK} ${RPM_SHA} ${DEB_SHA} ${PKG_SHA} ${NIX_SHA} ${AI_SHA} ${ELECTRON}')"
 
-          # Build asset list — only include files that actually exist.
           ASSETS=()
           PACMAN_BASE="output/claude-desktop-${VERSION}-${REPACK}-x86_64"
           for f in "${BASE}.rpm" "${BASE}.rpm.sha256" \
@@ -258,46 +342,135 @@ jobs:
             "${ASSETS[@]}"
 
       # -----------------------------------------------------------------------
-      # Prepare GitHub Pages content (all package repository metadata)
-      #   Metadata and binaries live on Pages; RPM binaries are in Releases.
-      #   Deployed via actions/deploy-pages for reliable GitHub Pages updates.
+      # Dev / Beta GitHub Release (prerelease)
+      # -----------------------------------------------------------------------
+      - name: Create dev GitHub Release
+        if: env.CHANNEL == 'dev'
+        env:
+          GH_TOKEN:    ${{ github.token }}
+          VERSION:     ${{ steps.ver.outputs.version }}
+          FULL_VERSION: ${{ steps.ver.outputs.full_version }}
+          ELECTRON:    ${{ steps.ver.outputs.electron }}
+          REPACK:      ${{ steps.repack.outputs.num }}
+          RPM_SHA:     ${{ steps.sums.outputs.rpm }}
+          DEB_SHA:     ${{ steps.sums.outputs.deb }}
+          PKG_SHA:     ${{ steps.sums.outputs.pacman }}
+          NIX_SHA:     ${{ steps.sums.outputs.nix }}
+          AI_SHA:      ${{ steps.sums.outputs.appimage }}
+        run: |
+          TAG="v${VERSION}-dev.${DEV_BUILD_DATE}.${DEV_SHORT_SHA}"
+          BASE="output/claude-desktop-${FULL_VERSION}-repack-${REPACK}-x86_64"
+          NOTES=$(cat <<NOTES_EOF
+          ## [BETA] Claude Desktop Linux v${VERSION} dev.${DEV_BUILD_DATE}.${DEV_SHORT_SHA}
+
+          > **This is an untested development build from the \`dev\` branch.**
+          >
+          > - Experimental: may contain bugs, broken features, or fail to launch
+          > - Not tested: has not gone through stable release validation
+          > - Opt-in only: do NOT install unless you are actively testing
+          > - Rollback: if this build breaks your install, downgrade to stable:
+          >   \`sudo dnf downgrade claude-desktop\`
+
+          ### What's in this build
+
+          Branch: \`dev\`
+          Commit: ${GITHUB_SHA}
+
+          | Asset | SHA256 |
+          |---|---|
+          | RPM | \`${RPM_SHA}\` |
+          | DEB | \`${DEB_SHA}\` |
+          | Pacman | \`${PKG_SHA}\` |
+          | Nix | \`${NIX_SHA}\` |
+          | AppImage | \`${AI_SHA}\` |
+
+          **Electron:** ${ELECTRON}
+
+          **If you are not actively testing, use the [stable release](https://github.com/${{ github.repository }}/releases/latest) instead.**
+          NOTES_EOF
+          )
+
+          ASSETS=()
+          PACMAN_BASE="output/claude-desktop-${FULL_VERSION}-${REPACK}-x86_64"
+          for f in "${BASE}.rpm" "${BASE}.rpm.sha256" \
+                   "${BASE}.deb" "${BASE}.deb.sha256" \
+                   "${BASE}.pkg.tar.zst" "${BASE}.pkg.tar.zst.sha256" \
+                   "${PACMAN_BASE}.pkg.tar.zst" "${PACMAN_BASE}.pkg.tar.zst.sha256" \
+                   "${BASE}-nix.tar.gz" "${BASE}-nix.tar.gz.sha256" \
+                   "${BASE}.AppImage" "${BASE}.AppImage.sha256" \
+                   "${BASE}.AppImage.zsync"; do
+            [[ -f "$f" ]] && ASSETS+=("$f")
+          done
+
+          if [[ ${#ASSETS[@]} -eq 0 ]]; then
+            echo "ERROR: no release assets found — nothing to upload." >&2
+            exit 1
+          fi
+
+          # Delete existing release if this is a re-run for the same commit
+          gh release delete "${TAG}" --repo "${{ github.repository }}" --yes 2>/dev/null || true
+          git push origin :"refs/tags/${TAG}" 2>/dev/null || true
+
+          gh release create "${TAG}" \
+            --repo "${{ github.repository }}" \
+            --title "[BETA] Claude Desktop Linux v${VERSION} dev.${DEV_BUILD_DATE}.${DEV_SHORT_SHA}" \
+            --prerelease \
+            --notes "$NOTES" \
+            "${ASSETS[@]}"
+
+      # -----------------------------------------------------------------------
+      # Prepare GitHub Pages content (repository metadata)
+      #   Stable → /stable/ directory    Dev → /dev/ directory
       # -----------------------------------------------------------------------
       - name: Build repository metadata for GitHub Pages
-        if: >
-          github.ref == 'refs/heads/main' ||
-          (github.event_name == 'workflow_dispatch' && inputs.release == true)
+        if: env.CHANNEL == 'stable' || env.CHANNEL == 'dev'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.ver.outputs.version }}
+          FULL_VERSION: ${{ steps.ver.outputs.full_version }}
           REPACK:  ${{ steps.repack.outputs.num }}
-          TAG:     ${{ steps.repack.outputs.tag }}
         run: |
           REPO_USER="${GITHUB_REPOSITORY%%/*}"
           REPO_NAME="${GITHUB_REPOSITORY##*/}"
           PAGES_URL="https://${REPO_USER}.github.io/${REPO_NAME}"
-          DOWNLOAD_PREFIX="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
           PAGES_DIR="${GITHUB_WORKSPACE}/pages"
           mkdir -p "$PAGES_DIR"
 
-          # Disable Jekyll so GitHub Pages serves files as-is.
           touch "$PAGES_DIR/.nojekyll"
 
+          # Determine channel-specific paths and tag
+          if [[ "$CHANNEL" == "stable" ]]; then
+            CH_DIR="stable"
+            TAG="v${VERSION}-repack-${REPACK}"
+            PKG_VERSION="${VERSION}"
+            REPO_NAME_SUFFIX=""
+            REPO_DISPLAY="Claude Desktop Linux (Stable)"
+          else
+            CH_DIR="dev"
+            TAG="v${VERSION}-dev.${DEV_BUILD_DATE}.${DEV_SHORT_SHA}"
+            PKG_VERSION="${FULL_VERSION}"
+            REPO_NAME_SUFFIX="-dev"
+            REPO_DISPLAY="Claude Desktop Linux (Beta / Development)"
+          fi
+          DOWNLOAD_PREFIX="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+
           # -------------------------------------------------------------------
-          # DNF / RPM repository
+          # DNF / RPM repository → /stable/rpm/ or /dev/rpm/
           # -------------------------------------------------------------------
-          STAGING_DIR="$(mktemp -d)"
-          RPM_SRC="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.rpm"
+          RPM_SRC="output/claude-desktop-${PKG_VERSION}-repack-${REPACK}-x86_64.rpm"
           if [[ -f "$RPM_SRC" ]]; then
+            STAGING_DIR="$(mktemp -d)"
             cp "$RPM_SRC" "$STAGING_DIR/"
             createrepo_c --location-prefix "$DOWNLOAD_PREFIX" "$STAGING_DIR"
 
-            mkdir -p "$PAGES_DIR/rpm"
-            cp -a "$STAGING_DIR/repodata" "$PAGES_DIR/rpm/"
+            mkdir -p "$PAGES_DIR/${CH_DIR}/rpm"
+            cp -a "$STAGING_DIR/repodata" "$PAGES_DIR/${CH_DIR}/rpm/"
+            rm -rf "$STAGING_DIR"
 
-            cat > "$PAGES_DIR/claude-desktop.repo" <<REPO_EOF
-          [claude-desktop]
-          name=Claude Desktop Linux (unofficial)
-          baseurl=${PAGES_URL}/rpm/
+            cat > "$PAGES_DIR/claude-desktop${REPO_NAME_SUFFIX}.repo" <<REPO_EOF
+          [claude-desktop${REPO_NAME_SUFFIX}]
+          name=${REPO_DISPLAY}
+          baseurl=${PAGES_URL}/${CH_DIR}/rpm/
           enabled=1
           gpgcheck=0
           metadata_expire=1h
@@ -305,27 +478,21 @@ jobs:
           else
             echo "No RPM found — skipping DNF repo metadata."
           fi
-          rm -rf "$STAGING_DIR"
 
           # -------------------------------------------------------------------
           # Pacman / Arch Linux repository
-          #   Repo database and package are served from GitHub Releases to
-          #   avoid large-file corruption through the Pages artifact pipeline.
-          #   Config files and install helper remain on Pages.
           # -------------------------------------------------------------------
-          PKG_SRC="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.pkg.tar.zst"
+          PKG_SRC="output/claude-desktop-${PKG_VERSION}-repack-${REPACK}-x86_64.pkg.tar.zst"
           if [[ -f "$PKG_SRC" ]]; then
             PACMAN_DIR="$(mktemp -d)"
+            PACMAN_PKG="claude-desktop-${PKG_VERSION}-${REPACK}-x86_64.pkg.tar.zst"
 
-            # Pacman requires filenames to match {name}-{pkgver}-{pkgrel}-{arch}.pkg.tar.ext.
-            # The release asset uses "-repack-N"; create a pacman-compatible copy.
-            PACMAN_PKG="claude-desktop-${VERSION}-${REPACK}-x86_64.pkg.tar.zst"
+            if [[ "$CHANNEL" == "stable" ]]; then
+              PACMAN_SERVER="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download"
+            else
+              PACMAN_SERVER="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+            fi
 
-            # Serve from GitHub Releases — the /releases/latest/download/ URL
-            # always redirects to the most recent release's assets.
-            PACMAN_SERVER="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download"
-
-            # Build the repo database manually (repo-add is Arch-specific).
             PKG_SHA256="$(sha256sum "$PKG_SRC" | awk '{print $1}')"
             PKG_SIZE="$(stat -c%s "$PKG_SRC")"
             CSIZE="$PKG_SIZE"
@@ -334,7 +501,7 @@ jobs:
             ISIZE="$(zstd -d -c "$PKG_SRC" 2>/dev/null | bsdtar -xf - -O .PKGINFO 2>/dev/null | grep '^size = ' | awk '{print $3}')"
             ISIZE="${ISIZE:-0}"
 
-            ENTRY_DIR="$DB_STAGING/claude-desktop-${VERSION}-${REPACK}"
+            ENTRY_DIR="$DB_STAGING/claude-desktop-${PKG_VERSION}-${REPACK}"
             mkdir -p "$ENTRY_DIR"
             cat > "$ENTRY_DIR/desc" <<DESC_EOF
           %FILENAME%
@@ -344,7 +511,7 @@ jobs:
           claude-desktop
 
           %VERSION%
-          ${VERSION}-${REPACK}
+          ${PKG_VERSION}-${REPACK}
 
           %DESC%
           Claude Desktop for Linux (unofficial rebuild)
@@ -398,13 +565,11 @@ jobs:
           bubblewrap: sandboxed Cowork sessions
           DESC_EOF
 
-            tar -czf "$PACMAN_DIR/claude-desktop.db.tar.gz" -C "$DB_STAGING" "claude-desktop-${VERSION}-${REPACK}"
+            tar -czf "$PACMAN_DIR/claude-desktop.db.tar.gz" -C "$DB_STAGING" "claude-desktop-${PKG_VERSION}-${REPACK}"
             rm -rf "$DB_STAGING"
 
             cp "$PACMAN_DIR/claude-desktop.db.tar.gz" "$PACMAN_DIR/claude-desktop.db"
 
-            # Upload the pacman-compatible package and database to the
-            # existing GitHub Release so everything lives at one URL.
             cp "$PKG_SRC" "$PACMAN_DIR/${PACMAN_PKG}"
             gh release upload "${TAG}" \
               "$PACMAN_DIR/${PACMAN_PKG}" \
@@ -413,20 +578,16 @@ jobs:
               --repo "${GITHUB_REPOSITORY}" --clobber
             rm -rf "$PACMAN_DIR"
 
-            # Config files stay on Pages (small, no corruption risk).
-            cat > "$PAGES_DIR/claude-desktop-pacman.conf" <<PACMAN_EOF
-          [claude-desktop]
+            cat > "$PAGES_DIR/claude-desktop${REPO_NAME_SUFFIX}-pacman.conf" <<PACMAN_EOF
+          [claude-desktop${REPO_NAME_SUFFIX}]
           SigLevel = Optional TrustAll
           Server = ${PACMAN_SERVER}
           PACMAN_EOF
 
-            cat > "$PAGES_DIR/install-pacman-repo.sh" <<INSTALL_PACMAN_EOF
+            # Only write the install helper for stable channel
+            if [[ "$CHANNEL" == "stable" ]]; then
+              cat > "$PAGES_DIR/install-pacman-repo.sh" <<INSTALL_PACMAN_EOF
           #!/bin/sh
-          # Add the Claude Desktop repository to pacman.
-          # Usage:
-          #   curl -fsSLo install-pacman-repo.sh ${PAGES_URL}/install-pacman-repo.sh
-          #   less install-pacman-repo.sh  # inspect before running
-          #   sudo sh install-pacman-repo.sh
           set -e
           if ! grep -q '\[claude-desktop\]' /etc/pacman.conf 2>/dev/null; then
             printf '\n[claude-desktop]\nSigLevel = Optional TrustAll\nServer = ${PACMAN_SERVER}\n' >> /etc/pacman.conf
@@ -436,26 +597,27 @@ jobs:
             echo "claude-desktop repository already configured."
           fi
           INSTALL_PACMAN_EOF
+            fi
           else
             echo "No pacman package found — skipping Pacman repo metadata."
           fi
 
           # -------------------------------------------------------------------
           # NixOS — version metadata JSON
-          #   NixOS users use the flake.nix directly; we publish latest info.
           # -------------------------------------------------------------------
-          NIX_SRC="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64-nix.tar.gz"
+          NIX_SRC="output/claude-desktop-${PKG_VERSION}-repack-${REPACK}-x86_64-nix.tar.gz"
           if [[ -f "$NIX_SRC" ]]; then
-            NIX_DIR="$PAGES_DIR/nix"
+            NIX_DIR="$PAGES_DIR/${CH_DIR}/nix"
             mkdir -p "$NIX_DIR"
             NIX_SHA256="$(sha256sum "$NIX_SRC" | awk '{print $1}')"
 
             cat > "$NIX_DIR/latest.json" <<NIX_EOF
           {
-            "version": "${VERSION}",
+            "version": "${PKG_VERSION}",
             "repack": ${REPACK},
             "tag": "${TAG}",
-            "url": "${DOWNLOAD_PREFIX}/claude-desktop-${VERSION}-repack-${REPACK}-x86_64-nix.tar.gz",
+            "channel": "${CHANNEL}",
+            "url": "${DOWNLOAD_PREFIX}/claude-desktop-${PKG_VERSION}-repack-${REPACK}-x86_64-nix.tar.gz",
             "sha256": "${NIX_SHA256}"
           }
           NIX_EOF
@@ -464,13 +626,11 @@ jobs:
           fi
 
           # -------------------------------------------------------------------
-          # APT / DEB repository
-          #   Uses apt-ftparchive to generate Packages metadata.
-          #   The .deb lives on Pages so APT can fetch it via relative Filename.
+          # APT / DEB repository → /stable/deb/ or /dev/deb/
           # -------------------------------------------------------------------
-          DEB_SRC="output/claude-desktop-${VERSION}-repack-${REPACK}-x86_64.deb"
+          DEB_SRC="output/claude-desktop-${PKG_VERSION}-repack-${REPACK}-x86_64.deb"
           if [[ -f "$DEB_SRC" ]]; then
-            APT_DIR="$PAGES_DIR/deb"
+            APT_DIR="$PAGES_DIR/${CH_DIR}/deb"
             mkdir -p "$APT_DIR"
 
             cp "$DEB_SRC" "$APT_DIR/"
@@ -482,24 +642,42 @@ jobs:
 
             cd "$GITHUB_WORKSPACE"
 
-            # DEB822 format .sources file.
-            cat > "$PAGES_DIR/claude-desktop.sources" <<SOURCES_EOF
+            # DEB822 format .sources file
+            cat > "$PAGES_DIR/claude-desktop${REPO_NAME_SUFFIX}.sources" <<SOURCES_EOF
           Types: deb
-          URIs: ${PAGES_URL}/deb
+          URIs: ${PAGES_URL}/${CH_DIR}/deb
           Suites: ./
           Trusted: yes
           SOURCES_EOF
 
-            # Traditional .list one-liner.
-            echo "deb [trusted=yes] ${PAGES_URL}/deb ./" > "$PAGES_DIR/claude-desktop.list"
+            # Traditional .list one-liner
+            echo "deb [trusted=yes] ${PAGES_URL}/${CH_DIR}/deb ./" > "$PAGES_DIR/claude-desktop${REPO_NAME_SUFFIX}.list"
           else
             echo "No .deb found — skipping APT repo metadata."
           fi
 
+          # -------------------------------------------------------------------
+          # Backward-compatible aliases for stable channel
+          #   Users who already have repos pointing to /rpm/, /deb/, /nix/
+          #   (without /stable/ prefix) should still work.
+          # -------------------------------------------------------------------
+          if [[ "$CHANNEL" == "stable" ]]; then
+            if [[ -d "$PAGES_DIR/stable/rpm" ]]; then
+              mkdir -p "$PAGES_DIR/rpm"
+              cp -a "$PAGES_DIR/stable/rpm/repodata" "$PAGES_DIR/rpm/" 2>/dev/null || true
+            fi
+            if [[ -d "$PAGES_DIR/stable/deb" ]]; then
+              mkdir -p "$PAGES_DIR/deb"
+              cp -a "$PAGES_DIR/stable/deb/." "$PAGES_DIR/deb/" 2>/dev/null || true
+            fi
+            if [[ -d "$PAGES_DIR/stable/nix" ]]; then
+              mkdir -p "$PAGES_DIR/nix"
+              cp -a "$PAGES_DIR/stable/nix/." "$PAGES_DIR/nix/" 2>/dev/null || true
+            fi
+          fi
+
       - name: Upload Pages artifact
-        if: >
-          github.ref == 'refs/heads/main' ||
-          (github.event_name == 'workflow_dispatch' && inputs.release == true)
+        if: env.CHANNEL == 'stable' || env.CHANNEL == 'dev'
         uses: actions/upload-pages-artifact@v3
         with:
           path: pages/
@@ -508,14 +686,15 @@ jobs:
   # Deploy repository metadata to GitHub Pages
   # ---------------------------------------------------------------------------
   deploy-pages:
-    needs: build
+    needs: [determine-channel, build]
     if: >
-      github.ref == 'refs/heads/main' ||
-      (github.event_name == 'workflow_dispatch' && inputs.release == true)
+      needs.determine-channel.outputs.channel == 'stable' ||
+      needs.determine-channel.outputs.channel == 'dev'
     runs-on: ubuntu-latest
     permissions:
       pages: write
       id-token: write
+      actions: read
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

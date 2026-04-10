@@ -34,6 +34,8 @@ See [ARCHITECTURE.MD](ARCHITECTURE.MD) for design decisions and trade-offs.
 - **MCP** — Model Context Protocol support works as-is (it is pure JS)
 - **Cowork (Claude Code)** — unlocked and functional via `bubblewrap` sandbox
   or direct host execution
+- **Dispatch** — partially supported; works via SSE when the app is open
+  (requires `claude-cowork-service` daemon — see below)
 - **Auto-update pipeline** — GitHub Actions polls for new releases every 6 hours
   and publishes automatically; AppImage supports delta updates via `AppImageUpdate`
 
@@ -43,7 +45,7 @@ See [ARCHITECTURE.MD](ARCHITECTURE.MD) for design decisions and trade-offs.
 
 | Feature | Reason |
 |---|---|
-| **Dispatch** | Partially supported — UI gates are bypassed and notifications polyfilled, but background delivery via APNs/FCM is not available; Dispatch tasks that rely on push notifications to wake the desktop app will not arrive when the app is closed |
+| **Dispatch** | Partially supported — works via SSE when the app is open; GrowthBook feature flags are force-enabled and `claude-cowork-service` provides the socket backend; background delivery (APNs/FCM push) is not available so tasks won't arrive when the app is closed |
 | **Computer Use** | macOS implementation uses `AXUIElement`; an `xdotool`/`scrot` replacement would be fragile across desktop environments |
 | **ARM64** | Electron binary selection and AppImage build are x86_64 only; ARM64 is a future milestone |
 
@@ -301,11 +303,115 @@ channel:
 }))
 ```
 
+### Cowork Service (optional — enables Cowork and Dispatch)
+
+The `claude-cowork-service` daemon provides the socket backend that Cowork and
+Dispatch use for session management.  Install it for full Cowork/Dispatch support:
+
+```sh
+./scripts/install-cowork-service.sh
+```
+
+This downloads the pre-built binary from
+[patrickjaja/claude-cowork-service](https://github.com/patrickjaja/claude-cowork-service),
+installs it to `~/.local/bin/`, and creates a systemd user service.  The app
+will warn on launch if the service is not running, but Chat and MCP still work
+without it.
+
+---
+
+### Beta / Development Channel (Testers Only)
+
+> **Not recommended for normal use.** The beta channel contains untested
+> development builds. They may be broken, crash on launch, or have incomplete
+> features. Use the [stable release](#installation) unless you are actively
+> testing changes.
+
+If you want to help test new features before they reach the stable channel:
+
+#### RPM / Fedora / Silverblue
+
+```sh
+sudo curl -o /etc/yum.repos.d/claude-desktop-dev.repo \
+  https://stslex.github.io/claude-desktop-linux/claude-desktop-dev.repo
+sudo dnf install claude-desktop
+```
+
+#### DEB / Debian / Ubuntu
+
+```sh
+sudo curl -o /etc/apt/sources.list.d/claude-desktop-dev.list \
+  https://stslex.github.io/claude-desktop-linux/claude-desktop-dev.list
+sudo apt update
+sudo apt install claude-desktop
+```
+
+#### Pacman / Arch Linux
+
+Add to `/etc/pacman.conf`:
+
+```ini
+[claude-desktop-dev]
+SigLevel = Optional TrustAll
+Server = https://github.com/stslex/claude-desktop-linux/releases/download/<dev-tag>
+```
+
+#### Nix / NixOS
+
+Switch the flake attribute you pull from `default` to `dev`:
+
+```nix
+# configuration.nix / home.nix
+environment.systemPackages = [
+  inputs.claude-desktop.packages.${pkgs.system}.dev
+];
+```
+
+Or consume the `dev` branch of this repository directly as a flake
+input to always track the latest dev-channel metadata:
+
+```nix
+inputs.claude-desktop.url = "github:stslex/claude-desktop-linux/dev";
+```
+
+See the "NixOS / Nix" section above for `builtins.compareVersions`
+invariants and the `checks.x86_64-linux.channel-version-order` flake
+check that guards them.
+
+#### Rollback to stable
+
+If a beta build breaks your install:
+
+```sh
+# Fedora
+sudo dnf downgrade claude-desktop
+# or remove the dev repo and reinstall:
+sudo rm /etc/yum.repos.d/claude-desktop-dev.repo
+sudo dnf reinstall claude-desktop
+
+# Debian / Ubuntu
+sudo rm /etc/apt/sources.list.d/claude-desktop-dev.list
+sudo apt update
+sudo apt install claude-desktop --reinstall
+
+# NixOS — switch the flake attribute back to .default and rebuild:
+#   sudo nixos-rebuild switch --flake .#myhost
+# or roll the previous generation back if the rebuild itself broke:
+#   sudo nixos-rebuild switch --rollback
+```
+
+#### Reporting beta issues
+
+Beta issues should be filed with the `beta` label on GitHub Issues.
+Include the exact version string from `rpm -q claude-desktop` or
+`claude-desktop --version`.
+
+---
+
 ### First Run
 
-1. On first launch the app prompts to create the `/sessions` symlink
-   (`sudo ln -sf ~/.local/share/claude-linux/sessions /sessions`).
-   The RPM `%post` scriptlet creates this automatically.
+1. No special setup needed — the app creates `~/.local/share/claude-linux/sessions/`
+   automatically. No sudo or root symlinks required.
 2. Complete the OAuth flow in your browser — the `claude://` URI scheme is
    registered by the `.desktop` file and `xdg-mime`.
 

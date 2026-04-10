@@ -25,6 +25,8 @@ entirely and run the Claude Code binary directly on the host.
 │   ├── extract-asar.sh          ← DMG → app.asar + detect versions
 │   ├── inject-stubs.sh          ← replace native modules with JS stubs
 │   ├── patch-cowork.sh          ← unlock Cowork on Linux
+│   ├── install-cowork-service.sh ← install claude-cowork-service daemon
+│   ├── validate-bundle.sh        ← standalone JS syntax validation gate
 │   └── build-packages.sh        ← RPM + AppImage assembly
 ├── stubs/
 │   ├── claude-native.js         ← @ant/claude-native replacement
@@ -38,7 +40,10 @@ entirely and run the Claude Code binary directly on the host.
 │   ├── fix-tray-config.sh       ← ensure menuBarEnabled in user config
 │   ├── fix-bundle-download.mjs  ← AST patch for platform-gated binary download
 │   ├── fix-dispatch-gate.mjs    ← AST patch for Dispatch availability gate
-│   └── path-translator.js       ← /sessions/… → ~/.local/share/… remapping
+│   ├── patch-cowork-socket.mjs  ← AST patch: named pipe → Unix socket
+│   ├── patch-dispatch.mjs       ← AST patch: GrowthBook feature flag overrides
+│   ├── patch-computer-use-tcc.mjs ← AST injection of ComputerUseTcc stubs
+│   └── path-translator.mjs      ← /sessions/… → ~/.local/share/… remapping
 ├── packaging/
 │   ├── claude-desktop.spec      ← RPM spec file
 │   ├── AppDir/                  ← AppImage skeleton
@@ -49,7 +54,8 @@ entirely and run the Claude Code binary directly on the host.
 └── .github/
     └── workflows/
         ├── check-update.yml     ← polls for new DMG every 6 h
-        └── build.yml            ← full build + release
+        ├── build.yml            ← full build + release
+        └── smoke-test.yml       ← smoke tests (syntax, RPM install, headless launch)
 ```
 
 ## Invariants — Never Break These
@@ -79,6 +85,8 @@ entirely and run the Claude Code binary directly on the host.
 | `DISPATCH_DEBUG` | `` | Set to `1` for Dispatch IPC traffic logging |
 | `DISPATCH_POLL_INTERVAL_MS` | `30000` | Dispatch foreground polling interval (ms) |
 | `SKIP_DISPATCH_POLL` | `` | Set to `1` to disable Dispatch polling |
+| `ENABLE_EXPERIMENTAL_PATCHES` | `` | Set to `1` to run cowork-socket, dispatch, and computer-use-tcc AST patches (off by default — they corrupt the JS bundle) |
+| `VERSION_SUFFIX` | `` | Appended to version in filenames and package metadata (e.g. `~dev.20260404.abc1234`); set automatically by CI |
 
 ## Build Dependencies
 
@@ -95,6 +103,7 @@ Resolved at runtime if missing; the scripts will print install instructions.
 | `icns2png` or `magick` | Convert macOS icon to PNG |
 | `bubblewrap` (`bwrap`) | Cowork sandbox (runtime, not build) |
 | `electron` | Runtime; bundled inside AppImage |
+| `cowork-svc-linux` | Optional: Cowork/Dispatch socket daemon (runtime) |
 
 ## Key Files Inside the Extracted ASAR
 
@@ -233,18 +242,19 @@ On Linux there is no VM, so we redirect these paths to:
 ~/.local/share/claude-linux/sessions/<session-id>/<mount-name>/…
 ```
 
-A symlink `sudo ln -sf ~/.local/share/claude-linux/sessions /sessions` is needed
-to handle absolute paths the app constructs before our translation layer sees
-them.  The symlink is created by the **launcher script** at runtime (as the
-invoking user), not by the RPM/pacman post-install scriptlet.  Package scriptlets
-run as root and do not know the end user's `$HOME`, so they cannot set the correct
-symlink target.  Both `packaging/AppDir/usr/bin/claude-desktop` (RPM/system
-launcher) and `packaging/AppDir/AppRun` (AppImage) handle this identically.
+No `/sessions` symlink is needed — all path translation happens in-process.
+The launcher scripts just ensure `~/.local/share/claude-linux/sessions/` exists
+(a regular `mkdir -p`, no sudo required).  This works on immutable distros
+(Fedora Silverblue, Kinoite, Universal Blue) where the root filesystem is
+read-only.
 
-`patches/path-translator.js` is injected as the first `require` in the main
-process bundle via a one-line prepend. It monkey-patches `path.join` and
-`path.resolve` for the specific prefix, and wraps `fs.promises` methods for
-the same prefix. Keep the patch as small as possible.
+`patches/path-translator.mjs` is injected as the first `import` in the main
+process bundle via a one-line prepend. It monkey-patches `path.join`,
+`path.resolve`, and `path.normalize` for the `/sessions/` prefix, wraps all
+`fs` methods (sync, async callbacks, and promises), intercepts
+`child_process.spawn`/`execFile`/`exec` (translating `cwd` and args), and
+wraps `net.connect`/`net.createConnection` for socket paths. Session
+directories are auto-created on first encounter.
 
 ## Cowork Isolation Backends
 
@@ -259,6 +269,57 @@ The launcher script reads this variable before execing Electron.
 KVM/QEMU is intentionally not implemented. Anthropic blocks VM image downloads
 for Linux; the infrastructure would be complex; and bubblewrap provides adequate
 isolation for personal use.
+
+## Socket IPC Protocol (Cowork/Dispatch daemon)
+
+Claude Desktop communicates with a backend daemon over a socket-based IPC
+protocol using length-prefixed JSON messages (4-byte big-endian length header
+followed by UTF-8 JSON payload).
+
+**Transport per platform:**
+
+```
+macOS:   Desktop → @ant/claude-swift → VZVirtualMachine → vsock → sdk-daemon
+Windows: Desktop → cowork-svc.exe    → Named Pipe       → Hyper-V VM → vsock → sdk-daemon
+Linux:   Desktop → Unix socket       → cowork-svc-linux  → os/exec (no VM)
+```
+
+On Linux the `claude-cowork-service` daemon (MIT, from
+`patrickjaja/claude-cowork-service`) listens on a Unix domain socket at
+`$XDG_RUNTIME_DIR/cowork-vm-service.sock` and handles process lifecycle
+directly via `os/exec` — no VM needed.
+
+**Known protocol methods** (length-prefixed JSON-RPC style):
+
+| Method | Description |
+|---|---|
+| `isRunning` | Check if the daemon is alive |
+| `vmStarted` | Check if the (virtual) environment is ready |
+| `apiReachable` | Check API connectivity |
+| `isGuestConnected` | Check if the guest agent is connected |
+| `subscribeEvents` | Subscribe to lifecycle events |
+| `writeStdin` | Write to a process's stdin |
+| `spawn` | Start a new process |
+| `kill` | Kill a running process |
+| `readFile` | Read a file from the session filesystem |
+| `writeFile` | Write a file to the session filesystem |
+| `listDir` | List directory contents |
+| `getSystemInfo` | Get system information |
+| `getNetworkInfo` | Get network configuration |
+| `ping` | Health check |
+| `shutdown` | Gracefully stop the daemon |
+| `getVersion` | Get daemon version |
+| `configure` | Update runtime configuration |
+
+**Installation:**
+
+```sh
+./scripts/install-cowork-service.sh
+```
+
+This downloads the pre-built binary, installs it to `~/.local/bin/`, creates
+a systemd user service, and verifies the socket appears.  The launcher scripts
+warn if the service is not running but do not block app launch.
 
 ## Packaging Notes
 
@@ -279,6 +340,31 @@ isolation for personal use.
 - Run with `--no-sandbox` because the AppImage FUSE mount prevents the
   `chrome-sandbox` setuid bit from taking effect.
 - Output filename: `claude-desktop-<version>-x86_64.AppImage`
+
+## Release Channels
+
+This project has two release channels that share the same codebase:
+
+| Channel | Branch | GitHub Release | gh-pages path | .repo file |
+|---------|--------|----------------|---------------|------------|
+| Stable  | `main` | Regular (Latest) | `/stable/` | `claude-desktop.repo` |
+| Dev     | `dev`  | Pre-release | `/dev/` | `claude-desktop-dev.repo` |
+
+Feature branches (`fix_cowork`, `feat/**`, `fix/**`) produce workflow artifacts
+only, never published. Download them from the Actions tab for local testing.
+
+The channel is determined automatically by `.github/workflows/build.yml` via
+the `determine-channel` job. Manual dispatch can override with the `channel`
+input (choices: `auto`, `stable`, `dev`, `none`).
+
+Dev releases use version suffix `~dev.YYYYMMDD.shortsha` (tilde ensures
+correct RPM/DEB version sorting so `dnf upgrade` / `apt upgrade` never moves
+stable users to dev). The `prerelease: true` flag on GitHub Releases ensures:
+- `/releases/latest` API skips dev releases
+- "Latest Release" badge on the repo page stays on stable
+- Yellow "Pre-release" badge appears on dev releases
+- Package manager repos (`claude-desktop.repo` vs `claude-desktop-dev.repo`)
+  point to separate gh-pages subdirectories (`/stable/` vs `/dev/`)
 
 ## GitHub Actions
 
@@ -308,14 +394,14 @@ version string. The DMG is never cached — always fetch fresh.
 
 ## What This Project Intentionally Does Not Do
 
-- **Partial Dispatch support.** Dispatch works while the app is in the
-  foreground. UI platform gates are bypassed, IPC handlers are stubbed
-  (`stubs/dispatch-polyfill.js`), and Electron's Notification API is polyfilled.
-  A foreground polling skeleton is in place but the polling endpoint has not yet
-  been discovered — set `DISPATCH_DEBUG=1` to log IPC traffic for reverse-
-  engineering.  Background delivery via APNs/FCM push notifications is not
-  available; tasks sent from mobile when the app is closed won't arrive until
-  next launch.
+- **Dispatch — partially supported.** Dispatch works via SSE when the app is
+  open.  GrowthBook feature flags are force-enabled by `patches/patch-dispatch.mjs`
+  (sessions-bridge init, remote session control, hostLoopMode).  UI platform gates
+  are bypassed, IPC handlers are stubbed (`stubs/dispatch-polyfill.js`), and
+  Electron's Notification API is polyfilled.  The `claude-cowork-service` daemon
+  provides the socket backend that Dispatch's session management requires.
+  Background delivery (APNs/FCM push wake-up) is not available; tasks sent from
+  mobile when the app is closed won't arrive until next launch.
 - **No Computer Use.** Requires `xdotool`/`scrot` hacks that are fragile and
   version-sensitive. Out of scope for the initial release.
 - **No KVM isolation.** See Cowork Isolation Backends above.
@@ -337,6 +423,41 @@ When `find-platform-gate.mjs` exits 1 on a new version:
 2. Inspect the candidates and identify the new gate function shape.
 3. Update the AST pattern in `find-platform-gate.mjs`.
 4. Commit and push — the next `check-update.yml` run will use the updated pattern.
+
+## Automated Quality Gates
+
+Every push to main, dev, and feature branches runs the smoke test workflow
+(`.github/workflows/smoke-test.yml`):
+
+1. **Bundle validation** — `scripts/validate-bundle.sh` runs acorn on every
+   `.vite/build/*.js` file after patches are applied. Any syntax error fails
+   the build before the asar is repacked. This is also wired into
+   `scripts/patch-cowork.sh` as an inline gate.
+
+2. **RPM install test** — builds the RPM in a Fedora 41 container, installs
+   it, verifies all expected files land in the right locations.
+
+3. **Headless launch test** — runs the installed `claude-desktop` under Xvfb
+   for 10 seconds. Fails on SIGSEGV, process death within 5 seconds, or
+   explicit fatal errors in the log.
+
+These catch broken JS bundles, missing dependencies, and crash-on-launch
+regressions. They do NOT catch:
+- GUI interaction bugs (requires a real display and human)
+- Cowork session failures (requires orchestrator interaction)
+- Wayland/compositor-specific issues (container is X11-only)
+- DBus/systemd-dependent features
+
+Final validation before release is still manual on a real Silverblue install.
+
+To run smoke tests locally:
+```bash
+./scripts/validate-bundle.sh          # standalone syntax check (after patches)
+```
+
+After merging the workflow, add `smoke-test-summary` as a required status check
+on the `main` and `dev` branches via repo Settings → Branches → Branch
+protection rules.
 
 ## License
 

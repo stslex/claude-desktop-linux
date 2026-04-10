@@ -301,6 +301,31 @@ const _vmBase = {
   },
 
   /**
+   * Report whether the "guest" (VM/process) is connected.
+   * On Linux there is no VM — always return true so the orchestrator proceeds.
+   * @returns {boolean}
+   */
+  isGuestConnected() {
+    return true;
+  },
+
+  /**
+   * Stop the VM — on Linux, kill all tracked child processes and reset state.
+   */
+  stopVM() {
+    // Snapshot PIDs before clearing so callbacks fire with correct data.
+    const entries = [..._procs.entries()];
+    _procs.clear();
+    for (const [pid, child] of entries) {
+      try { child.kill('SIGTERM'); } catch {}
+      if (typeof _callbacks.onExit === 'function') {
+        const cbPid = pid;
+        process.nextTick(() => _callbacks.onExit(cbPid, null, 'SIGTERM'));
+      }
+    }
+  },
+
+  /**
    * Report whether the VM is running.
    * On Linux there is no VM — always return true.
    * @returns {boolean}
@@ -319,12 +344,32 @@ const _vmBase = {
   },
 };
 
+// Getter-style properties that the orchestrator may check as properties or methods.
+// On Linux there is no VM — always report started/reachable.
+Object.defineProperty(_vmBase, 'vmStarted', {
+  get() { return true; },
+  enumerable: true,
+});
+Object.defineProperty(_vmBase, 'apiReachable', {
+  get() { return true; },
+  enumerable: true,
+});
+
 // Wrap vm in a Proxy so unknown method calls are logged to stderr.
 const vm = new Proxy(_vmBase, {
   get(target, prop) {
     if (prop in target) return target[prop];
-    process.stderr.write(`[claude-swift stub] unknown vm method called: ${String(prop)}\n`);
-    return function noop() {};
+    if (typeof prop === 'symbol') return target[prop];
+    process.stderr.write(
+      `[claude-swift stub] MISSING METHOD: ${String(prop)} — ` +
+      `add explicit implementation to stubs/claude-swift.js\n`
+    );
+    return function noop(...args) {
+      process.stderr.write(
+        `[claude-swift stub] noop call: ${String(prop)}(${args.length} args)\n`
+      );
+      return undefined;
+    };
   },
 });
 
