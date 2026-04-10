@@ -339,8 +339,7 @@ jobs:
       - name: Pin channel metadata to the local tarball
         id: pin
         env:
-          JSON_PATH: ${{ steps.channel.outputs.json }}
-          CHANNEL:   ${{ steps.channel.outputs.channel }}
+          CHANNEL: ${{ steps.channel.outputs.channel }}
         run: |
           set -euo pipefail
 
@@ -353,7 +352,7 @@ jobs:
 
           ABS_PATH="$(readlink -f "$TARBALL")"
           SHA256="$(sha256sum "$ABS_PATH" | awk '{print $1}')"
-          # Extract the version from the filename:
+          # Extract the upstream version from the filename:
           # claude-desktop-<version>-x86_64-nix.tar.gz
           BASE="$(basename "$TARBALL")"
           VERSION="${BASE#claude-desktop-}"
@@ -364,51 +363,76 @@ jobs:
           echo "version:   $VERSION"
           echo "channel:   $CHANNEL"
 
-          # Dev channel metadata MUST sort strictly lower than stable under
-          # builtins.compareVersions — append -pre when we're pinning the dev
-          # JSON. Stable stays as-is. The sort invariant check runs below.
-          if [[ "$CHANNEL" == "dev" ]]; then
-            PIN_VERSION="${VERSION}-pre"
-          else
-            PIN_VERSION="$VERSION"
-          fi
+          # --- Drop the tarball into the flake tree ------------------------
+          #
+          # flake.nix's mkClaudeDesktop checks for
+          # ./nix/tarballs/<channel>.tar.gz and uses it as `src` when
+          # present, in preference to `pkgs.fetchurl`. This avoids the
+          # fetchurl fixed-output sandbox (which can't read `file://` URLs
+          # outside the store) while still producing a reproducible,
+          # purely-evaluated flake.
+          #
+          # We populate BOTH channel slots with the same tarball so that
+          # whichever attr the smoke test targets resolves to the real
+          # build. The two derivations only differ in their `version`
+          # label, which is maintained in the JSON files below and
+          # enforces the dev < stable sort invariant.
+          mkdir -p nix/tarballs
+          cp "$ABS_PATH" nix/tarballs/stable.tar.gz
+          cp "$ABS_PATH" nix/tarballs/dev.tar.gz
 
-          # Rewrite the target channel JSON with file:// URL + real hash.
-          cat > "$JSON_PATH" <<JSON_EOF
+          # --- Refresh channel metadata JSONs ------------------------------
+          #
+          # url + sha256 are left as placeholders: the in-tree tarball
+          # override in flake.nix means fetchurl is never invoked in CI.
+          # We keep them so `inherit (channelMeta) version url sha256`
+          # in flake.nix still destructures cleanly.
+          STABLE_V="$VERSION"
+          DEV_V="${VERSION}-pre"
+
+          cat > nix/stable.json <<STABLE_EOF
           {
-            "channel": "${CHANNEL}",
-            "version": "${PIN_VERSION}",
-            "url": "file://${ABS_PATH}",
-            "sha256": "${SHA256}"
+            "channel": "stable",
+            "version": "${STABLE_V}",
+            "url": "https://example.invalid/ci-placeholder-not-fetched",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
           }
-          JSON_EOF
+          STABLE_EOF
 
-          # If we pinned stable but dev.json still points at placeholder
-          # metadata whose version is lexicographically ≥ stable, the sort
-          # invariant check would fail. Re-pin dev.json alongside to keep
-          # the invariant satisfied.
-          if [[ "$CHANNEL" == "stable" ]]; then
-            cat > "nix/dev.json" <<JSON_EOF
+          cat > nix/dev.json <<DEV_EOF
           {
             "channel": "dev",
-            "version": "${VERSION}-pre",
-            "url": "file://${ABS_PATH}",
-            "sha256": "${SHA256}"
+            "version": "${DEV_V}",
+            "url": "https://example.invalid/ci-placeholder-not-fetched",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
           }
-          JSON_EOF
-          fi
+          DEV_EOF
 
-          echo "---- $JSON_PATH ----"
-          cat "$JSON_PATH"
-          echo "---- nix/dev.json ----"
-          cat nix/dev.json
+          # --- Stage + commit locally so nix flake sees the new files -----
+          #
+          # Flake source resolution walks git — uncommitted files may or
+          # may not be included depending on the Nix version. A throwaway
+          # local commit guarantees the tarballs and JSONs are part of
+          # the source tree nix sees. The commit stays inside the CI
+          # workspace and is never pushed.
+          git config --local user.email "smoke-test@localhost"
+          git config --local user.name  "smoke-test"
+          git add nix/tarballs/ nix/stable.json nix/dev.json
+          git commit -m "ci: pin local tarball for smoke test (not pushed)"
+
           echo "---- nix/stable.json ----"
           cat nix/stable.json
+          echo "---- nix/dev.json ----"
+          cat nix/dev.json
+          ls -la nix/tarballs/
 
       - name: nix flake check
         run: |
           set -euo pipefail
-          nix flake check --show-trace --no-update-lock-file
+          # First invocation will lock nixpkgs + flake-utils on the fly;
+          # the repo does not ship a committed flake.lock. Subsequent
+          # commands in this job reuse the lock written here.
+          nix flake check --show-trace
 
       - name: Verify dev version sorts lower than stable (rpm --compare analogue)
         run: |

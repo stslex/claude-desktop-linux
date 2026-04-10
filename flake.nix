@@ -61,8 +61,22 @@
 
         # ---------------------------------------------------------------------
         # Package builder (shared between channels)
+        #
+        # Source resolution:
+        #   1. If ./nix/tarballs/<channel>.tar.gz exists in the flake tree,
+        #      it is used directly. This is the escape hatch CI uses during
+        #      the smoke test — it drops the freshly built tarball into the
+        #      flake source so we avoid `pkgs.fetchurl` with a `file://` URL
+        #      (which fails inside the fixed-output sandbox because curl
+        #      can't read paths outside the derivation inputs).
+        #   2. Otherwise, fall back to `pkgs.fetchurl` against the channel
+        #      metadata JSON — the production code path.
         # ---------------------------------------------------------------------
         mkClaudeDesktop = { channel, version, url, sha256 }:
+          let
+            localTarball = ./nix/tarballs + "/${channel}.tar.gz";
+            useLocalTarball = builtins.pathExists localTarball;
+          in
           pkgs.stdenv.mkDerivation {
             pname = if channel == "dev" then "claude-desktop-dev" else "claude-desktop";
             inherit version;
@@ -70,9 +84,10 @@
             # Fetch the pre-built release tarball from GitHub Releases.
             # To use a locally built tarball instead, override with:
             #   claude-desktop.overrideAttrs (_: { src = ./path/to/claude-desktop-x86_64-nix.tar.gz; })
-            src = pkgs.fetchurl {
-              inherit url sha256;
-            };
+            src =
+              if useLocalTarball
+              then localTarball
+              else pkgs.fetchurl { inherit url sha256; };
 
             nativeBuildInputs = with pkgs; [
               autoPatchelfHook
@@ -103,6 +118,14 @@
               xorg.libXfixes
               xorg.libXrandr
               xorg.libxcb
+              # Additional X extensions that Electron dlopens on startup.
+              # Missing any of these causes autoPatchelfHook to fail the
+              # build with a clear "could not find dependency" message.
+              xorg.libXi
+              xorg.libXcursor
+              xorg.libXtst
+              xorg.libXrender
+              xorg.libXScrnSaver
             ];
 
             runtimeDependencies = with pkgs; [
@@ -126,17 +149,31 @@
 
               # The launcher script ships with hardcoded /usr/lib paths
               # (inherited from the RPM packaging layout). Rewrite them to
-              # the store path so it finds the bundled ASAR and Electron.
+              # the store path so it finds the bundled ASAR and ELECTRON_VERSION.
               substituteInPlace $out/bin/claude-desktop \
                 --replace-quiet '/usr/lib/claude-desktop/app.asar'         "$out/lib/claude-desktop/app.asar" \
                 --replace-quiet '/usr/lib/claude-desktop/ELECTRON_VERSION' "$out/lib/claude-desktop/ELECTRON_VERSION"
 
+              # The launcher's first electron-lookup candidate is
+              # `$(dirname "$ASAR")/electron/electron`. After substitution
+              # that points at $out/lib/claude-desktop/electron/electron,
+              # which doesn't exist — the bundled electron lives at
+              # $out/lib/electron/electron. Create a relative symlink so
+              # the first candidate resolves without having to substitute
+              # the /usr/lib/electron fallbacks in the launcher script.
+              mkdir -p "$out/lib/claude-desktop"
+              ln -sn ../electron "$out/lib/claude-desktop/electron"
+
               # wrapProgram:
               #   - PATH           → xdg-utils + bubblewrap for the launcher's
-              #                      xdg-mime / bwrap invocations
+              #                      xdg-mime / bwrap invocations; also
+              #                      $out/lib/electron so `command -v electron`
+              #                      resolves if the symlinked candidate above
+              #                      is ever invalidated by a future refactor.
               #   - LD_LIBRARY_PATH → bundled Electron's private .so files
               wrapProgram $out/bin/claude-desktop \
-                --prefix PATH            : ${lib.makeBinPath [ pkgs.xdg-utils pkgs.bubblewrap ]} \
+                --prefix PATH            : "${lib.makeBinPath [ pkgs.xdg-utils pkgs.bubblewrap ]}" \
+                --prefix PATH            : "$out/lib/electron" \
                 --prefix LD_LIBRARY_PATH : "$out/lib/electron"
 
               runHook postInstall
