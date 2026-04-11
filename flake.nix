@@ -9,7 +9,26 @@
   outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachSystem [ "x86_64-linux" ] (system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        # Import nixpkgs with allowUnfree enabled.
+        #
+        # Claude Desktop is distributed under an unfree license
+        # (meta.license = licenses.unfree below), so nixpkgs'
+        # checkMeta.assertValidity refuses to realize the derivation
+        # unless allowUnfree is set — `nix build .#dev` would fail
+        # with an assert from lib/customisation.nix:446 (the condition
+        # passed to extendDerivation by make-derivation.nix's
+        # `validity.handled`), even though `nix flake check` and
+        # `nix eval .#dev.version` still succeed because they don't
+        # force .drvPath realization.
+        #
+        # This config is local to the flake's eval context — users
+        # who consume the `overlays.default` against their own
+        # nixpkgs still need to set `allowUnfree` in their own config
+        # (documented in nix/README.md).
+        pkgs = import nixpkgs {
+          inherit system;
+          config.allowUnfree = true;
+        };
         lib = pkgs.lib;
 
         # ---------------------------------------------------------------------
