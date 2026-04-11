@@ -303,6 +303,49 @@ channel:
 }))
 ```
 
+#### Troubleshooting — `nix flake update` fails with HTTP 404
+
+If `nixos-rebuild` (or `nix flake update`) fails with:
+
+```
+error: … while updating the flake input 'claude-desktop'
+       … while fetching the input 'github:stslex/claude-desktop'
+       error: unable to download
+       'https://api.github.com/repos/stslex/claude-desktop/commits/HEAD':
+       HTTP error 404
+```
+
+…the input URL is missing the `-linux` suffix. The repository is
+`stslex/claude-desktop-linux`, not `stslex/claude-desktop` (the latter
+does not exist and returns 404 from the GitHub API). This usually
+happens for one of two reasons:
+
+1. **A typo in your `flake.nix`**. Open it and confirm the input URL
+   matches the snippet in [Flake input](#flake-input) above:
+
+   ```nix
+   inputs.claude-desktop.url = "github:stslex/claude-desktop-linux";
+   #                                              ^^^^^^ required
+   ```
+
+2. **A stale entry in your `flake.lock`** from before the URL was
+   corrected. `nix flake update` only re-resolves an input when its URL
+   in `flake.nix` changes — if the lock file still pins the old name,
+   delete that entry and re-lock just the one input:
+
+   ```sh
+   nix flake lock --update-input claude-desktop
+   ```
+
+   If that still resurrects the wrong URL, remove the `claude-desktop`
+   block from `flake.lock` by hand (or delete `flake.lock` entirely if
+   you're comfortable re-resolving every input) and rerun
+   `nix flake update`.
+
+After fixing the URL, `nixos-rebuild switch` should resolve the input
+against this repository and pick up `nix/stable.json` (or `nix/dev.json`
+if you pinned the dev branch) without further intervention.
+
 ### Cowork Service (optional — enables Cowork and Dispatch)
 
 The `claude-cowork-service` daemon provides the socket backend that Cowork and
