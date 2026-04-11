@@ -1,6 +1,6 @@
 {
   "channel": "dev",
-  "version": "1.1617.0-dev.20260411.7f95bf1",
-  "url": "https://github.com/stslex/claude-desktop-linux/releases/download/v1.1617.0-dev.20260411.7f95bf1/claude-desktop-1.1617.0.dev.20260411.7f95bf1-repack-0-x86_64-nix.tar.gz",
-  "sha256": "da6509f72f94bef69bd67f3970bc1c5b9c0af0be59cc45a453250d0a6f00efe2"
+  "version": "1.1617.0~dev.20260411.a2fbc0a",
+  "url": "https://github.com/stslex/claude-desktop-linux/releases/download/v1.1617.0-dev.20260411.a2fbc0a/claude-desktop-1.1617.0.dev.20260411.a2fbc0a-repack-0-x86_64-nix.tar.gz",
+  "sha256": "8d343bd14dd6cf58584639b3dd7e762702741d3899c54fac5a618cae1b1be1a2"
 }
