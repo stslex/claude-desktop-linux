@@ -265,31 +265,6 @@
               #                      against org.freedesktop.login1 during
               #                      main-process init and which segfaults
               #                      with NULL handle on missing dlopen.
-              #
-              #   --add-flags      → V8 `--no-write-protect-code-memory`.
-              #                      Confirmed root cause of the NixOS-side
-              #                      SIGSEGV via strace: `SEGV_ACCERR` at a
-              #                      V8 pointer-cage address (~0xbdc...fff)
-              #                      immediately after the main process
-              #                      opens app.asar.  V8 normally uses
-              #                      dual-mapping for its JIT code cage
-              #                      (one RW mapping for writing generated
-              #                      code, one RX mapping for executing it,
-              #                      both backed by the same `memfd_create`
-              #                      fd).  On kernel 6.18+ with NixOS'
-              #                      default `vm.memfd_noexec=1` the memfd
-              #                      is created without execute permission
-              #                      by default, the RX re-mapping
-              #                      succeeds but the pages are silently
-              #                      non-executable, and the first jump
-              #                      into JIT'd code raises
-              #                      `SEGV_ACCERR`.  `--no-write-protect-
-              #                      code-memory` tells V8 to use a
-              #                      single-mapping RWX code cage instead,
-              #                      bypassing the memfd path entirely.
-              #                      JIT stays enabled, so there is no
-              #                      runtime performance cost vs. the
-              #                      (much slower) `--jitless` alternative.
               wrapProgram $out/bin/claude-desktop \
                 --prefix PATH            : "${lib.makeBinPath [ pkgs.xdg-utils pkgs.bubblewrap ]}" \
                 --prefix PATH            : "$out/lib/electron" \
@@ -302,8 +277,7 @@
                   libnotify
                   fontconfig
                   freetype
-                ])}" \
-                --add-flags "--js-flags=--no-write-protect-code-memory"
+                ])}"
 
               runHook postInstall
             '';
