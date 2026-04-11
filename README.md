@@ -155,40 +155,152 @@ sudo pacman -U claude-desktop-*-x86_64.pkg.tar.zst
 
 ### NixOS / Nix
 
-The repository includes a `flake.nix` for NixOS users.
+The repository ships a `flake.nix` with two channels that mirror the RPM /
+DEB / Pacman split:
 
-#### Via flake
+| Flake attribute | Channel | Source | Who should use it |
+|---|---|---|---|
+| `packages.x86_64-linux.default` | **stable** | Latest non-prerelease GitHub Release | Everyone by default |
+| `packages.x86_64-linux.dev`     | **dev**    | Latest prerelease (`prerelease: true`) GitHub Release | Early adopters who want fixes before they ship to main |
 
-The `flake.nix` uses `fetchurl` to download the pre-built tarball from GitHub
-Releases. To use it, override `version` and `sha256` to match the release you
-want:
+Channel metadata (tarball URL + `sha256` + version) is pinned in
+`nix/stable.json` and `nix/dev.json`. CI updates those files on every
+publish, so `nix flake update` picks up new builds without you having to
+paste hashes by hand.
+
+> Dev version strings carry a `-pre` suffix (e.g. `0.13.45-pre`) so that
+> `builtins.compareVersions` places them strictly *below* the matching
+> stable version. A `nix flake check` in this repo verifies the invariant
+> (`checks.x86_64-linux.channel-version-order`). Practical consequence:
+> if you have both overlays in scope, resolution always prefers the
+> higher version, and stable always wins against a matching dev build.
+
+#### Flake input
 
 ```nix
-# In your flake.nix inputs:
-inputs.claude-desktop.url = "github:stslex/claude-desktop-linux";
+# flake.nix
+{
+  inputs = {
+    nixpkgs.url     = "github:NixOS/nixpkgs/nixos-unstable";
+    claude-desktop.url = "github:stslex/claude-desktop-linux";
+    # Or pin to the dev branch to track prereleases:
+    # claude-desktop.url = "github:stslex/claude-desktop-linux/dev";
+  };
+  # ...
+}
 ```
 
-Then add to `environment.systemPackages`:
+#### NixOS — `environment.systemPackages`
+
+Stable channel (recommended):
 
 ```nix
-environment.systemPackages = [
-  (inputs.claude-desktop.packages.${pkgs.system}.default.overrideAttrs (_: {
-    version = "<version>";
-    src = pkgs.fetchurl {
-      url = "https://github.com/stslex/claude-desktop-linux/releases/download/v<version>-repack-<N>/claude-desktop-<version>-repack-<N>-x86_64-nix.tar.gz";
-      sha256 = "<sha256>";  # from release notes or nix-prefetch-url
+# configuration.nix
+{ inputs, pkgs, ... }: {
+  environment.systemPackages = [
+    inputs.claude-desktop.packages.${pkgs.system}.default
+  ];
+}
+```
+
+Dev channel (opt-in — see warning below):
+
+```nix
+# configuration.nix
+{ inputs, pkgs, ... }: {
+  environment.systemPackages = [
+    inputs.claude-desktop.packages.${pkgs.system}.dev
+  ];
+}
+```
+
+#### Home Manager
+
+```nix
+# home.nix
+{ inputs, pkgs, ... }: {
+  home.packages = [
+    # Stable:
+    inputs.claude-desktop.packages.${pkgs.system}.default
+    # ...or dev (don't install both at once — they conflict on
+    # /bin/claude-desktop):
+    # inputs.claude-desktop.packages.${pkgs.system}.dev
+  ];
+}
+```
+
+#### Overlay usage
+
+```nix
+# flake.nix — expose both channels on pkgs
+{
+  outputs = { self, nixpkgs, claude-desktop, ... }: {
+    nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        ({ pkgs, ... }: {
+          nixpkgs.overlays = [(final: prev: {
+            claude-desktop     = claude-desktop.packages.${prev.system}.default;
+            claude-desktop-dev = claude-desktop.packages.${prev.system}.dev;
+          })];
+          environment.systemPackages = [ pkgs.claude-desktop ];
+        })
+      ];
     };
-  }))
-];
+  };
+}
 ```
+
+#### Rolling back from dev to stable
+
+Switch the attribute you pull from the flake back to `default`, then
+`nixos-rebuild switch` (or `home-manager switch`):
+
+```diff
+- inputs.claude-desktop.packages.${pkgs.system}.dev
++ inputs.claude-desktop.packages.${pkgs.system}.default
+```
+
+```sh
+sudo nixos-rebuild switch --flake .#myhost
+# or: home-manager switch --flake .#me
+```
+
+NixOS keeps the previous generation around — if the rebuild itself
+fails, roll the system back with `sudo nixos-rebuild switch --rollback`
+(or boot into the previous generation from the bootloader).
+
+> **⚠️ Dev channel warning — same tone as the RPM dev repo.**
+> The dev channel tracks the `dev` branch of this repository and
+> publishes **prereleases**. It may break at any time, break your
+> Claude Desktop session, or ship a partially-working patch while a
+> Claude Desktop upstream change is being investigated. Only opt in if
+> you are comfortable rolling back a NixOS generation. There is no
+> support SLA — if it breaks, file an issue and switch back to stable.
 
 #### Direct tarball download
 
 Pre-built Nix-compatible tarballs are available in each GitHub Release:
 
 ```sh
-# Download and extract
+# Stable (latest non-prerelease):
 curl -fLO https://github.com/stslex/claude-desktop-linux/releases/latest/download/claude-desktop-<version>-repack-<N>-x86_64-nix.tar.gz
+```
+
+#### Manual override
+
+If you want to build against a specific release without waiting for CI
+to update `nix/stable.json`, `overrideAttrs` works against either
+channel:
+
+```nix
+(inputs.claude-desktop.packages.${pkgs.system}.default.overrideAttrs (_: {
+  version = "<version>";
+  src = pkgs.fetchurl {
+    url = "https://github.com/stslex/claude-desktop-linux/releases/download/v<version>-repack-<N>/claude-desktop-<version>-repack-<N>-x86_64-nix.tar.gz";
+    sha256 = "<sha256>";  # from release notes or nix-prefetch-url
+  };
+}))
 ```
 
 ### Cowork Service (optional — enables Cowork and Dispatch)
@@ -244,6 +356,28 @@ SigLevel = Optional TrustAll
 Server = https://github.com/stslex/claude-desktop-linux/releases/download/<dev-tag>
 ```
 
+#### Nix / NixOS
+
+Switch the flake attribute you pull from `default` to `dev`:
+
+```nix
+# configuration.nix / home.nix
+environment.systemPackages = [
+  inputs.claude-desktop.packages.${pkgs.system}.dev
+];
+```
+
+Or consume the `dev` branch of this repository directly as a flake
+input to always track the latest dev-channel metadata:
+
+```nix
+inputs.claude-desktop.url = "github:stslex/claude-desktop-linux/dev";
+```
+
+See the "NixOS / Nix" section above for `builtins.compareVersions`
+invariants and the `checks.x86_64-linux.channel-version-order` flake
+check that guards them.
+
 #### Rollback to stable
 
 If a beta build breaks your install:
@@ -259,6 +393,11 @@ sudo dnf reinstall claude-desktop
 sudo rm /etc/apt/sources.list.d/claude-desktop-dev.list
 sudo apt update
 sudo apt install claude-desktop --reinstall
+
+# NixOS — switch the flake attribute back to .default and rebuild:
+#   sudo nixos-rebuild switch --flake .#myhost
+# or roll the previous generation back if the rebuild itself broke:
+#   sudo nixos-rebuild switch --rollback
 ```
 
 #### Reporting beta issues
