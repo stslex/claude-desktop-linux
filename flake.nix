@@ -222,9 +222,33 @@
               # The launcher script ships with hardcoded /usr/lib paths
               # (inherited from the RPM packaging layout). Rewrite them to
               # the store path so it finds the bundled ASAR and ELECTRON_VERSION.
+              #
+              # Also inject V8 `--js-flags=--no-memory-protection-keys` right
+              # into the final `exec "$ELECTRON" ... "$ASAR" "$@"` line so
+              # the flag is positioned *before* the ASAR argument. If we
+              # pass it via `wrapProgram --add-flags` instead, the flag
+              # arrives in `"$@"` and ends up *after* `$ASAR`, where
+              # Electron treats it as an application argument rather than
+              # a Chromium/V8 switch and the PKU SEGV still fires.
+              # Using `--replace-fail` so the build breaks loudly if the
+              # upstream launcher ever changes the exec line — better a
+              # red CI than a silent regression back to the SEGV.
+              #
+              # Root cause recap: on NixOS 6.18.21, V8 14's default Intel
+              # PKU-based code page protection (`pkey_mprotect` + `WRPKRU`)
+              # takes a SIGSEGV (`SEGV_ACCERR` at a V8 pointer-cage
+              # address) on the first jump into JIT code.
+              # `--no-memory-protection-keys` tells V8 to skip PKU and
+              # fall back to a simpler code-cage strategy. JIT stays
+              # enabled, no perf cost vs. `--jitless`. Verified via a
+              # controlled 20-second runtime test against the bundled
+              # electron 40.8.5.
               substituteInPlace $out/bin/claude-desktop \
                 --replace-quiet '/usr/lib/claude-desktop/app.asar'         "$out/lib/claude-desktop/app.asar" \
-                --replace-quiet '/usr/lib/claude-desktop/ELECTRON_VERSION' "$out/lib/claude-desktop/ELECTRON_VERSION"
+                --replace-quiet '/usr/lib/claude-desktop/ELECTRON_VERSION' "$out/lib/claude-desktop/ELECTRON_VERSION" \
+                --replace-fail \
+                  'exec "$ELECTRON" --no-sandbox "$ASAR" "$@"' \
+                  'exec "$ELECTRON" --no-sandbox --js-flags=--no-memory-protection-keys "$ASAR" "$@"'
 
               # The launcher's first electron-lookup candidate is
               # `$(dirname "$ASAR")/electron/electron`. After substitution
@@ -266,70 +290,18 @@
               #                      main-process init and which segfaults
               #                      with NULL handle on missing dlopen.
               #
-              #   --add-flags      → V8 `--no-memory-protection-keys`.
-              #                      Confirmed root cause of a SIGSEGV that
-              #                      reproduces on NixOS 6.18.21 with every
-              #                      Nix-built version of Electron 40.8.5 /
-              #                      Chromium 144 (including the known-good
-              #                      stable upstream tarball from
-              #                      v1.569.0-repack-6 that ships via RPM on
-              #                      Fedora without issue).
-              #
-              #                      Symptom observed via strace:
-              #                        --- SIGSEGV {si_code=SEGV_ACCERR,
-              #                                      si_addr=0xbdc00c03fff} ---
-              #                      in the main thread, within the V8
-              #                      pointer-cage virtual address range,
-              #                      immediately after the main process
-              #                      opens app.asar.
-              #
-              #                      Root cause: V8 14 uses Intel Memory
-              #                      Protection Keys (PKU / pkey_mprotect)
-              #                      by default to protect its JIT code
-              #                      pages — it marks code pages with one
-              #                      protection key for execute and another
-              #                      for write, then flips the thread's
-              #                      active key via the `WRPKRU` instruction
-              #                      around JIT compilation and dispatch.
-              #                      On NixOS 6.18 this path takes a SEGV
-              #                      on the first access into the JIT
-              #                      region; the kernel surfaces it as
-              #                      SEGV_ACCERR rather than the newer
-              #                      SEGV_PKUERR si_code, which is why the
-              #                      address looked like a regular RWX
-              #                      violation.
-              #
-              #                      `--no-memory-protection-keys` tells V8
-              #                      to skip the PKU protection path
-              #                      entirely and fall back to a simpler
-              #                      code-cage management strategy that
-              #                      does not rely on `WRPKRU`.  JIT stays
-              #                      enabled — no interpreter-only
-              #                      fallback, no runtime performance cost
-              #                      vs. the much slower `--jitless`
-              #                      alternative.  The flag is a stable
-              #                      long-standing V8 flag, confirmed
-              #                      present in this Electron embed via
-              #                      `electron --v8-options | grep
-              #                      memory-protection-keys`:
-              #                        --memory-protection-keys
-              #                          (protect code memory with PKU
-              #                          if available)
-              #                          type: bool
-              #                          default: --memory-protection-keys
-              #
-              #                      Confirmed working via a 20-second
-              #                      --no-sandbox --js-flags run of the
-              #                      bundled electron against the packaged
-              #                      app.asar: with the flag the main
-              #                      process survives past the SEGV point
-              #                      and reaches steady-state with the
-              #                      full Chromium thread set up
-              #                      (electron, sandbox_ipc_thr,
-              #                      Chrome_IOThread, V8Worker x4,
-              #                      ThreadPool{Service,Foreground,Single},
-              #                      DelayedTaskSche, MemoryInfra,
-              #                      SignalInspector, PerfettoTrace).
+              # NOTE: the V8 `--js-flags=--no-memory-protection-keys`
+              # workaround for the NixOS 6.18+ PKU SEGV is injected
+              # directly into the launcher's `exec "$ELECTRON" ...` line
+              # via the `substituteInPlace --replace-fail` block above,
+              # NOT via `wrapProgram --add-flags`. That's because flags
+              # appended through `--add-flags` arrive in the launcher's
+              # `"$@"` and end up *after* `$ASAR` in the final
+              # `exec "$ELECTRON" --no-sandbox "$ASAR" "$@"`, where
+              # Electron treats them as application arguments rather
+              # than Chromium/V8 switches — the PKU SEGV still fires.
+              # Injecting the flag into the exec line directly puts it
+              # in the correct Chromium-switch position before `$ASAR`.
               wrapProgram $out/bin/claude-desktop \
                 --prefix PATH            : "${lib.makeBinPath [ pkgs.xdg-utils pkgs.bubblewrap ]}" \
                 --prefix PATH            : "$out/lib/electron" \
@@ -342,8 +314,7 @@
                   libnotify
                   fontconfig
                   freetype
-                ])}" \
-                --add-flags "--js-flags=--no-memory-protection-keys"
+                ])}"
 
               runHook postInstall
             '';
