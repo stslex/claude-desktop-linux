@@ -261,60 +261,77 @@
               ln -sn ../electron "$out/lib/claude-desktop/electron"
 
               # wrapProgram:
-              #   - PATH           → xdg-utils + bubblewrap for the launcher's
-              #                      xdg-mime / bwrap invocations; also
-              #                      $out/lib/electron so `command -v electron`
-              #                      resolves if the symlinked candidate above
-              #                      is ever invalidated by a future refactor.
-              #   - LD_LIBRARY_PATH → bundled Electron's private .so files
-              #                      PLUS the system libs Chromium dlopens
-              #                      at runtime (systemd/libsystemd for
-              #                      logind DBus, libglvnd for libGL.so.1,
-              #                      libsecret for safeStorage, libpulseaudio
-              #                      for audio, libnotify for desktop
-              #                      notifications, fontconfig/freetype for
-              #                      text rendering).
+              #   - PATH → xdg-utils + bubblewrap for the launcher's
+              #            xdg-mime / bwrap invocations; also
+              #            $out/lib/electron so `command -v electron`
+              #            resolves if the symlinked candidate at
+              #            $out/lib/claude-desktop/electron is ever
+              #            invalidated by a future refactor.
               #
-              #                      autoPatchelfHook already rewrites RPATH
-              #                      on the main electron binary and its
-              #                      sibling .so files so that DT_NEEDED
-              #                      links resolve. But dlopen()'d libs that
-              #                      aren't DT_NEEDED only fall back to
-              #                      LD_LIBRARY_PATH + the system default
-              #                      search path, and on NixOS the system
-              #                      default is not useful. Prefixing
-              #                      LD_LIBRARY_PATH here catches those —
-              #                      specifically libsystemd.so.0, which
-              #                      Chromium dlopens for the sd-bus binding
-              #                      against org.freedesktop.login1 during
-              #                      main-process init and which segfaults
-              #                      with NULL handle on missing dlopen.
+              # NO `--prefix LD_LIBRARY_PATH` HERE — INTENTIONAL.
               #
-              # NOTE: the V8 `--js-flags=--no-memory-protection-keys`
-              # workaround for the NixOS 6.18+ PKU SEGV is injected
-              # directly into the launcher's `exec "$ELECTRON" ...` line
-              # via the `substituteInPlace --replace-fail` block above,
-              # NOT via `wrapProgram --add-flags`. That's because flags
-              # appended through `--add-flags` arrive in the launcher's
-              # `"$@"` and end up *after* `$ASAR` in the final
-              # `exec "$ELECTRON" --no-sandbox "$ASAR" "$@"`, where
-              # Electron treats them as application arguments rather
-              # than Chromium/V8 switches — the PKU SEGV still fires.
-              # Injecting the flag into the exec line directly puts it
-              # in the correct Chromium-switch position before `$ASAR`.
+              # An earlier iteration of this wrapper prefixed
+              # `LD_LIBRARY_PATH` with `$out/lib/electron` plus the
+              # `lib.makeLibraryPath` of `systemd / libglvnd /
+              # libsecret / libpulseaudio / libnotify / fontconfig /
+              # freetype` as a defensive measure under the hypothesis
+              # that bundled Electron dlopens those at runtime. That
+              # wrapper was correlated with a guaranteed startup
+              # SIGSEGV on NixOS 6.18.21 that did NOT reproduce when
+              # the underlying `.claude-desktop-wrapped` launcher
+              # was invoked directly (bypassing the wrapper env
+              # setup) — even with the V8 `--js-flags=--no-memory-
+              # protection-keys` PKU workaround correctly injected
+              # into the launcher's `exec` line via
+              # `substituteInPlace`, the crash persisted as long as
+              # the wrapper's `LD_LIBRARY_PATH` was in the
+              # environment.
+              #
+              # Removing the `LD_LIBRARY_PATH` prefixes entirely is
+              # the safe path:
+              #
+              #   1. `autoPatchelfHook` already rewrites DT_NEEDED /
+              #      DT_RUNPATH on the electron binary and on every
+              #      bundled .so that it can reach, so the library
+              #      closure resolves through RPATH without needing
+              #      `LD_LIBRARY_PATH` help. All of the entries from
+              #      the previous `--prefix LD_LIBRARY_PATH` set are
+              #      still in `buildInputs` above, so they're still
+              #      in the closure — we just don't override the
+              #      dynamic linker's search path with them at
+              #      wrapper time.
+              #
+              #   2. Empirically, invoking the unwrapped launcher
+              #      `$out/bin/.claude-desktop-wrapped` directly (no
+              #      wrapper env) — which uses the same electron
+              #      binary from the same store path with the same
+              #      RPATH — runs past the SEGV point and reaches
+              #      steady-state inside Electron's startup path.
+              #      Reintroducing the wrapper's `LD_LIBRARY_PATH`
+              #      overrides via `env LD_LIBRARY_PATH=...
+              #      .claude-desktop-wrapped` reproduces the SEGV.
+              #      That A/B is the actual smoking gun — the crash
+              #      is caused by `LD_LIBRARY_PATH` overriding the
+              #      RPATH-based library closure in a way that
+              #      interferes with something V8 / Chromium does
+              #      during main-process init. Best guess: the
+              #      dynamic linker picks up a mismatched
+              #      `libEGL.so` / `libGLESv2.so` / `libsecret-1.so`
+              #      via the prefix, and the resulting lib graph
+              #      triggers a code path that the RPATH-resolved
+              #      one does not. Root cause not confirmed past
+              #      that.
+              #
+              # If a future Electron / upstream change starts to
+              # dlopen a lib that `autoPatchelfHook` can't predict
+              # (and fails for it), add that lib to `buildInputs`
+              # and let `autoPatchelfHook` patch it in via RPATH.
+              # Do NOT re-add `--prefix LD_LIBRARY_PATH` without
+              # first re-running the A/B above to confirm it
+              # doesn't reintroduce the SEGV.
               wrapProgram $out/bin/claude-desktop \
-                --prefix PATH            : "${lib.makeBinPath [ pkgs.xdg-utils pkgs.bubblewrap ]}" \
-                --prefix PATH            : "$out/lib/electron" \
-                --prefix LD_LIBRARY_PATH : "$out/lib/electron" \
-                --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath (with pkgs; [
-                  systemd
-                  libglvnd
-                  libsecret
-                  libpulseaudio
-                  libnotify
-                  fontconfig
-                  freetype
-                ])}"
+                --prefix PATH : "${lib.makeBinPath [ pkgs.xdg-utils pkgs.bubblewrap ]}" \
+                --prefix PATH : "$out/lib/electron"
 
               runHook postInstall
             '';
