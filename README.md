@@ -177,18 +177,35 @@ paste hashes by hand.
 
 #### Flake input
 
+> The input is named `claude-desktop-linux` here so the LHS attribute
+> matches the repository name. You can pick any name you like, but
+> whatever you use must match how downstream modules (NixOS, home-manager,
+> overlays) reference it — see the [Troubleshooting](#troubleshooting)
+> section below if `nix flake update` complains about a missing attribute.
+
 ```nix
 # flake.nix
 {
   inputs = {
     nixpkgs.url     = "github:NixOS/nixpkgs/nixos-unstable";
-    claude-desktop.url = "github:stslex/claude-desktop-linux";
-    # Or pin to the dev branch to track prereleases:
-    # claude-desktop.url = "github:stslex/claude-desktop-linux/dev";
+    claude-desktop-linux.url = "github:stslex/claude-desktop-linux";
+    # Or pin to the dev branch — required if you want
+    # `packages.x86_64-linux.dev` (the prerelease channel):
+    # claude-desktop-linux.url = "github:stslex/claude-desktop-linux/dev";
   };
   # ...
 }
 ```
+
+> **Heads-up about the `dev` attribute.** `packages.x86_64-linux.dev`
+> and `claude-desktop-dev` currently live only on the `dev` branch of
+> this repo — pinning the input to the default `main` branch
+> (`github:stslex/claude-desktop-linux`) only exposes
+> `packages.x86_64-linux.default` (stable). If you reference
+> `inputs.claude-desktop-linux.packages.<system>.dev` against the `main`
+> URL you'll get an `attribute 'dev' missing` error. Switch the URL to
+> the `/dev` form above, or use `.default` instead. This caveat goes
+> away once the dev-channel changes land on `main`.
 
 #### NixOS — `environment.systemPackages`
 
@@ -198,7 +215,7 @@ Stable channel (recommended):
 # configuration.nix
 { inputs, pkgs, ... }: {
   environment.systemPackages = [
-    inputs.claude-desktop.packages.${pkgs.system}.default
+    inputs.claude-desktop-linux.packages.${pkgs.stdenv.hostPlatform.system}.default
   ];
 }
 ```
@@ -209,7 +226,7 @@ Dev channel (opt-in — see warning below):
 # configuration.nix
 { inputs, pkgs, ... }: {
   environment.systemPackages = [
-    inputs.claude-desktop.packages.${pkgs.system}.dev
+    inputs.claude-desktop-linux.packages.${pkgs.stdenv.hostPlatform.system}.dev
   ];
 }
 ```
@@ -221,10 +238,10 @@ Dev channel (opt-in — see warning below):
 { inputs, pkgs, ... }: {
   home.packages = [
     # Stable:
-    inputs.claude-desktop.packages.${pkgs.system}.default
+    inputs.claude-desktop-linux.packages.${pkgs.stdenv.hostPlatform.system}.default
     # ...or dev (don't install both at once — they conflict on
     # /bin/claude-desktop):
-    # inputs.claude-desktop.packages.${pkgs.system}.dev
+    # inputs.claude-desktop-linux.packages.${pkgs.stdenv.hostPlatform.system}.dev
   ];
 }
 ```
@@ -234,14 +251,14 @@ Dev channel (opt-in — see warning below):
 ```nix
 # flake.nix — expose both channels on pkgs
 {
-  outputs = { self, nixpkgs, claude-desktop, ... }: {
+  outputs = { self, nixpkgs, claude-desktop-linux, ... }: {
     nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
       modules = [
         ({ pkgs, ... }: {
           nixpkgs.overlays = [(final: prev: {
-            claude-desktop     = claude-desktop.packages.${prev.system}.default;
-            claude-desktop-dev = claude-desktop.packages.${prev.system}.dev;
+            claude-desktop     = claude-desktop-linux.packages.${prev.stdenv.hostPlatform.system}.default;
+            claude-desktop-dev = claude-desktop-linux.packages.${prev.stdenv.hostPlatform.system}.dev;
           })];
           environment.systemPackages = [ pkgs.claude-desktop ];
         })
@@ -257,8 +274,8 @@ Switch the attribute you pull from the flake back to `default`, then
 `nixos-rebuild switch` (or `home-manager switch`):
 
 ```diff
-- inputs.claude-desktop.packages.${pkgs.system}.dev
-+ inputs.claude-desktop.packages.${pkgs.system}.default
+- inputs.claude-desktop-linux.packages.${pkgs.stdenv.hostPlatform.system}.dev
++ inputs.claude-desktop-linux.packages.${pkgs.stdenv.hostPlatform.system}.default
 ```
 
 ```sh
@@ -294,7 +311,7 @@ to update `nix/stable.json`, `overrideAttrs` works against either
 channel:
 
 ```nix
-(inputs.claude-desktop.packages.${pkgs.system}.default.overrideAttrs (_: {
+(inputs.claude-desktop-linux.packages.${pkgs.stdenv.hostPlatform.system}.default.overrideAttrs (_: {
   version = "<version>";
   src = pkgs.fetchurl {
     url = "https://github.com/stslex/claude-desktop-linux/releases/download/v<version>-repack-<N>/claude-desktop-<version>-repack-<N>-x86_64-nix.tar.gz";
@@ -302,6 +319,134 @@ channel:
   };
 }))
 ```
+
+#### Troubleshooting
+
+The two errors below both come from a naming mismatch between the input
+URL, the input name in your `flake.nix`, and references in downstream
+modules (NixOS, home-manager, overlays). The fix in every case is to
+make all three agree on the same identifier.
+
+**Symptom 1 — HTTP 404 from the GitHub API**
+
+```
+error: … while updating the flake input 'claude-desktop-linux'
+       … while fetching the input 'github:stslex/claude-desktop'
+       error: unable to download
+       'https://api.github.com/repos/stslex/claude-desktop/commits/HEAD':
+       HTTP error 404
+```
+
+The input URL is missing the `-linux` suffix. The repository is
+`stslex/claude-desktop-linux`, not `stslex/claude-desktop` (the latter
+does not exist and returns 404 from the GitHub API). Two ways this
+sneaks in:
+
+1. **A typo in your `flake.nix`**. Open it and confirm the URL matches
+   the snippet in [Flake input](#flake-input) above:
+
+   ```nix
+   inputs.claude-desktop-linux.url = "github:stslex/claude-desktop-linux";
+   #                                                  ^^^^^^ required
+   ```
+
+2. **A stale entry in your `flake.lock`** from before the URL was
+   corrected. `nix flake update` only re-resolves an input when its URL
+   in `flake.nix` changes — if the lock file still pins the old name,
+   force a re-resolve of just the one input:
+
+   ```sh
+   nix flake lock --update-input claude-desktop-linux
+   ```
+
+   If the bad URL keeps resurfacing, delete the `claude-desktop-linux`
+   block from `flake.lock` by hand (or delete `flake.lock` entirely if
+   you're comfortable re-resolving every input) and rerun
+   `nix flake update`.
+
+**Symptom 2 — `attribute 'claude-desktop-linux' missing`**
+
+```
+error: attribute 'claude-desktop-linux' missing
+   17|     inputs.claude-desktop-linux.packages.${pkgs.stdenv.hostPlatform.system}.dev
+     |     ^
+```
+
+A downstream module (here, a home-manager `packages.nix`) references the
+input as `claude-desktop-linux`, but your `flake.nix` declares it under
+a *different* name — most commonly `inputs.claude-desktop` (without the
+`-linux` suffix). The input *name* (the LHS attribute in `flake.nix`)
+and the input *URL* are independent in Nix flakes; references in other
+modules must match the *name*, not the URL.
+
+Pick one of these two fixes — both work, the first is recommended
+because it matches the convention in the snippets above and most users'
+expectation that the input name should match the repository name:
+
+1. **Rename the LHS in your `flake.nix`** so the input name matches
+   what downstream modules reference:
+
+   ```nix
+   inputs.claude-desktop-linux.url = "github:stslex/claude-desktop-linux";
+   ```
+
+2. **Or rename the reference in the downstream module** to match
+   whatever name your `flake.nix` already uses:
+
+   ```nix
+   # if flake.nix has `inputs.claude-desktop.url = ...`
+   inputs.claude-desktop.packages.${pkgs.stdenv.hostPlatform.system}.dev
+   ```
+
+After fixing the name in `flake.nix`, refresh the lock and rebuild:
+
+```sh
+rm flake.lock         # easiest — drops any stale block from the old name
+nix flake lock
+sudo nixos-rebuild switch --flake .#myhost
+```
+
+**Symptom 3 — `attribute 'dev' missing`**
+
+```
+error: attribute 'dev' missing
+   17|     inputs.claude-desktop-linux.packages.${pkgs.stdenv.hostPlatform.system}.dev
+     |     ^
+```
+
+The input now resolves correctly, but you're pinning the **`main`**
+branch of this repo and asking for the `.dev` package. As called out in
+the heads-up box on [Flake input](#flake-input) above,
+`packages.x86_64-linux.dev` and `claude-desktop-dev` currently live only
+on the `dev` branch — `main` only exposes
+`packages.x86_64-linux.default`. Two ways out:
+
+1. **Switch the input URL to the `dev` branch** if you actually want
+   the prerelease channel:
+
+   ```nix
+   inputs.claude-desktop-linux.url = "github:stslex/claude-desktop-linux/dev";
+   ```
+
+2. **Or change the downstream reference from `.dev` to `.default`** if
+   you just want stable on the `main` URL:
+
+   ```nix
+   inputs.claude-desktop-linux.packages.${pkgs.stdenv.hostPlatform.system}.default
+   ```
+
+This caveat disappears once the dev-channel changes land on `main`.
+
+After any of the three fixes, refresh the lock and rebuild:
+
+```sh
+nix flake lock --update-input claude-desktop-linux
+sudo nixos-rebuild switch --flake .#myhost
+```
+
+`nixos-rebuild switch` should then resolve the input against this
+repository and pick up `nix/stable.json` (or `nix/dev.json` if you
+pinned the `dev` branch) without further intervention.
 
 ### Cowork Service (optional — enables Cowork and Dispatch)
 
@@ -363,7 +508,7 @@ Switch the flake attribute you pull from `default` to `dev`:
 ```nix
 # configuration.nix / home.nix
 environment.systemPackages = [
-  inputs.claude-desktop.packages.${pkgs.system}.dev
+  inputs.claude-desktop-linux.packages.${pkgs.stdenv.hostPlatform.system}.dev
 ];
 ```
 
@@ -371,7 +516,7 @@ Or consume the `dev` branch of this repository directly as a flake
 input to always track the latest dev-channel metadata:
 
 ```nix
-inputs.claude-desktop.url = "github:stslex/claude-desktop-linux/dev";
+inputs.claude-desktop-linux.url = "github:stslex/claude-desktop-linux/dev";
 ```
 
 See the "NixOS / Nix" section above for `builtins.compareVersions`
