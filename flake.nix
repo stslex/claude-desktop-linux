@@ -121,15 +121,60 @@
               cups
               dbus
               expat
+              # Font stack — Chromium renders text via fontconfig →
+              # freetype. On non-Nix distros these come from the
+              # system; inside the Nix closure we have to pin them or
+              # autoPatchelfHook rewrites RPATHs to a non-existent
+              # /usr/lib/libfontconfig and fontconfig_init() fails
+              # early in renderer startup.
+              fontconfig
+              freetype
               gdk-pixbuf
               glib
               gtk3
               libdrm
+              # libglvnd ships the vendor-neutral libGL.so.1 /
+              # libEGL.so.1 / libGLESv2.so.2 loaders. Without it
+              # Chromium's GPU process can't find the system GL even
+              # when --disable-gpu isn't set, and its bundled
+              # swiftshader fallback also fails because it links
+              # against libEGL.so (which is in
+              # autoPatchelfIgnoreMissingDeps below).
+              libglvnd
+              # libnotify for desktop notifications (dbus org.freedesktop.Notifications)
+              libnotify
+              # libsecret for the OS credential-store integration
+              # Electron's safeStorage API uses. Missing it makes
+              # safeStorage fall back to plaintext on Linux, but
+              # Chromium still dlopens libsecret-1.so.0 at startup
+              # and segfaults on the bare call if the dlopen returned
+              # NULL.
+              libsecret
+              # PulseAudio runtime. Chromium weak-dlopens libpulse.so.0
+              # during audio stack init; missing it + a bad dlopen
+              # handle = segfault in webrtc/audio init.
+              libpulseaudio
               libxkbcommon
               mesa
               nspr
               nss
               pango
+              # libsystemd is what finally got us here. Electron's
+              # main process opens a DBus connection to
+              # org.freedesktop.login1 (systemd-logind) during
+              # session-tracking init — this is the VERBOSE1 DBus
+              # GetNameOwner log line that appears right before the
+              # segfault on NixOS. The binding is done through
+              # libsystemd's sd-bus helpers, which Chromium dlopens
+              # as libsystemd.so.0. Without systemd in buildInputs
+              # autoPatchelfHook can't rewrite the RPATH, the dlopen
+              # silently returns NULL, and the first sd_bus_* call
+              # dereferences it → SIGSEGV with no log line after the
+              # DBus call. Pinning systemd makes libsystemd.so.0
+              # resolvable via the patched RPATH and (belt +
+              # suspenders) via the extended LD_LIBRARY_PATH in the
+              # launcher wrapper below.
+              systemd
               xorg.libX11
               xorg.libXcomposite
               xorg.libXdamage
@@ -198,10 +243,41 @@
               #                      resolves if the symlinked candidate above
               #                      is ever invalidated by a future refactor.
               #   - LD_LIBRARY_PATH → bundled Electron's private .so files
+              #                      PLUS the system libs Chromium dlopens
+              #                      at runtime (systemd/libsystemd for
+              #                      logind DBus, libglvnd for libGL.so.1,
+              #                      libsecret for safeStorage, libpulseaudio
+              #                      for audio, libnotify for desktop
+              #                      notifications, fontconfig/freetype for
+              #                      text rendering).
+              #
+              #                      autoPatchelfHook already rewrites RPATH
+              #                      on the main electron binary and its
+              #                      sibling .so files so that DT_NEEDED
+              #                      links resolve. But dlopen()'d libs that
+              #                      aren't DT_NEEDED only fall back to
+              #                      LD_LIBRARY_PATH + the system default
+              #                      search path, and on NixOS the system
+              #                      default is not useful. Prefixing
+              #                      LD_LIBRARY_PATH here catches those —
+              #                      specifically libsystemd.so.0, which
+              #                      Chromium dlopens for the sd-bus binding
+              #                      against org.freedesktop.login1 during
+              #                      main-process init and which segfaults
+              #                      with NULL handle on missing dlopen.
               wrapProgram $out/bin/claude-desktop \
                 --prefix PATH            : "${lib.makeBinPath [ pkgs.xdg-utils pkgs.bubblewrap ]}" \
                 --prefix PATH            : "$out/lib/electron" \
-                --prefix LD_LIBRARY_PATH : "$out/lib/electron"
+                --prefix LD_LIBRARY_PATH : "$out/lib/electron" \
+                --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath (with pkgs; [
+                  systemd
+                  libglvnd
+                  libsecret
+                  libpulseaudio
+                  libnotify
+                  fontconfig
+                  freetype
+                ])}"
 
               runHook postInstall
             '';
