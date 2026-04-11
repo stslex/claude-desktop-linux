@@ -265,6 +265,71 @@
               #                      against org.freedesktop.login1 during
               #                      main-process init and which segfaults
               #                      with NULL handle on missing dlopen.
+              #
+              #   --add-flags      → V8 `--no-memory-protection-keys`.
+              #                      Confirmed root cause of a SIGSEGV that
+              #                      reproduces on NixOS 6.18.21 with every
+              #                      Nix-built version of Electron 40.8.5 /
+              #                      Chromium 144 (including the known-good
+              #                      stable upstream tarball from
+              #                      v1.569.0-repack-6 that ships via RPM on
+              #                      Fedora without issue).
+              #
+              #                      Symptom observed via strace:
+              #                        --- SIGSEGV {si_code=SEGV_ACCERR,
+              #                                      si_addr=0xbdc00c03fff} ---
+              #                      in the main thread, within the V8
+              #                      pointer-cage virtual address range,
+              #                      immediately after the main process
+              #                      opens app.asar.
+              #
+              #                      Root cause: V8 14 uses Intel Memory
+              #                      Protection Keys (PKU / pkey_mprotect)
+              #                      by default to protect its JIT code
+              #                      pages — it marks code pages with one
+              #                      protection key for execute and another
+              #                      for write, then flips the thread's
+              #                      active key via the `WRPKRU` instruction
+              #                      around JIT compilation and dispatch.
+              #                      On NixOS 6.18 this path takes a SEGV
+              #                      on the first access into the JIT
+              #                      region; the kernel surfaces it as
+              #                      SEGV_ACCERR rather than the newer
+              #                      SEGV_PKUERR si_code, which is why the
+              #                      address looked like a regular RWX
+              #                      violation.
+              #
+              #                      `--no-memory-protection-keys` tells V8
+              #                      to skip the PKU protection path
+              #                      entirely and fall back to a simpler
+              #                      code-cage management strategy that
+              #                      does not rely on `WRPKRU`.  JIT stays
+              #                      enabled — no interpreter-only
+              #                      fallback, no runtime performance cost
+              #                      vs. the much slower `--jitless`
+              #                      alternative.  The flag is a stable
+              #                      long-standing V8 flag, confirmed
+              #                      present in this Electron embed via
+              #                      `electron --v8-options | grep
+              #                      memory-protection-keys`:
+              #                        --memory-protection-keys
+              #                          (protect code memory with PKU
+              #                          if available)
+              #                          type: bool
+              #                          default: --memory-protection-keys
+              #
+              #                      Confirmed working via a 20-second
+              #                      --no-sandbox --js-flags run of the
+              #                      bundled electron against the packaged
+              #                      app.asar: with the flag the main
+              #                      process survives past the SEGV point
+              #                      and reaches steady-state with the
+              #                      full Chromium thread set up
+              #                      (electron, sandbox_ipc_thr,
+              #                      Chrome_IOThread, V8Worker x4,
+              #                      ThreadPool{Service,Foreground,Single},
+              #                      DelayedTaskSche, MemoryInfra,
+              #                      SignalInspector, PerfettoTrace).
               wrapProgram $out/bin/claude-desktop \
                 --prefix PATH            : "${lib.makeBinPath [ pkgs.xdg-utils pkgs.bubblewrap ]}" \
                 --prefix PATH            : "$out/lib/electron" \
@@ -277,7 +342,8 @@
                   libnotify
                   fontconfig
                   freetype
-                ])}"
+                ])}" \
+                --add-flags "--js-flags=--no-memory-protection-keys"
 
               runHook postInstall
             '';
