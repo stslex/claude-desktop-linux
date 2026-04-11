@@ -140,9 +140,28 @@
             # belt-and-suspenders measure for Electron's dlopen'd helpers.
             dontUnpack = true;
             dontBuild = true;
+            dontConfigure = true;
+            dontPatch = true;
+
+            # `dontUnpack = true` leaves `sourceRoot` unset, so stdenv's
+            # `cd -- "${sourceRoot:-.}"` after unpackPhase defaults to the
+            # builder's top-level tmpdir. Set it explicitly so downstream
+            # phases don't trip over a non-existent directory.
+            sourceRoot = ".";
 
             installPhase = ''
               runHook preInstall
+
+              # --- DIAG: capture the builder environment on failure ----
+              # Everything from here until `set +x` gets logged verbatim
+              # by nix-build's builder, so the failing command is obvious
+              # in --print-build-logs output.
+              set -x
+
+              echo "DIAG: src=$src"
+              echo "DIAG: pwd=$(pwd)"
+              ls -la "$src" || echo "DIAG: src does not exist as expected"
+              file "$src" 2>/dev/null || true
 
               mkdir -p $out
               tar -xzf $src -C $out
@@ -176,6 +195,7 @@
                 --prefix PATH            : "$out/lib/electron" \
                 --prefix LD_LIBRARY_PATH : "$out/lib/electron"
 
+              set +x
               runHook postInstall
             '';
 
@@ -215,6 +235,13 @@
 
         # Computed at eval time — must be -1 for the check to pass.
         devVsStable = builtins.compareVersions devMeta.version stableMeta.version;
+
+        # Debug visibility into which source path the derivation takes.
+        # Resolved at eval time against the flake source tree, so its
+        # value is a useful diagnostic when CI has supposedly populated
+        # the in-tree tarball but `nix build` still fails.
+        localTarballExists = channel:
+          builtins.pathExists (./nix/tarballs + "/${channel}.tar.gz");
       in
       {
         packages = {
@@ -239,6 +266,16 @@
               echo "  builtins.compareVersions returned ${toString devVsStable}, expected -1" >&2
               exit 1
             fi
+            echo OK > $out
+          '';
+
+          # Diagnostic: surfaces whether CI successfully dropped the local
+          # tarball into the flake tree. This never fails — it just logs.
+          # Read via `nix flake check --show-trace` output or by evaluating
+          # `nix eval .#__debug-local-tarball` directly.
+          debug-local-tarball = pkgs.runCommand "debug-local-tarball" { } ''
+            echo "stable useLocalTarball = ${if localTarballExists "stable" then "true" else "false"}"
+            echo "dev    useLocalTarball = ${if localTarballExists "dev"    then "true" else "false"}"
             echo OK > $out
           '';
         };
