@@ -426,20 +426,6 @@ jobs:
           cat nix/dev.json
           ls -la nix/tarballs/
 
-      - name: Diagnose flake source state
-        run: |
-          set -euo pipefail
-          echo "---- git log (HEAD) ----"
-          git log --oneline -5 || true
-          echo "---- git status ----"
-          git status || true
-          echo "---- tracked files in nix/tarballs ----"
-          git ls-files nix/tarballs/ || true
-          echo "---- nix/tarballs contents ----"
-          ls -la nix/tarballs/ || true
-          echo "---- nix/*.json ----"
-          ls -la nix/*.json || true
-
       - name: nix flake check
         run: |
           set -euo pipefail
@@ -447,12 +433,6 @@ jobs:
           # the repo does not ship a committed flake.lock. Subsequent
           # commands in this job reuse the lock written here.
           nix flake check --show-trace 2>&1 | tee /tmp/nix-flake-check.log
-          echo "---- debug-local-tarball check output ----"
-          # Force-realize the debug check so its echo output is printed;
-          # nix flake check may skip building checks that already exist.
-          nix build --print-build-logs --no-link .#checks.x86_64-linux.debug-local-tarball 2>&1 | tee /tmp/nix-debug-local-tarball.log || true
-          echo "---- final flake check state ----"
-          tail -30 /tmp/nix-debug-local-tarball.log || true
 
       - name: Verify dev version sorts lower than stable (rpm --compare analogue)
         run: |
@@ -475,29 +455,20 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Capture stdout+stderr in /tmp/nix-build.log so the "Upload
+          # Nix diagnostic logs" step preserves it for post-mortem on
+          # failure, AND so we can emit the tail of the log as workflow
+          # annotations — useful when the raw run logs aren't accessible
+          # via the check-runs API (which is the normal case for
+          # non-admin consumers of the PR).
           LOG=/tmp/nix-build.log
-          : > "$LOG"
-
-          # --- Eval diagnostics before build ------------------------------
-          echo "---- derivation metadata ----"
-          nix eval --raw ".#${ATTR}.pname"    || echo "pname eval failed"
-          nix eval --raw ".#${ATTR}.version"  || echo "version eval failed"
-          nix eval --raw ".#${ATTR}.drvPath"  || echo "drvPath eval failed"
-
-          # --- Build, capturing stdout+stderr ----------------------------
-          # PIPESTATUS[0] captures nix build's real exit code through tee.
           set +e
-          nix build --print-build-logs --no-link ".#${ATTR}" 2>&1 | tee -a "$LOG"
+          nix build --print-build-logs --no-link ".#${ATTR}" 2>&1 | tee "$LOG"
           RC=${PIPESTATUS[0]}
           set -e
 
           if [ "$RC" -ne 0 ]; then
             echo "::error::nix build .#${ATTR} failed with exit code $RC"
-            echo "---- tail of build log (as annotations) ----"
-            # Emit each line of the tail as an error annotation so the
-            # check-runs API surfaces them even without workflow-log
-            # read access. Strip `::` from user content to avoid
-            # breaking the annotation parser.
             tail -n 120 "$LOG" | while IFS= read -r line; do
               clean="${line//::/__}"
               echo "::error::nix-build: ${clean}"
@@ -637,7 +608,6 @@ jobs:
           path: |
             /tmp/nix-build.log
             /tmp/nix-flake-check.log
-            /tmp/nix-debug-local-tarball.log
           retention-days: 7
           if-no-files-found: warn
 
