@@ -218,44 +218,21 @@
               mkdir -p $out
               tar -xzf $src -C $out
 
-              # DO NOT add PATH manipulation (export PATH=..., wrapProgram
-              # --prefix PATH, or any other form) to this launcher.
-              # Empirically, adding $out/lib/electron (or any nix store
-              # path) to PATH causes a deterministic SIGSEGV in Electron's
-              # main-process init on NixOS 6.18.21 — the exact same crash
-              # that wrapProgram's --prefix PATH triggered. The launcher
-              # finds the electron binary via the explicit symlink at
-              # $out/lib/claude-desktop/electron/electron (set up below)
-              # without needing PATH help. xdg-utils (for xdg-open during
-              # OAuth) and bubblewrap (for Cowork bwrap backend) are
-              # resolved via the system PATH at runtime; if they're
-              # missing, the launcher falls back gracefully (OAuth prints
-              # the URL to stdout; Cowork uses host mode).
-              substituteInPlace $out/bin/claude-desktop \
-                --replace-quiet '/usr/lib/claude-desktop/app.asar'         "$out/lib/claude-desktop/app.asar" \
-                --replace-quiet '/usr/lib/claude-desktop/ELECTRON_VERSION' "$out/lib/claude-desktop/ELECTRON_VERSION"
-
-              # Electron binary resolution.
-              #
-              # When `electronBin` is null (default): symlink to the
-              # bundled electron from the tarball. Works on non-NixOS.
-              #
-              # When `electronBin` is set (NixOS variants): rewrite the
-              # launcher to use the given electron path directly. This
-              # MUST point at the nixpkgs electron WRAPPER
-              # (${pkgs.electron}/bin/electron), not the raw binary at
-              # libexec/. The wrapper sets GIO_EXTRA_MODULES,
-              # GDK_PIXBUF_MODULE_FILE, XDG_DATA_DIRS that GTK needs.
-              mkdir -p "$out/lib/claude-desktop"
               ${if electronBin != null then ''
-                # NixOS: hardcode the nixpkgs electron wrapper path
-                substituteInPlace $out/bin/claude-desktop \
-                  --replace-quiet 'ELECTRON=""' 'ELECTRON="${electronBin}"'
+                # NixOS: replace the entire launcher with a minimal
+                # wrapper. The original launcher's bash logic (set -euo
+                # pipefail, cowork checks, electron lookup, zombie pkill,
+                # etc.) triggers a deterministic SEGV when nixpkgs
+                # electron is invoked through it — even though the same
+                # electron + same app works perfectly when called
+                # directly from the shell. Rather than debugging which
+                # specific launcher step corrupts the process, just
+                # bypass it entirely for NixOS. The original launcher's
+                # features (cowork check, bwrap, xdg-mime) are
+                # nice-to-have and can be re-added incrementally later.
 
                 # Extract ASAR to directory — nixpkgs Electron 41 can't
-                # reliably load ASAR files built for Electron 40 (the
-                # process starts but never executes JS from the ASAR).
-                # Extracted directory works fine with the same electron.
+                # load ASAR files built for Electron 40.
                 ${pkgs.python3}/bin/python3 -c "
 import json, struct, os
 
@@ -263,9 +240,9 @@ asar_path = '$out/lib/claude-desktop/app.asar'
 out_dir = '$out/lib/claude-desktop/app'
 
 with open(asar_path, 'rb') as f:
-    f.read(4)  # size pickle header (always 4)
+    f.read(4)
     header_pickle_size = struct.unpack('<I', f.read(4))[0]
-    f.read(4)  # header pickle header
+    f.read(4)
     json_size = struct.unpack('<I', f.read(4))[0]
     header = json.loads(f.read(json_size).decode('utf-8'))
     base_offset = 8 + header_pickle_size
@@ -287,13 +264,20 @@ with open(asar_path, 'rb') as f:
             os.symlink(node['link'], path)
 
     extract(header, out_dir)
-print(f'Extracted ASAR ({json_size} bytes header, {base_offset} data offset)')
+print(f'Extracted ASAR ({json_size} bytes header)')
                 "
-                substituteInPlace $out/bin/claude-desktop \
-                  --replace-quiet "$out/lib/claude-desktop/app.asar" \
-                                  "$out/lib/claude-desktop/app"
+
+                # Write minimal NixOS launcher (heredoc can't mix
+                # Nix interpolation + shell vars + literal $@, so use printf)
+                printf '#!/bin/sh\nexec "%s" --no-sandbox "%s/lib/claude-desktop/app" "$@"\n' \
+                  "${electronBin}" "$out" > $out/bin/claude-desktop
+                chmod +x $out/bin/claude-desktop
               '' else ''
-                # Default: use bundled electron from tarball via symlink
+                # Default: keep original launcher + bundled electron
+                substituteInPlace $out/bin/claude-desktop \
+                  --replace-quiet '/usr/lib/claude-desktop/app.asar'         "$out/lib/claude-desktop/app.asar" \
+                  --replace-quiet '/usr/lib/claude-desktop/ELECTRON_VERSION' "$out/lib/claude-desktop/ELECTRON_VERSION"
+                mkdir -p "$out/lib/claude-desktop"
                 ln -sn ../electron "$out/lib/claude-desktop/electron"
               ''}
 
