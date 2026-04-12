@@ -233,20 +233,26 @@
               # the URL to stdout; Cowork uses host mode).
               substituteInPlace $out/bin/claude-desktop \
                 --replace-quiet '/usr/lib/claude-desktop/app.asar'         "$out/lib/claude-desktop/app.asar" \
-                --replace-quiet '/usr/lib/claude-desktop/ELECTRON_VERSION' "$out/lib/claude-desktop/ELECTRON_VERSION" \
-                --replace-fail \
-                  'exec "$ELECTRON" --no-sandbox "$ASAR" "$@"' \
-                  'exec "$ELECTRON" --no-sandbox --no-zygote --js-flags=--no-memory-protection-keys "$ASAR" "$@"'
+                --replace-quiet '/usr/lib/claude-desktop/ELECTRON_VERSION' "$out/lib/claude-desktop/ELECTRON_VERSION"
 
+              # Use nixpkgs' Electron instead of the bundled one from the
+              # macOS-extracted tarball. The bundled Electron 40.8.5 hangs
+              # and SEGVs on NixOS 6.18+ due to V8 PKU / memfd / PATH
+              # interactions that don't affect a properly-built nixpkgs
+              # Electron. Signal Desktop (which uses nixpkgs' Electron)
+              # opens normally on the same NixOS host. This is the correct
+              # fix — all previous workarounds (--no-memory-protection-keys,
+              # --no-zygote, wrapProgram removal, PATH removal) were
+              # treating symptoms of using a broken bundled binary.
+              #
               # The launcher's first electron-lookup candidate is
-              # `$(dirname "$ASAR")/electron/electron`. After substitution
-              # that points at $out/lib/claude-desktop/electron/electron,
-              # which doesn't exist — the bundled electron lives at
-              # $out/lib/electron/electron. Create a relative symlink so
-              # the first candidate resolves without having to substitute
-              # the /usr/lib/electron fallbacks in the launcher script.
+              # `$(dirname "$ASAR")/electron/electron`, which after
+              # substituteInPlace points at
+              # $out/lib/claude-desktop/electron/electron. We symlink
+              # $out/lib/claude-desktop/electron → nixpkgs electron's lib
+              # directory so the candidate resolves to the system electron.
               mkdir -p "$out/lib/claude-desktop"
-              ln -sn ../electron "$out/lib/claude-desktop/electron"
+              ln -sn "${pkgs.electron}/lib/electron" "$out/lib/claude-desktop/electron"
 
               runHook postInstall
             '';
