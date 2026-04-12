@@ -91,7 +91,7 @@
         #   2. Otherwise, fall back to `pkgs.fetchurl` against the channel
         #      metadata JSON — the production code path.
         # ---------------------------------------------------------------------
-        mkClaudeDesktop = { channel, version, url, sha256 }:
+        mkClaudeDesktop = { channel, version, url, sha256, electronPath ? "../electron" }:
           let
             localTarball = ./nix/tarballs + "/${channel}.tar.gz";
             useLocalTarball = builtins.pathExists localTarball;
@@ -235,24 +235,22 @@
                 --replace-quiet '/usr/lib/claude-desktop/app.asar'         "$out/lib/claude-desktop/app.asar" \
                 --replace-quiet '/usr/lib/claude-desktop/ELECTRON_VERSION' "$out/lib/claude-desktop/ELECTRON_VERSION"
 
-              # Use nixpkgs' Electron instead of the bundled one from the
-              # macOS-extracted tarball. The bundled Electron 40.8.5 hangs
-              # and SEGVs on NixOS 6.18+ due to V8 PKU / memfd / PATH
-              # interactions that don't affect a properly-built nixpkgs
-              # Electron. Signal Desktop (which uses nixpkgs' Electron)
-              # opens normally on the same NixOS host. This is the correct
-              # fix — all previous workarounds (--no-memory-protection-keys,
-              # --no-zygote, wrapProgram removal, PATH removal) were
-              # treating symptoms of using a broken bundled binary.
-              #
               # The launcher's first electron-lookup candidate is
-              # `$(dirname "$ASAR")/electron/electron`, which after
-              # substituteInPlace points at
-              # $out/lib/claude-desktop/electron/electron. We symlink
-              # $out/lib/claude-desktop/electron → nixpkgs electron's lib
-              # directory so the candidate resolves to the system electron.
+              # `$(dirname "$ASAR")/electron/electron`. After
+              # substituteInPlace that points at
+              # $out/lib/claude-desktop/electron/electron. We create a
+              # symlink so the candidate resolves.
+              #
+              # `electronPath` controls what we symlink to:
+              # - Default: "../electron" (bundled electron from tarball)
+              # - NixOS:   "${pkgs.electron}/lib/electron" (nixpkgs-built)
+              #
+              # The bundled electron SEGVs on NixOS 6.18+ due to V8 PKU
+              # issues. nixpkgs' electron (used by Signal Desktop, etc.)
+              # works fine. NixOS users should use the `nixos` / `nixos-dev`
+              # package variants which pass the nixpkgs electron path.
               mkdir -p "$out/lib/claude-desktop"
-              ln -sn "${pkgs.electron}/lib/electron" "$out/lib/claude-desktop/electron"
+              ln -sn "${electronPath}" "$out/lib/claude-desktop/electron"
 
               runHook postInstall
             '';
@@ -281,6 +279,8 @@
             };
           };
 
+        # Default variants — bundled electron (works on Fedora/Debian/Arch,
+        # passes CI smoke test on ubuntu-latest).
         stable = mkClaudeDesktop {
           channel = "stable";
           inherit (stableMeta) version url sha256;
@@ -289,6 +289,23 @@
         dev = mkClaudeDesktop {
           channel = "dev";
           inherit (devMeta) version url sha256;
+        };
+
+        # NixOS variants — use nixpkgs' electron instead of bundled one.
+        # The bundled electron (extracted from macOS DMG, patched via
+        # autoPatchelfHook) SEGVs on NixOS 6.18+ due to V8 PKU issues.
+        # nixpkgs' electron is compiled from source for NixOS and works
+        # correctly (Signal Desktop uses it without issues).
+        stable-nixos = mkClaudeDesktop {
+          channel = "stable";
+          inherit (stableMeta) version url sha256;
+          electronPath = "${pkgs.electron}/lib/electron";
+        };
+
+        dev-nixos = mkClaudeDesktop {
+          channel = "dev";
+          inherit (devMeta) version url sha256;
+          electronPath = "${pkgs.electron}/lib/electron";
         };
 
         # Computed at eval time — must be -1 for the check to pass.
@@ -300,6 +317,10 @@
           claude-desktop = stable;
           dev = dev;
           claude-desktop-dev = dev;
+          # NixOS users: use these instead — bundled electron doesn't
+          # work on NixOS 6.18+ (SEGV in V8 PKU init).
+          nixos = stable-nixos;
+          nixos-dev = dev-nixos;
         };
 
         # Consumed by `nix flake check`.
