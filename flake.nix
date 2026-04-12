@@ -245,7 +245,7 @@
                 --replace-quiet '/usr/lib/claude-desktop/ELECTRON_VERSION' "$out/lib/claude-desktop/ELECTRON_VERSION" \
                 --replace-fail \
                   'exec "$ELECTRON" --no-sandbox "$ASAR" "$@"' \
-                  'exec "$ELECTRON" --no-sandbox --js-flags=--no-memory-protection-keys "$ASAR" "$@"' \
+                  'exec "$ELECTRON" --no-sandbox --no-zygote --js-flags=--no-memory-protection-keys "$ASAR" "$@"' \
                 --replace-fail \
                   'set -euo pipefail' \
                   "set -euo pipefail
