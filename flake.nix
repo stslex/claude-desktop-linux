@@ -91,7 +91,7 @@
         #   2. Otherwise, fall back to `pkgs.fetchurl` against the channel
         #      metadata JSON — the production code path.
         # ---------------------------------------------------------------------
-        mkClaudeDesktop = { channel, version, url, sha256 }:
+        mkClaudeDesktop = { channel, version, url, sha256, electronPath ? "../electron" }:
           let
             localTarball = ./nix/tarballs + "/${channel}.tar.gz";
             useLocalTarball = builtins.pathExists localTarball;
@@ -233,20 +233,24 @@
               # the URL to stdout; Cowork uses host mode).
               substituteInPlace $out/bin/claude-desktop \
                 --replace-quiet '/usr/lib/claude-desktop/app.asar'         "$out/lib/claude-desktop/app.asar" \
-                --replace-quiet '/usr/lib/claude-desktop/ELECTRON_VERSION' "$out/lib/claude-desktop/ELECTRON_VERSION" \
-                --replace-fail \
-                  'exec "$ELECTRON" --no-sandbox "$ASAR" "$@"' \
-                  'exec "$ELECTRON" --no-sandbox --no-zygote --js-flags=--no-memory-protection-keys "$ASAR" "$@"'
+                --replace-quiet '/usr/lib/claude-desktop/ELECTRON_VERSION' "$out/lib/claude-desktop/ELECTRON_VERSION"
 
               # The launcher's first electron-lookup candidate is
-              # `$(dirname "$ASAR")/electron/electron`. After substitution
-              # that points at $out/lib/claude-desktop/electron/electron,
-              # which doesn't exist — the bundled electron lives at
-              # $out/lib/electron/electron. Create a relative symlink so
-              # the first candidate resolves without having to substitute
-              # the /usr/lib/electron fallbacks in the launcher script.
+              # `$(dirname "$ASAR")/electron/electron`. After
+              # substituteInPlace that points at
+              # $out/lib/claude-desktop/electron/electron. We create a
+              # symlink so the candidate resolves.
+              #
+              # `electronPath` controls what we symlink to:
+              # - Default: "../electron" (bundled electron from tarball)
+              # - NixOS:   "${pkgs.electron}/lib/electron" (nixpkgs-built)
+              #
+              # The bundled electron SEGVs on NixOS 6.18+ due to V8 PKU
+              # issues. nixpkgs' electron (used by Signal Desktop, etc.)
+              # works fine. NixOS users should use the `nixos` / `nixos-dev`
+              # package variants which pass the nixpkgs electron path.
               mkdir -p "$out/lib/claude-desktop"
-              ln -sn ../electron "$out/lib/claude-desktop/electron"
+              ln -sn "${electronPath}" "$out/lib/claude-desktop/electron"
 
               runHook postInstall
             '';
@@ -275,6 +279,8 @@
             };
           };
 
+        # Default variants — bundled electron (works on Fedora/Debian/Arch,
+        # passes CI smoke test on ubuntu-latest).
         stable = mkClaudeDesktop {
           channel = "stable";
           inherit (stableMeta) version url sha256;
@@ -283,6 +289,23 @@
         dev = mkClaudeDesktop {
           channel = "dev";
           inherit (devMeta) version url sha256;
+        };
+
+        # NixOS variants — use nixpkgs' electron instead of bundled one.
+        # The bundled electron (extracted from macOS DMG, patched via
+        # autoPatchelfHook) SEGVs on NixOS 6.18+ due to V8 PKU issues.
+        # nixpkgs' electron is compiled from source for NixOS and works
+        # correctly (Signal Desktop uses it without issues).
+        stable-nixos = mkClaudeDesktop {
+          channel = "stable";
+          inherit (stableMeta) version url sha256;
+          electronPath = "${pkgs.electron}/lib/electron";
+        };
+
+        dev-nixos = mkClaudeDesktop {
+          channel = "dev";
+          inherit (devMeta) version url sha256;
+          electronPath = "${pkgs.electron}/lib/electron";
         };
 
         # Computed at eval time — must be -1 for the check to pass.
@@ -294,6 +317,10 @@
           claude-desktop = stable;
           dev = dev;
           claude-desktop-dev = dev;
+          # NixOS users: use these instead — bundled electron doesn't
+          # work on NixOS 6.18+ (SEGV in V8 PKU init).
+          nixos = stable-nixos;
+          nixos-dev = dev-nixos;
         };
 
         # Consumed by `nix flake check`.
