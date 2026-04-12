@@ -248,8 +248,8 @@
                   'exec "$ELECTRON" --no-sandbox --js-flags=--no-memory-protection-keys "$ASAR" "$@"' \
                 --replace-fail \
                   'set -euo pipefail' \
-                  'set -euo pipefail
-export PATH="${lib.makeBinPath [ pkgs.xdg-utils pkgs.bubblewrap ]}:$out/lib/electron:$PATH"'
+                  "set -euo pipefail
+export PATH=\"${lib.makeBinPath [ pkgs.xdg-utils pkgs.bubblewrap ]}:$out/lib/electron:\$PATH\""
 
               # The launcher's first electron-lookup candidate is
               # `$(dirname "$ASAR")/electron/electron`. After substitution
