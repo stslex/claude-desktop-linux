@@ -218,38 +218,25 @@
               mkdir -p $out
               tar -xzf $src -C $out
 
-              # Inject runtime PATH for xdg-utils (OAuth deep-link), bubblewrap
-              # (Cowork bwrap backend), and the bundled electron (fallback for
-              # `command -v electron` in the launcher) directly into the
-              # launcher script via substituteInPlace. The export line is
-              # inserted at the top of the launcher, right after `set -euo
-              # pipefail`.
-              #
-              # DO NOT USE wrapProgram HERE. makeWrapper's generated bash
-              # wrapper (`#!/nix/store/.../bash -e` + PATH manipulation +
-              # `exec -a "$0"`) was empirically correlated with a guaranteed
-              # SIGSEGV at Chromium main-process init on NixOS 6.18.21 — even
-              # with only `--prefix PATH` and no `--prefix LD_LIBRARY_PATH`,
-              # the crash reproduces deterministically through the wrapper but
-              # NOT when invoking `$out/bin/.claude-desktop-wrapped` directly
-              # (which runs the same electron binary from the same store path
-              # with the same RPATH, the same `--js-flags`, and the same
-              # `$ASAR` argument). The exact mechanism is unknown — possibly
-              # makeWrapper's `exec -a "$0"` or its `bash -e` shebang changes
-              # process attributes that Chromium's sandbox init inspects — but
-              # the A/B is unambiguous. Embedding the PATH export into the
-              # launcher itself avoids the wrapper layer entirely and lets
-              # electron start without interference.
+              # DO NOT add PATH manipulation (export PATH=..., wrapProgram
+              # --prefix PATH, or any other form) to this launcher.
+              # Empirically, adding $out/lib/electron (or any nix store
+              # path) to PATH causes a deterministic SIGSEGV in Electron's
+              # main-process init on NixOS 6.18.21 — the exact same crash
+              # that wrapProgram's --prefix PATH triggered. The launcher
+              # finds the electron binary via the explicit symlink at
+              # $out/lib/claude-desktop/electron/electron (set up below)
+              # without needing PATH help. xdg-utils (for xdg-open during
+              # OAuth) and bubblewrap (for Cowork bwrap backend) are
+              # resolved via the system PATH at runtime; if they're
+              # missing, the launcher falls back gracefully (OAuth prints
+              # the URL to stdout; Cowork uses host mode).
               substituteInPlace $out/bin/claude-desktop \
                 --replace-quiet '/usr/lib/claude-desktop/app.asar'         "$out/lib/claude-desktop/app.asar" \
                 --replace-quiet '/usr/lib/claude-desktop/ELECTRON_VERSION' "$out/lib/claude-desktop/ELECTRON_VERSION" \
                 --replace-fail \
                   'exec "$ELECTRON" --no-sandbox "$ASAR" "$@"' \
-                  'exec "$ELECTRON" --no-sandbox --no-zygote --js-flags=--no-memory-protection-keys "$ASAR" "$@"' \
-                --replace-fail \
-                  'set -euo pipefail' \
-                  "set -euo pipefail
-export PATH=\"${lib.makeBinPath [ pkgs.xdg-utils pkgs.bubblewrap ]}:$out/lib/electron:\$PATH\""
+                  'exec "$ELECTRON" --no-sandbox --no-zygote --js-flags=--no-memory-protection-keys "$ASAR" "$@"'
 
               # The launcher's first electron-lookup candidate is
               # `$(dirname "$ASAR")/electron/electron`. After substitution
