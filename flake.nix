@@ -249,10 +249,50 @@
               mkdir -p "$out/lib/claude-desktop"
               ${if electronBin != null then ''
                 # NixOS: hardcode the nixpkgs electron wrapper path
-                # directly into the launcher, bypassing the for-loop
-                # candidate search entirely.
                 substituteInPlace $out/bin/claude-desktop \
                   --replace-quiet 'ELECTRON=""' 'ELECTRON="${electronBin}"'
+
+                # Extract ASAR to directory — nixpkgs Electron 41 can't
+                # reliably load ASAR files built for Electron 40 (the
+                # process starts but never executes JS from the ASAR).
+                # Extracted directory works fine with the same electron.
+                ${pkgs.python3}/bin/python3 -c "
+import json, struct, os, sys
+
+asar_path = '$out/lib/claude-desktop/app.asar'
+out_dir = '$out/lib/claude-desktop/app'
+
+with open(asar_path, 'rb') as f:
+    f.read(4)  # pickle size
+    header_size = struct.unpack('<I', f.read(4))[0]
+    header_json_size = struct.unpack('<I', f.read(4))[0]
+    f.read(4)  # padding
+    header = json.loads(f.read(header_json_size).decode('utf-8'))
+    base_offset = 16 + header_size
+
+    def extract(node, path):
+        if 'files' in node:
+            os.makedirs(path, exist_ok=True)
+            for name, child in node['files'].items():
+                extract(child, os.path.join(path, name))
+        elif 'offset' in node:
+            offset = int(node['offset']) + base_offset
+            size = int(node['size'])
+            f.seek(offset)
+            data = f.read(size)
+            with open(path, 'wb') as out:
+                out.write(data)
+            if node.get('executable'):
+                os.chmod(path, 0o755)
+        elif 'link' in node:
+            os.symlink(node['link'], path)
+
+    extract(header, out_dir)
+print(f'Extracted ASAR to {out_dir}')
+                "
+                substituteInPlace $out/bin/claude-desktop \
+                  --replace-quiet "$out/lib/claude-desktop/app.asar" \
+                                  "$out/lib/claude-desktop/app"
               '' else ''
                 # Default: use bundled electron from tarball via symlink
                 ln -sn ../electron "$out/lib/claude-desktop/electron"
