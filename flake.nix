@@ -91,7 +91,7 @@
         #   2. Otherwise, fall back to `pkgs.fetchurl` against the channel
         #      metadata JSON — the production code path.
         # ---------------------------------------------------------------------
-        mkClaudeDesktop = { channel, version, url, sha256, electronPath ? "../electron" }:
+        mkClaudeDesktop = { channel, version, url, sha256, electronBin ? null }:
           let
             localTarball = ./nix/tarballs + "/${channel}.tar.gz";
             useLocalTarball = builtins.pathExists localTarball;
@@ -235,22 +235,28 @@
                 --replace-quiet '/usr/lib/claude-desktop/app.asar'         "$out/lib/claude-desktop/app.asar" \
                 --replace-quiet '/usr/lib/claude-desktop/ELECTRON_VERSION' "$out/lib/claude-desktop/ELECTRON_VERSION"
 
-              # The launcher's first electron-lookup candidate is
-              # `$(dirname "$ASAR")/electron/electron`. After
-              # substituteInPlace that points at
-              # $out/lib/claude-desktop/electron/electron. We create a
-              # symlink so the candidate resolves.
+              # Electron binary resolution.
               #
-              # `electronPath` controls what we symlink to:
-              # - Default: "../electron" (bundled electron from tarball)
-              # - NixOS:   "${pkgs.electron}/lib/electron" (nixpkgs-built)
+              # When `electronBin` is null (default): symlink to the
+              # bundled electron from the tarball. Works on non-NixOS.
               #
-              # The bundled electron SEGVs on NixOS 6.18+ due to V8 PKU
-              # issues. nixpkgs' electron (used by Signal Desktop, etc.)
-              # works fine. NixOS users should use the `nixos` / `nixos-dev`
-              # package variants which pass the nixpkgs electron path.
+              # When `electronBin` is set (NixOS variants): rewrite the
+              # launcher to use the given electron path directly. This
+              # MUST point at the nixpkgs electron WRAPPER
+              # (${pkgs.electron}/bin/electron), not the raw binary at
+              # libexec/. The wrapper sets GIO_EXTRA_MODULES,
+              # GDK_PIXBUF_MODULE_FILE, XDG_DATA_DIRS that GTK needs.
               mkdir -p "$out/lib/claude-desktop"
-              ln -sn "${electronPath}" "$out/lib/claude-desktop/electron"
+              ${if electronBin != null then ''
+                # NixOS: hardcode the nixpkgs electron wrapper path
+                # directly into the launcher, bypassing the for-loop
+                # candidate search entirely.
+                substituteInPlace $out/bin/claude-desktop \
+                  --replace-quiet 'ELECTRON=""' 'ELECTRON="${electronBin}"'
+              '' else ''
+                # Default: use bundled electron from tarball via symlink
+                ln -sn ../electron "$out/lib/claude-desktop/electron"
+              ''}
 
               runHook postInstall
             '';
@@ -299,13 +305,13 @@
         stable-nixos = mkClaudeDesktop {
           channel = "stable";
           inherit (stableMeta) version url sha256;
-          electronPath = "${pkgs.electron}/libexec/electron";
+          electronBin = "${pkgs.electron}/bin/electron";
         };
 
         dev-nixos = mkClaudeDesktop {
           channel = "dev";
           inherit (devMeta) version url sha256;
-          electronPath = "${pkgs.electron}/libexec/electron";
+          electronBin = "${pkgs.electron}/bin/electron";
         };
 
         # Computed at eval time — must be -1 for the check to pass.
