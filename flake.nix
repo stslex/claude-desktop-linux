@@ -257,18 +257,18 @@
                 # process starts but never executes JS from the ASAR).
                 # Extracted directory works fine with the same electron.
                 ${pkgs.python3}/bin/python3 -c "
-import json, struct, os, sys
+import json, struct, os
 
 asar_path = '$out/lib/claude-desktop/app.asar'
 out_dir = '$out/lib/claude-desktop/app'
 
 with open(asar_path, 'rb') as f:
-    f.read(4)  # pickle size
-    header_size = struct.unpack('<I', f.read(4))[0]
-    header_json_size = struct.unpack('<I', f.read(4))[0]
-    f.read(4)  # padding
-    header = json.loads(f.read(header_json_size).decode('utf-8'))
-    base_offset = 16 + header_size
+    f.read(4)  # size pickle header (always 4)
+    header_pickle_size = struct.unpack('<I', f.read(4))[0]
+    f.read(4)  # header pickle header
+    json_size = struct.unpack('<I', f.read(4))[0]
+    header = json.loads(f.read(json_size).decode('utf-8'))
+    base_offset = 8 + header_pickle_size
 
     def extract(node, path):
         if 'files' in node:
@@ -279,16 +279,15 @@ with open(asar_path, 'rb') as f:
             offset = int(node['offset']) + base_offset
             size = int(node['size'])
             f.seek(offset)
-            data = f.read(size)
             with open(path, 'wb') as out:
-                out.write(data)
+                out.write(f.read(size))
             if node.get('executable'):
                 os.chmod(path, 0o755)
         elif 'link' in node:
             os.symlink(node['link'], path)
 
     extract(header, out_dir)
-print(f'Extracted ASAR to {out_dir}')
+print(f'Extracted ASAR ({json_size} bytes header, {base_offset} data offset)')
                 "
                 substituteInPlace $out/bin/claude-desktop \
                   --replace-quiet "$out/lib/claude-desktop/app.asar" \
