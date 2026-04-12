@@ -299,13 +299,13 @@
         stable-nixos = mkClaudeDesktop {
           channel = "stable";
           inherit (stableMeta) version url sha256;
-          electronPath = "${pkgs.electron}/lib/electron";
+          electronPath = "${pkgs.electron}/libexec/electron";
         };
 
         dev-nixos = mkClaudeDesktop {
           channel = "dev";
           inherit (devMeta) version url sha256;
-          electronPath = "${pkgs.electron}/lib/electron";
+          electronPath = "${pkgs.electron}/libexec/electron";
         };
 
         # Computed at eval time — must be -1 for the check to pass.
