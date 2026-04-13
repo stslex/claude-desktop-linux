@@ -267,8 +267,25 @@ with open(asar_path, 'rb') as f:
 print(f'Extracted ASAR ({json_size} bytes header)')
                 "
 
-                # Write minimal NixOS launcher (heredoc can't mix
-                # Nix interpolation + shell vars + literal $@, so use printf)
+                # Prepend a process.stderr.write to the main entry.
+                # Without this ONE LINE, nixpkgs Electron 41 SEGVs on
+                # NixOS 6.18+ before executing any JS from the app.
+                # With it, the app runs perfectly. The mechanism is
+                # unknown — likely a V8 JIT compilation ordering side
+                # effect that avoids a code page that triggers
+                # SEGV_ACCERR. Bizarre but reproducibly confirmed via
+                # A/B test on identical app directory content.
+                ${pkgs.python3}/bin/python3 -c "
+import os
+main = '$out/lib/claude-desktop/app/.vite/build/index.pre.js'
+with open(main, 'r') as f: content = f.read()
+with open(main, 'w') as f:
+    f.write('process.stderr.write(\"[claude-desktop-nixos] starting...\\\\n\");\\n')
+    f.write(content)
+print('Prepended startup line to', main)
+                "
+
+                # Write minimal NixOS launcher
                 printf '#!/bin/sh\nexec "%s" --no-sandbox "%s/lib/claude-desktop/app" "$@"\n' \
                   "${electronBin}" "$out" > $out/bin/claude-desktop
                 chmod +x $out/bin/claude-desktop
