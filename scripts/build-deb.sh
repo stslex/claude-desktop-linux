@@ -7,8 +7,10 @@ set -euo pipefail
 # Build a .deb package for Claude Desktop Linux.
 #
 # Env vars:
-#   BUILD_DIR      default: /tmp/claude-build
-#   OUTPUT_DIR     default: ./output  (relative to repo root)
+#   BUILD_DIR        default: /tmp/claude-build
+#   OUTPUT_DIR       default: ./output  (relative to repo root)
+#   VERSION_SUFFIX   optional: appended to version in filename/metadata
+#                    (e.g. "~dev.20260404.abc1234" for dev channel)
 # ---------------------------------------------------------------------------
 
 log() { echo "[build-deb] $*"; }
@@ -38,8 +40,10 @@ if ! command -v dpkg-deb &>/dev/null; then
 fi
 
 VERSION="$(cat "$BUILD_DIR/VERSION")"
+VERSION_SUFFIX="${VERSION_SUFFIX:-}"
+FULL_VERSION="${VERSION}${VERSION_SUFFIX}"
 ELECTRON_VERSION="${ELECTRON_OVERRIDE:-$(cat "$BUILD_DIR/ELECTRON_VERSION")}"
-log "Version      : $VERSION"
+log "Version      : $FULL_VERSION"
 log "Electron     : $ELECTRON_VERSION"
 
 # ---------------------------------------------------------------------------
@@ -93,8 +97,8 @@ rm -rf "$DEB_ROOT"
 mkdir -p "$DEB_ROOT/DEBIAN"
 
 # DEBIAN/postinst
-# Note: the /sessions symlink is NOT created here — the launcher script
-# handles it per-user at runtime (~/.local/share/claude-linux/sessions).
+# Note: No /sessions symlink is needed — path-translator.mjs handles all
+# /sessions/… → ~/.local/share/claude-linux/sessions/… remapping in-process.
 cat > "$DEB_ROOT/DEBIAN/postinst" <<'POST_EOF'
 #!/bin/sh
 set -e
@@ -206,7 +210,7 @@ fi
 # Installed-Size is in KB, computed from the actual installed tree.
 INSTALLED_SIZE="$(du -sk "$DEB_ROOT/usr" | cut -f1)"
 # Include repack number in Debian version so apt detects newer repacks.
-DEB_VERSION="${VERSION}+repack${REPACK_NUM:-0}"
+DEB_VERSION="${FULL_VERSION}+repack${REPACK_NUM:-0}"
 
 cat > "$DEB_ROOT/DEBIAN/control" <<CTRL_EOF
 Package: claude-desktop
@@ -217,6 +221,7 @@ Installed-Size: ${INSTALLED_SIZE}
 Depends: bash, xdg-utils, libasound2 | libasound2t64, libatk-bridge2.0-0 | libatk-bridge2.0-0t64, libatk1.0-0 | libatk1.0-0t64, libcairo2, libcups2 | libcups2t64, libdbus-1-3, libdrm2, libexpat1, libgbm1, libglib2.0-0 | libglib2.0-0t64, libgtk-3-0 | libgtk-3-0t64, libnspr4, libnss3, libpango-1.0-0, libx11-6, libxcb1, libxcomposite1, libxdamage1, libxext6, libxfixes3, libxkbcommon0, libxrandr2
 Conflicts: liboss4-salsa-asound2
 Recommends: bubblewrap
+Suggests: cowork-svc-linux
 Section: net
 Priority: optional
 Homepage: https://github.com/stslex/claude-desktop-linux
@@ -233,7 +238,7 @@ CTRL_EOF
 # Build .deb
 # ---------------------------------------------------------------------------
 mkdir -p "$OUTPUT_DIR"
-DEST_DEB="$OUTPUT_DIR/claude-desktop-${VERSION}-x86_64.deb"
+DEST_DEB="$OUTPUT_DIR/claude-desktop-${FULL_VERSION}-x86_64.deb"
 
 log "Building .deb package..."
 dpkg-deb --build --root-owner-group "$DEB_ROOT" "$DEST_DEB"

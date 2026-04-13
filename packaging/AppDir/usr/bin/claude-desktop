@@ -66,6 +66,20 @@ if [[ -z "$ELECTRON" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Cowork service check (optional — Cowork/Dispatch via socket protocol).
+# NOTE: Keep in sync with packaging/AppDir/AppRun.
+# ---------------------------------------------------------------------------
+check_cowork_service() {
+    if ! pgrep -x cowork-svc-linux &>/dev/null && \
+       { ! command -v systemctl &>/dev/null || ! systemctl --user is-active claude-cowork &>/dev/null 2>&1; }; then
+        echo "[claude-desktop] WARN: claude-cowork service not running. Socket-based and Dispatch Cowork features will be unavailable." >&2
+        echo "  Other Cowork backends (stub/bwrap/host) remain functional." >&2
+        echo "  Run: scripts/install-cowork-service.sh" >&2
+    fi
+}
+check_cowork_service
+
+# ---------------------------------------------------------------------------
 # Cowork backend selection.
 # ---------------------------------------------------------------------------
 COWORK_BACKEND="${COWORK_BACKEND:-bubblewrap}"
@@ -78,21 +92,10 @@ if [[ "$COWORK_BACKEND" == "bubblewrap" ]] && ! command -v bwrap &>/dev/null; th
 fi
 
 # ---------------------------------------------------------------------------
-# Ensure the /sessions symlink exists.
-# The path translator requires /sessions/<uuid>/mnt/… to resolve to real paths.
+# Ensure the session directory exists (no /sessions symlink needed —
+# path-translator.mjs handles all /sessions/… → ~/.local/share/… remapping).
 # ---------------------------------------------------------------------------
-SESSION_TARGET="$HOME/.local/share/claude-linux/sessions"
-mkdir -p "$SESSION_TARGET"
-
-if [[ ! -L /sessions ]]; then
-    echo "[claude-desktop] INFO: /sessions symlink missing." >&2
-    if sudo ln -sf "$SESSION_TARGET" /sessions 2>/dev/null; then
-        echo "[claude-desktop] INFO: Created /sessions → $SESSION_TARGET" >&2
-    else
-        echo "[claude-desktop] WARNING: Could not create /sessions automatically." >&2
-        echo "  Run: sudo ln -sf $SESSION_TARGET /sessions" >&2
-    fi
-fi
+mkdir -p "$HOME/.local/share/claude-linux/sessions"
 
 # ---------------------------------------------------------------------------
 # D-Bus: start a temporary daemon when the system bus socket is missing.

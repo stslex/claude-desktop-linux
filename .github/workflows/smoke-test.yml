@@ -1,0 +1,637 @@
+name: Smoke Test
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+      - fix_cowork
+      - 'feat/**'
+      - 'fix/**'
+  pull_request:
+    branches:
+      - main
+      - dev
+  workflow_dispatch:
+    inputs:
+      nix_channel:
+        description: 'Channel for the Nix smoke test (stable|dev). Leave blank to auto-detect from branch.'
+        required: false
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Fetch DMG once, patch, validate syntax, build RPM, upload artifact
+  # ---------------------------------------------------------------------------
+  build-and-validate:
+    name: Build, validate, and package
+    runs-on: ubuntu-latest
+    env:
+      BUILD_DIR: /tmp/claude-build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            dmg2img p7zip-full rpm imagemagick icnsutils \
+            libarchive-tools zstd librsvg2-bin
+
+      - name: Install npm dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Resolve upstream version for cache key
+        id: upstream
+        run: |
+          RELEASES_URL="https://downloads.claude.ai/releases/darwin/universal/RELEASES.json"
+          RELEASES_JSON="$(curl -sSf --max-time 30 --retry 3 "$RELEASES_URL" 2>/dev/null || true)"
+          if [[ -n "$RELEASES_JSON" ]]; then
+            DL_URL="$(echo "$RELEASES_JSON" | node -e "
+              const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+              const u = d?.releases?.[0]?.updateTo?.url || d?.url || '';
+              if (u) process.stdout.write(u);
+            " 2>/dev/null || true)"
+          fi
+          if [[ -n "${DL_URL:-}" ]]; then
+            # Use the URL itself as cache key — changes only when Anthropic publishes a new version
+            CACHE_KEY="claude-download-$(echo -n "$DL_URL" | sha256sum | cut -c1-16)"
+            echo "cache-key=$CACHE_KEY" >> "$GITHUB_OUTPUT"
+            echo "Upstream URL: $DL_URL"
+            echo "Cache key: $CACHE_KEY"
+          else
+            echo "cache-key=claude-download-none" >> "$GITHUB_OUTPUT"
+            echo "::warning::Could not resolve upstream URL — cache will miss"
+          fi
+
+      - name: Cache Claude Desktop download
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/claude-build/claude.zip
+            /tmp/claude-build/claude.zip.sha256
+          key: ${{ steps.upstream.outputs.cache-key }}
+
+      - name: Fetch and extract
+        run: |
+          mkdir -p "$BUILD_DIR"
+          ./scripts/fetch-and-extract.sh
+
+      - name: Inject stubs
+        run: ./scripts/inject-stubs.sh
+
+      - name: Run patches (includes inline syntax validation)
+        run: ./scripts/patch-cowork.sh
+
+      - name: Re-validate bundle (belt and suspenders)
+        run: ./scripts/validate-bundle.sh
+
+      - name: Build packages
+        run: ./scripts/build-packages.sh
+        env:
+          KEEP_BUILD_DIR: '1'
+
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-rpm-${{ github.sha }}
+          path: output/*.rpm
+          retention-days: 3
+          if-no-files-found: error
+
+      # Separate upload for the Nix tarball so the nix-smoke-test job can
+      # consume it without downloading the whole RPM artifact bundle.
+      - name: Upload Nix tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-nix-${{ github.sha }}
+          path: |
+            output/claude-desktop-*-x86_64-nix.tar.gz
+            output/claude-desktop-*-x86_64-nix.tar.gz.sha256
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Upload extracted app on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: broken-bundle-${{ github.sha }}
+          path: /tmp/claude-build/app-extracted/.vite/build/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Install pre-built RPM in Fedora, verify layout, headless launch
+  # ---------------------------------------------------------------------------
+  smoke-test-rpm:
+    name: Install and smoke-test RPM in Fedora
+    runs-on: ubuntu-latest
+    needs: build-and-validate
+    container:
+      image: fedora:41
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install test dependencies
+        run: |
+          dnf install -y \
+            nodejs npm \
+            xorg-x11-server-Xvfb \
+            mesa-dri-drivers mesa-libGL \
+            libxkbcommon \
+            nss atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage \
+            libXfixes libXrandr libgbm alsa-lib pango cairo \
+            gtk3 glib2 \
+            procps-ng
+
+      - name: Install npm dependencies (for acorn)
+        run: npm ci --ignore-scripts
+
+      - name: Download RPM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: smoke-test-rpm-${{ github.sha }}
+          path: output/
+
+      - name: Verify RPM exists
+        run: |
+          ls -la output/
+          RPM_FILE=$(ls output/*.rpm | head -1)
+          if [[ -z "$RPM_FILE" ]]; then
+            echo "::error::No RPM in artifact"
+            exit 1
+          fi
+          echo "RPM_FILE=$RPM_FILE" >> $GITHUB_ENV
+
+      - name: Install the RPM
+        run: |
+          dnf install -y "$RPM_FILE"
+          # Verify files landed in expected locations
+          test -f /usr/bin/claude-desktop || { echo "::error::launcher missing"; exit 1; }
+          test -f /usr/lib/claude-desktop/app.asar || { echo "::error::asar missing"; exit 1; }
+          test -f /usr/lib/claude-desktop/ELECTRON_VERSION || { echo "::error::ELECTRON_VERSION missing"; exit 1; }
+          test -x /usr/lib/electron/electron || { echo "::error::bundled electron missing or not executable"; exit 1; }
+          echo "RPM installation layout OK"
+
+      - name: Verify asar parses as valid JS
+        run: |
+          mkdir -p /tmp/asar-check
+          npx @electron/asar extract /usr/lib/claude-desktop/app.asar /tmp/asar-check
+
+          # Parse every .js file in .vite/build/
+          FAIL=0
+          for f in /tmp/asar-check/.vite/build/*.js; do
+            [[ -f "$f" ]] || continue
+            if ! node -e "require('acorn').parse(require('fs').readFileSync('$f','utf8'),{ecmaVersion:'latest',sourceType:'module',allowReturnOutsideFunction:true})" 2>&1; then
+              echo "::error::Syntax error in shipped bundle: $(basename $f)"
+              FAIL=1
+            fi
+          done
+          [[ "$FAIL" == "0" ]] || exit 1
+          echo "Shipped asar bundle passes syntax validation"
+
+      - name: Headless launch test (10 second survival)
+        run: |
+          # Start Xvfb
+          Xvfb :99 -screen 0 1280x720x24 &
+          XVFB_PID=$!
+          export DISPLAY=:99
+          sleep 2
+
+          # Launch claude-desktop in background, redirect output
+          timeout 15s claude-desktop --no-sandbox --disable-gpu > /tmp/launch.log 2>&1 &
+          CLAUDE_PID=$!
+
+          # Wait for it to either crash or stabilize
+          sleep 5
+
+          # Check if the process is still alive
+          if kill -0 "$CLAUDE_PID" 2>/dev/null; then
+            echo "Process survived 5 seconds -- launch test passed"
+            # Clean kill
+            kill -TERM "$CLAUDE_PID" 2>/dev/null || true
+            wait "$CLAUDE_PID" 2>/dev/null || true
+            SURVIVED=1
+          else
+            wait "$CLAUDE_PID" 2>/dev/null
+            EXIT_CODE=$?
+            echo "::error::Process died within 5 seconds (exit code: $EXIT_CODE)"
+            SURVIVED=0
+          fi
+
+          # Always show the log
+          echo "=== Launch log ==="
+          cat /tmp/launch.log || true
+          echo "=================="
+
+          # Look for SIGSEGV specifically
+          if grep -q "SIGSEGV\|segmentation fault\|Segmentation fault" /tmp/launch.log 2>/dev/null; then
+            echo "::error::SIGSEGV detected in launch log"
+            kill "$XVFB_PID" 2>/dev/null || true
+            exit 1
+          fi
+
+          # Look for common fatal errors (warn only, don't fail)
+          if grep -qiE "fatal error|uncaught exception|failed to start" /tmp/launch.log; then
+            echo "::warning::Fatal error message in launch log (see above)"
+          fi
+
+          kill "$XVFB_PID" 2>/dev/null || true
+
+          [[ "$SURVIVED" == "1" ]] || exit 1
+
+      - name: Upload launch log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-log-${{ github.sha }}
+          path: /tmp/launch.log
+          retention-days: 7
+
+      - name: Upload RPM on failure for debugging
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-build-rpm-${{ github.sha }}
+          path: output/*.rpm
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Job 3: Nix smoke test — pins the channel metadata to the tarball that
+  # build-and-validate just produced, runs `nix flake check`, `nix build`, and
+  # exercises the same 10-second Xvfb survival check as the Fedora RPM job.
+  #
+  # Channel selection mirrors the main build pipeline:
+  #   push/PR main → stable (.#default)
+  #   push/PR dev  → dev    (.#dev)
+  #   workflow_dispatch → inputs.nix_channel override, else branch mapping
+  #
+  # Feature branches (feat/** etc.) default to the stable attribute — the
+  # actual tarball under test is whatever build-and-validate produced on
+  # that branch, so we just need a concrete flake attribute to target.
+  # Publishing is still gated by build.yml to main + dev only.
+  # ---------------------------------------------------------------------------
+  nix-smoke-test:
+    name: Nix smoke test
+    runs-on: ubuntu-latest
+    needs: build-and-validate
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve target channel
+        id: channel
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME:   ${{ github.ref_name }}
+          BASE_REF:   ${{ github.base_ref }}
+          INPUT_CH:   ${{ inputs.nix_channel }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${INPUT_CH:-}" ]]; then
+            CH="$INPUT_CH"
+          else
+            # PR → target branch; push/dispatch → ref branch.
+            BR="${BASE_REF:-$REF_NAME}"
+            case "$BR" in
+              dev)  CH="dev" ;;
+              main) CH="stable" ;;
+              # Feature branches and fix_cowork smoke-test the stable flake
+              # attribute against whatever tarball build-and-validate produced
+              # on this SHA. They never publish, so channel is just a label.
+              *)    CH="stable" ;;
+            esac
+          fi
+
+          case "$CH" in
+            stable) ATTR="default" ; JSON="nix/stable.json" ;;
+            dev)    ATTR="dev"     ; JSON="nix/dev.json"    ;;
+            *)
+              echo "::error::Unknown channel: $CH"
+              exit 1
+              ;;
+          esac
+
+          echo "channel=$CH"   >> "$GITHUB_OUTPUT"
+          echo "attr=$ATTR"    >> "$GITHUB_OUTPUT"
+          echo "json=$JSON"    >> "$GITHUB_OUTPUT"
+          echo "Resolved channel: $CH → .#$ATTR (metadata: $JSON)"
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            experimental-features = nix-command flakes
+
+      - name: Download Nix tarball artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: smoke-test-nix-${{ github.sha }}
+          path: output/
+
+      - name: Pin channel metadata to the local tarball
+        id: pin
+        env:
+          CHANNEL: ${{ steps.channel.outputs.channel }}
+        run: |
+          set -euo pipefail
+
+          TARBALL="$(ls -1 output/claude-desktop-*-x86_64-nix.tar.gz | head -1)"
+          if [[ -z "$TARBALL" || ! -f "$TARBALL" ]]; then
+            echo "::error::no Nix tarball in the artifact" >&2
+            ls -la output/ || true
+            exit 1
+          fi
+
+          ABS_PATH="$(readlink -f "$TARBALL")"
+          SHA256="$(sha256sum "$ABS_PATH" | awk '{print $1}')"
+          # Extract the upstream version from the filename:
+          # claude-desktop-<version>-x86_64-nix.tar.gz
+          BASE="$(basename "$TARBALL")"
+          VERSION="${BASE#claude-desktop-}"
+          VERSION="${VERSION%-x86_64-nix.tar.gz}"
+
+          echo "tarball:   $ABS_PATH"
+          echo "sha256:    $SHA256"
+          echo "version:   $VERSION"
+          echo "channel:   $CHANNEL"
+
+          # --- Drop the tarball into the flake tree ------------------------
+          #
+          # flake.nix's mkClaudeDesktop checks for
+          # ./nix/tarballs/<channel>.tar.gz and uses it as `src` when
+          # present, in preference to `pkgs.fetchurl`. This avoids the
+          # fetchurl fixed-output sandbox (which can't read `file://` URLs
+          # outside the store) while still producing a reproducible,
+          # purely-evaluated flake.
+          #
+          # We populate BOTH channel slots with the same tarball so that
+          # whichever attr the smoke test targets resolves to the real
+          # build. The two derivations only differ in their `version`
+          # label, which is maintained in the JSON files below and
+          # enforces the dev < stable sort invariant.
+          mkdir -p nix/tarballs
+          cp "$ABS_PATH" nix/tarballs/stable.tar.gz
+          cp "$ABS_PATH" nix/tarballs/dev.tar.gz
+
+          # --- Refresh channel metadata JSONs ------------------------------
+          #
+          # url + sha256 are left as placeholders: the in-tree tarball
+          # override in flake.nix means fetchurl is never invoked in CI.
+          # We keep them so `inherit (channelMeta) version url sha256`
+          # in flake.nix still destructures cleanly.
+          STABLE_V="$VERSION"
+          DEV_V="${VERSION}-pre"
+
+          cat > nix/stable.json <<STABLE_EOF
+          {
+            "channel": "stable",
+            "version": "${STABLE_V}",
+            "url": "https://example.invalid/ci-placeholder-not-fetched",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+          STABLE_EOF
+
+          cat > nix/dev.json <<DEV_EOF
+          {
+            "channel": "dev",
+            "version": "${DEV_V}",
+            "url": "https://example.invalid/ci-placeholder-not-fetched",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+          DEV_EOF
+
+          # --- Stage + commit locally so nix flake sees the new files -----
+          #
+          # Flake source resolution walks git — uncommitted files may or
+          # may not be included depending on the Nix version. A throwaway
+          # local commit guarantees the tarballs and JSONs are part of
+          # the source tree nix sees. The commit stays inside the CI
+          # workspace and is never pushed.
+          git config --local user.email "smoke-test@localhost"
+          git config --local user.name  "smoke-test"
+          git add nix/tarballs/ nix/stable.json nix/dev.json
+          git commit -m "ci: pin local tarball for smoke test (not pushed)"
+
+          echo "---- nix/stable.json ----"
+          cat nix/stable.json
+          echo "---- nix/dev.json ----"
+          cat nix/dev.json
+          ls -la nix/tarballs/
+
+      - name: nix flake check
+        run: |
+          set -euo pipefail
+          # First invocation will lock nixpkgs + flake-utils on the fly;
+          # the repo does not ship a committed flake.lock. Subsequent
+          # commands in this job reuse the lock written here.
+          nix flake check --show-trace 2>&1 | tee /tmp/nix-flake-check.log
+
+      - name: Verify dev version sorts lower than stable (rpm --compare analogue)
+        run: |
+          set -euo pipefail
+          STABLE_V="$(nix eval --raw .#default.version)"
+          DEV_V="$(nix eval --raw .#dev.version)"
+          echo "stable version: $STABLE_V"
+          echo "dev    version: $DEV_V"
+          CMP="$(nix eval --expr "builtins.compareVersions \"$DEV_V\" \"$STABLE_V\"")"
+          echo "compareVersions dev stable = $CMP"
+          if [ "$CMP" != "-1" ]; then
+            echo "::error::dev version must sort strictly lower than stable (got $CMP, expected -1)"
+            exit 1
+          fi
+
+      - name: nix build .#${{ steps.channel.outputs.attr }}
+        id: nixbuild
+        env:
+          ATTR: ${{ steps.channel.outputs.attr }}
+        run: |
+          set -euo pipefail
+
+          # Capture stdout+stderr in /tmp/nix-build.log so the "Upload
+          # Nix diagnostic logs" step preserves it for post-mortem on
+          # failure, AND so we can emit the tail of the log as workflow
+          # annotations — useful when the raw run logs aren't accessible
+          # via the check-runs API (which is the normal case for
+          # non-admin consumers of the PR).
+          LOG=/tmp/nix-build.log
+          set +e
+          nix build --print-build-logs --no-link ".#${ATTR}" 2>&1 | tee "$LOG"
+          RC=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$RC" -ne 0 ]; then
+            echo "::error::nix build .#${ATTR} failed with exit code $RC"
+            tail -n 120 "$LOG" | while IFS= read -r line; do
+              clean="${line//::/__}"
+              echo "::error::nix-build: ${clean}"
+            done
+            exit "$RC"
+          fi
+
+          STORE_PATH="$(nix path-info ".#${ATTR}")"
+          echo "store_path=$STORE_PATH" >> "$GITHUB_OUTPUT"
+          echo "Built store path: $STORE_PATH"
+
+          # nix-store --query analogue to `rpm --compare`: sanity-check that
+          # the closure has a non-trivial dependency graph.
+          REQUISITES_COUNT="$(nix-store --query --requisites "$STORE_PATH" | wc -l)"
+          echo "requisites count: $REQUISITES_COUNT"
+          if [ "$REQUISITES_COUNT" -lt 5 ]; then
+            echo "::error::store path has suspiciously few requisites ($REQUISITES_COUNT)"
+            exit 1
+          fi
+
+          # Verify key files landed where the launcher expects.
+          test -x "$STORE_PATH/bin/claude-desktop"            || { echo "::error::launcher missing"; exit 1; }
+          test -f "$STORE_PATH/lib/claude-desktop/app.asar"   || { echo "::error::asar missing"; exit 1; }
+          test -x "$STORE_PATH/lib/electron/electron"         || { echo "::error::bundled electron missing"; exit 1; }
+          echo "Nix store layout OK"
+
+      - name: Install Xvfb
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends xvfb procps
+
+      # -----------------------------------------------------------------------
+      # Survival check — same shape as the Fedora RPM job above:
+      #   1. start Xvfb on :99
+      #   2. launch the binary with --no-sandbox
+      #   3. wait 5 s. If the process is already dead, fail.
+      #      If exit code is 139 (SIGSEGV) at any point, fail.
+      #   4. let it run the remaining 5 s (10 s total)
+      #   5. TERM/KILL, re-check for SIGSEGV
+      # -----------------------------------------------------------------------
+      - name: Headless launch test (10 second survival)
+        env:
+          STORE_PATH: ${{ steps.nixbuild.outputs.store_path }}
+        run: |
+          set -euo pipefail
+
+          BIN="$STORE_PATH/bin/claude-desktop"
+          if [ ! -x "$BIN" ]; then
+            echo "::error::launcher not executable at $BIN"
+            ls -la "$STORE_PATH/bin" || true
+            exit 1
+          fi
+          echo "Launching: $BIN"
+
+          Xvfb :99 -screen 0 1280x720x24 &
+          XVFB_PID=$!
+          trap 'kill -TERM "${APP_PID:-0}" 2>/dev/null || true; kill -TERM "$XVFB_PID" 2>/dev/null || true' EXIT
+          export DISPLAY=:99
+          sleep 2
+
+          LOG="/tmp/nix-launch.log"
+          timeout 15s "$BIN" --no-sandbox --disable-gpu > "$LOG" 2>&1 &
+          APP_PID=$!
+          echo "app pid: $APP_PID"
+
+          sleep 5
+          if ! kill -0 "$APP_PID" 2>/dev/null; then
+            wait "$APP_PID" 2>/dev/null || true
+            EC=$?
+            echo "::error::app died within 5 s (exit code $EC)"
+            if [ "$EC" -eq 139 ]; then
+              echo "::error::SIGSEGV detected in early phase"
+            fi
+            echo "=== launch log ==="
+            cat "$LOG" || true
+            echo "=================="
+            exit 1
+          fi
+          echo "survived 5 s"
+
+          sleep 5
+          if ! kill -0 "$APP_PID" 2>/dev/null; then
+            wait "$APP_PID" 2>/dev/null || true
+            EC=$?
+            echo "::error::app died between 5 s and 10 s (exit code $EC)"
+            if [ "$EC" -eq 139 ]; then
+              echo "::error::SIGSEGV detected in late phase"
+            fi
+            echo "=== launch log ==="
+            cat "$LOG" || true
+            echo "=================="
+            exit 1
+          fi
+          echo "survived 10 s"
+
+          kill -TERM "$APP_PID" 2>/dev/null || true
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if ! kill -0 "$APP_PID" 2>/dev/null; then break; fi
+            sleep 0.5
+          done
+          if kill -0 "$APP_PID" 2>/dev/null; then
+            kill -KILL "$APP_PID" 2>/dev/null || true
+          fi
+          wait "$APP_PID" 2>/dev/null || true
+          EC=$?
+          echo "app exit code: $EC"
+
+          echo "=== launch log ==="
+          cat "$LOG" || true
+          echo "=================="
+
+          if grep -q "SIGSEGV\|segmentation fault\|Segmentation fault" "$LOG" 2>/dev/null; then
+            echo "::error::SIGSEGV detected in launch log"
+            exit 1
+          fi
+          if [ "$EC" -eq 139 ]; then
+            echo "::error::SIGSEGV detected on shutdown"
+            exit 1
+          fi
+          echo "Nix smoke test PASSED"
+
+      - name: Upload Nix launch log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nix-smoke-test-log-${{ github.sha }}
+          path: /tmp/nix-launch.log
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload Nix diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nix-smoke-test-diagnostics-${{ github.sha }}
+          path: |
+            /tmp/nix-build.log
+            /tmp/nix-flake-check.log
+          retention-days: 7
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Job 4: Aggregation gate (use as required status check)
+  # ---------------------------------------------------------------------------
+  smoke-test-summary:
+    name: Smoke test summary
+    runs-on: ubuntu-latest
+    needs: [build-and-validate, smoke-test-rpm, nix-smoke-test]
+    if: always()
+    steps:
+      - name: Report status
+        run: |
+          if [[ "${{ needs.build-and-validate.result }}" != "success" ]]; then
+            echo "::error::Build and validation FAILED"
+            exit 1
+          fi
+          if [[ "${{ needs.smoke-test-rpm.result }}" != "success" ]]; then
+            echo "::error::RPM smoke test FAILED"
+            exit 1
+          fi
+          if [[ "${{ needs.nix-smoke-test.result }}" != "success" ]]; then
+            echo "::error::Nix smoke test FAILED"
+            exit 1
+          fi
+          echo "All smoke tests passed"

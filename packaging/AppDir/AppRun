@@ -26,21 +26,24 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Ensure the /sessions symlink exists.
+# Ensure the session directory exists (no /sessions symlink needed —
+# path-translator.mjs handles all /sessions/… → ~/.local/share/… remapping).
 # ---------------------------------------------------------------------------
-SESSION_TARGET="$HOME/.local/share/claude-linux/sessions"
-mkdir -p "$SESSION_TARGET"
+mkdir -p "$HOME/.local/share/claude-linux/sessions"
 
-if [[ ! -L /sessions ]]; then
-  echo "[claude-desktop] Creating /sessions symlink (requires sudo)..." >&2
-  if command -v sudo &>/dev/null; then
-    sudo ln -sf "$SESSION_TARGET" /sessions || \
-      echo "[claude-desktop] WARNING: Could not create /sessions. Cowork paths may fail." >&2
-  else
-    echo "[claude-desktop] WARNING: sudo not available. Create symlink manually:" >&2
-    echo "  sudo ln -sf $SESSION_TARGET /sessions" >&2
+# ---------------------------------------------------------------------------
+# Cowork service check (optional — Cowork/Dispatch via socket protocol).
+# NOTE: Keep in sync with packaging/AppDir/usr/bin/claude-desktop.
+# ---------------------------------------------------------------------------
+check_cowork_service() {
+  if ! pgrep -x cowork-svc-linux &>/dev/null && \
+     { ! command -v systemctl &>/dev/null || ! systemctl --user is-active claude-cowork &>/dev/null 2>&1; }; then
+    echo "[claude-desktop] WARN: claude-cowork service not running. Socket-based and Dispatch Cowork features will be unavailable." >&2
+    echo "  Other Cowork backends (stub/bwrap/host) remain functional." >&2
+    echo "  Run: scripts/install-cowork-service.sh" >&2
   fi
-fi
+}
+check_cowork_service
 
 # ---------------------------------------------------------------------------
 # Cowork backend selection.
