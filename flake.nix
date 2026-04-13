@@ -174,21 +174,19 @@
               # suspenders) via the extended LD_LIBRARY_PATH in the
               # launcher wrapper below.
               systemd
-              xorg.libX11
-              xorg.libXcomposite
-              xorg.libXdamage
-              xorg.libXext
-              xorg.libXfixes
-              xorg.libXrandr
-              xorg.libxcb
+              libx11
+              libxcomposite
+              libxdamage
+              libxext
+              libxfixes
+              libxrandr
+              libxcb
               # Additional X extensions that Electron dlopens on startup.
-              # Missing any of these causes autoPatchelfHook to fail the
-              # build with a clear "could not find dependency" message.
-              xorg.libXi
-              xorg.libXcursor
-              xorg.libXtst
-              xorg.libXrender
-              xorg.libXScrnSaver
+              libxi
+              libxcursor
+              libxtst
+              libxrender
+              libxscrnsaver
             ];
 
             runtimeDependencies = with pkgs; [
