@@ -180,10 +180,14 @@ if (!global[INIT_SYM] && process.type === 'browser') {
       },
     });
 
-    // Copy static properties and prototype so PatchedBrowserWindow passes
-    // instanceof checks and static method access (e.g. getAllWindows).
-    Object.setPrototypeOf(PatchedBrowserWindow, OrigBrowserWindow);
-    PatchedBrowserWindow.prototype = OrigBrowserWindow.prototype;
+    // The Proxy already delegates [[GetPrototypeOf]] and property access
+    // to OrigBrowserWindow, so static methods (e.g. getAllWindows) and
+    // instanceof checks work without extra wiring.
+    //
+    // NOTE: Do NOT call Object.setPrototypeOf(PatchedBrowserWindow, OrigBrowserWindow)
+    // here — the Proxy's [[SetPrototypeOf]] trap forwards to the target,
+    // which would effectively do setPrototypeOf(OrigBW, OrigBW) and throw
+    // "Cyclic __proto__ value" on newer V8/Electron.
 
     // ---------------------------------------------------------------------
     // Patch Tray
@@ -233,8 +237,8 @@ if (!global[INIT_SYM] && process.type === 'browser') {
       },
     });
 
-    Object.setPrototypeOf(PatchedTray, OrigTray);
-    PatchedTray.prototype = OrigTray.prototype;
+    // Same as BrowserWindow above — the Proxy delegates to OrigTray,
+    // so setPrototypeOf would create a cyclic __proto__.  Skip it.
 
     // ---------------------------------------------------------------------
     // Apply patches to electron module

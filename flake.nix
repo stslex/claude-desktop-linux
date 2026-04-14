@@ -284,7 +284,22 @@ print('Prepended startup line to', main)
                 "
 
                 # Write minimal NixOS launcher
-                printf '#!/bin/sh\nexec "%s" --no-sandbox "%s/lib/claude-desktop/app" "$@"\n' \
+                #
+                # --in-process-gpu: run the GPU thread inside the
+                #   browser process instead of spawning a separate GPU
+                #   subprocess.  On NixOS the GPU child process often
+                #   fails to launch (error_code=1002) because its
+                #   zygote/helper binary can't resolve libraries in the
+                #   Nix store, even with --no-sandbox.  Running
+                #   in-process avoids the launch entirely while still
+                #   allowing hardware acceleration when drivers are
+                #   available.
+                #
+                # "$@" is placed BEFORE the app path so that user-
+                #   supplied Chromium flags (e.g. --disable-gpu,
+                #   --enable-features=...) are parsed as switches rather
+                #   than app arguments.
+                printf '#!/bin/sh\nexec "%s" --no-sandbox --in-process-gpu "$@" "%s/lib/claude-desktop/app"\n' \
                   "${electronBin}" "$out" > $out/bin/claude-desktop
                 chmod +x $out/bin/claude-desktop
               '' else ''
