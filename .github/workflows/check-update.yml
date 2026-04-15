@@ -101,6 +101,5 @@ jobs:
           gh workflow run build.yml \
             --repo "${{ github.repository }}" \
             --ref main \
-            --field version="$UPSTREAM" \
-            --field release=true
-          echo "Triggered build.yml for version $UPSTREAM."
+            -f channel=stable
+          echo "Triggered build.yml (channel=stable) for version $UPSTREAM."
