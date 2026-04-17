@@ -177,10 +177,6 @@ fi
 # ---------------------------------------------------------------------------
 # Patch — Tray icon: fix minifier variable reference on non-Windows path
 # ---------------------------------------------------------------------------
-# This tray-icon fix is independent of the Cowork feature logic (the bug is
-# in the upstream Vite minifier output), so it runs whenever this script
-# runs, but is still skipped if SKIP_COWORK_PATCH=1 or other earlier exits
-# occur.
 log "Fixing tray icon variable reference..."
 
 TRAY_FIX_LOG="$BUILD_DIR/patch-tray-icon.log"
@@ -203,6 +199,10 @@ fi
 # ---------------------------------------------------------------------------
 # Patch 2 — CCD platform: add linux-x64/linux-arm64 support
 # ---------------------------------------------------------------------------
+# NOTE: This runs AFTER the platform-gate apply intentionally. The gate
+# patch replaces getHostPlatform's body with a stub; CCD find locates the
+# stub at the correct post-patch offset, then CCD apply replaces it with
+# proper linux platform detection.
 log "Locating CCD getHostPlatform / getBinaryPathIfReady..."
 
 CCD_FIND_LOG="$BUILD_DIR/patch-ccd-find.log"
@@ -285,7 +285,9 @@ if [[ -f "$MAIN_BUNDLE" ]]; then
   # Match pattern: .files[X][Y] where X and Y are single-char variable names
   # Replace with:  .files[X]||{})[Y]  (wrapping .files[X]||{} in parens)
   if grep -qP '\.files\[[a-zA-Z]\]\[[a-zA-Z]\]' "$MAIN_BUNDLE"; then
-    sed -i -E 's/\.files\[([a-zA-Z])\]\[([a-zA-Z])\]/(\.files[\1]||{})\[\2\]/g' "$MAIN_BUNDLE"
+    # Capture the object name (e.g. `lo`) before `.files` so the replacement
+    # wraps the full expression: lo.files[e][A] → (lo.files[e]||{})[A]
+    sed -i -E 's/([a-zA-Z_$][a-zA-Z0-9_$]*)\.files\[([a-zA-Z])\]\[([a-zA-Z])\]/(\1.files[\2]||{})[\3]/g' "$MAIN_BUNDLE"
     log "Guarded .files[platform][arch] access (added ||{} fallback)."
   else
     log "No .files[X][Y] pattern found — skipping VM files guard."
