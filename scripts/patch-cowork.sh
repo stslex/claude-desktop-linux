@@ -177,10 +177,6 @@ fi
 # ---------------------------------------------------------------------------
 # Patch — Tray icon: fix minifier variable reference on non-Windows path
 # ---------------------------------------------------------------------------
-# This tray-icon fix is independent of the Cowork feature logic (the bug is
-# in the upstream Vite minifier output), so it runs whenever this script
-# runs, but is still skipped if SKIP_COWORK_PATCH=1 or other earlier exits
-# occur.
 log "Fixing tray icon variable reference..."
 
 TRAY_FIX_LOG="$BUILD_DIR/patch-tray-icon.log"
@@ -203,6 +199,10 @@ fi
 # ---------------------------------------------------------------------------
 # Patch 2 — CCD platform: add linux-x64/linux-arm64 support
 # ---------------------------------------------------------------------------
+# NOTE: This runs AFTER the platform-gate apply intentionally. The gate
+# patch replaces getHostPlatform's body with a stub; CCD find locates the
+# stub at the correct post-patch offset, then CCD apply replaces it with
+# proper linux platform detection.
 log "Locating CCD getHostPlatform / getBinaryPathIfReady..."
 
 CCD_FIND_LOG="$BUILD_DIR/patch-ccd-find.log"
@@ -266,6 +266,34 @@ else
   else
     log "VM download step patched (returns early on Linux)."
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# Patch — VM files manifest: guard platform key access for Linux
+# ---------------------------------------------------------------------------
+# The VM bundle manifest (a minified object) has a `.files` property keyed by
+# platform (e.g. files.darwin.x64).  On Linux, files["linux"] is undefined
+# which crashes every caller with "Cannot read properties of undefined
+# (reading 'x64')".  Guard the access so it returns [] instead of crashing.
+# The pattern `.files[<var>][<var>]` appears exactly where the manifest is
+# indexed — we add `||{}` to make the first index return an empty object
+# when the platform key is missing.
+log "Guarding VM files manifest for Linux..."
+
+MAIN_BUNDLE="$APP_DIR/.vite/build/index.js"
+if [[ -f "$MAIN_BUNDLE" ]]; then
+  # Match pattern: .files[X][Y] where X and Y are single-char variable names
+  # Replace with:  .files[X]||{})[Y]  (wrapping .files[X]||{} in parens)
+  if grep -qP '\.files\[[a-zA-Z]\]\[[a-zA-Z]\]' "$MAIN_BUNDLE"; then
+    # Capture the object name (e.g. `lo`) before `.files` so the replacement
+    # wraps the full expression: lo.files[e][A] → (lo.files[e]||{})[A]
+    sed -i -E 's/([a-zA-Z_$][a-zA-Z0-9_$]*)\.files\[([a-zA-Z])\]\[([a-zA-Z])\]/(\1.files[\2]||{})[\3]/g' "$MAIN_BUNDLE"
+    log "Guarded .files[platform][arch] access (added ||{} fallback)."
+  else
+    log "No .files[X][Y] pattern found — skipping VM files guard."
+  fi
+else
+  log "WARNING: Main bundle not found at $MAIN_BUNDLE — skipping VM files guard."
 fi
 
 # ---------------------------------------------------------------------------

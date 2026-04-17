@@ -88,7 +88,11 @@ if (Array.isArray(gateInfo.gates)) {
 // first (descending start offset) so that patching one gate doesn't shift
 // the character offsets of subsequent gates.
 // ---------------------------------------------------------------------------
-const REPLACEMENT = '{return{status:"supported"}}';
+// Include `config:{}` so that callers accessing `.config` on the returned
+// object get an empty object instead of `undefined`.  The upstream 3P provider
+// setup code (e.g. inferenceCredentialHelper validation) reads `.config` and
+// crashes with "Cannot read properties of undefined" when it is missing.
+const REPLACEMENT = '{return{status:"supported",config:{}}}';
 
 // Group by file
 /** @type {Map<string, Array<{ start: number, end: number }>>} */
