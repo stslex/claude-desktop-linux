@@ -380,6 +380,11 @@ vm._callbacks = _callbacks;
 vm._procs     = _procs;
 
 // ---------------------------------------------------------------------------
-// Export shape — the app does: require('@ant/claude-swift').default.vm
+// Export shape — the app loads via dynamic import():
+//   tN = (await import("@ant/claude-swift")).default
+// Node's CJS→ESM interop makes module.exports the `.default` property,
+// so we export { vm } directly (NOT { default: { vm } }) to avoid
+// double-wrapping: import().default would become { default: { vm } }
+// and .vm would be undefined.
 // ---------------------------------------------------------------------------
-module.exports = { default: { vm } };
+module.exports = { vm };
