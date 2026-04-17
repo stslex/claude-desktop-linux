@@ -269,6 +269,32 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Patch — VM files manifest: guard platform key access for Linux
+# ---------------------------------------------------------------------------
+# The VM bundle manifest (a minified object) has a `.files` property keyed by
+# platform (e.g. files.darwin.x64).  On Linux, files["linux"] is undefined
+# which crashes every caller with "Cannot read properties of undefined
+# (reading 'x64')".  Guard the access so it returns [] instead of crashing.
+# The pattern `.files[<var>][<var>]` appears exactly where the manifest is
+# indexed — we add `||{}` to make the first index return an empty object
+# when the platform key is missing.
+log "Guarding VM files manifest for Linux..."
+
+MAIN_BUNDLE="$APP_DIR/.vite/build/index.js"
+if [[ -f "$MAIN_BUNDLE" ]]; then
+  # Match pattern: .files[X][Y] where X and Y are single-char variable names
+  # Replace with:  .files[X]||{})[Y]  (wrapping .files[X]||{} in parens)
+  if grep -qP '\.files\[[a-zA-Z]\]\[[a-zA-Z]\]' "$MAIN_BUNDLE"; then
+    sed -i -E 's/\.files\[([a-zA-Z])\]\[([a-zA-Z])\]/(\.files[\1]||{})\[\2\]/g' "$MAIN_BUNDLE"
+    log "Guarded .files[platform][arch] access (added ||{} fallback)."
+  else
+    log "No .files[X][Y] pattern found — skipping VM files guard."
+  fi
+else
+  log "WARNING: Main bundle not found at $MAIN_BUNDLE — skipping VM files guard."
+fi
+
+# ---------------------------------------------------------------------------
 # Patch — Bundle download gate: allow download on Linux
 # ---------------------------------------------------------------------------
 log "Checking for platform-gated bundle download..."
