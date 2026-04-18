@@ -77,7 +77,7 @@ function tryParse(src, filePath) {
 // ---------------------------------------------------------------------------
 // Walk a single file — collect method bodies by name
 // ---------------------------------------------------------------------------
-const TARGETS = ['getHostPlatform', 'getBinaryPathIfReady'];
+const TARGETS = ['getHostPlatform', 'getBinaryPathIfReady', 'getHostTarget'];
 const found   = {};
 
 function recordMethod(keyName, valueNode, filePath) {
