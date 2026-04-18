@@ -236,22 +236,44 @@ const _vmBase = {
    * @param {{ cwd?: string, env?: object, additionalMounts?: Array<{name: string, hostPath: string}> }} opts
    * @returns {Promise<number>}  The child process PID (used as stable handle).
    */
-  spawn(processIdOrBinary, argsOrName = [], optsOrConfig = {}) {
-    // The orchestrator calls spawn(processId, processName, config)
-    // where config = {cmd, args, cwd, env, additionalMounts, ...}.
-    // Detect this by checking if the third arg has a 'cmd' property.
-    let binary, args, opts;
-    if (optsOrConfig && typeof optsOrConfig === 'object' && optsOrConfig.cmd) {
-      // New calling convention: spawn(id, name, {cmd, args, cwd, env, ...})
-      binary = optsOrConfig.cmd;
-      args = optsOrConfig.args || [];
-      opts = optsOrConfig;
-    } else {
-      // Legacy calling convention: spawn(binary, args, {cwd, env, ...})
-      binary = processIdOrBinary;
-      args = argsOrName;
-      opts = optsOrConfig;
+  spawn(...spawnArgs) {
+    // The orchestrator may call with various signatures. Log all args for debugging.
+    if (DEBUG) {
+      process.stderr.write(`[claude-swift stub] spawn called with ${spawnArgs.length} args:\n`);
+      spawnArgs.forEach((a, i) => process.stderr.write(`  [${i}] ${typeof a}: ${typeof a === 'string' ? a.substring(0, 80) : JSON.stringify(a).substring(0, 120)}\n`));
     }
+
+    let binary, args, opts;
+
+    // Find the opts object (last object arg that has cwd or env or cmd).
+    // Find the binary (first string that looks like a path, not a UUID).
+    const isUuid = (s) => typeof s === 'string' && /^[0-9a-f]{8}-/.test(s);
+    const isPath = (s) => typeof s === 'string' && (s.startsWith('/') || s.includes('claude'));
+
+    // Strategy: iterate args, classify them.
+    const strings = [];
+    let configObj = null;
+    for (const a of spawnArgs) {
+      if (typeof a === 'string') strings.push(a);
+      else if (a && typeof a === 'object' && !Array.isArray(a)) configObj = a;
+      else if (Array.isArray(a)) args = a;
+    }
+
+    // If config has cmd, use it
+    if (configObj && configObj.cmd) {
+      binary = configObj.cmd;
+      args = configObj.args || args || [];
+      opts = configObj;
+    } else {
+      // Find binary: first non-UUID path-like string
+      binary = strings.find(s => isPath(s) && !isUuid(s)) || strings.find(s => !isUuid(s)) || strings[0];
+      // Find args: a string that starts with '--' (command args)
+      const argsStr = strings.find(s => s.startsWith('--'));
+      if (argsStr && !args) args = argsStr;
+      if (!args) args = [];
+      opts = configObj || {};
+    }
+
     // The orchestrator may pass args as a single string — split it.
     if (typeof args === 'string') {
       args = args.split(/\s+/).filter(Boolean);
