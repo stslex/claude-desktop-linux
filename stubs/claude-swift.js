@@ -236,7 +236,22 @@ const _vmBase = {
    * @param {{ cwd?: string, env?: object, additionalMounts?: Array<{name: string, hostPath: string}> }} opts
    * @returns {Promise<number>}  The child process PID (used as stable handle).
    */
-  spawn(binary, args = [], opts = {}) {
+  spawn(processIdOrBinary, argsOrName = [], optsOrConfig = {}) {
+    // The orchestrator calls spawn(processId, processName, config)
+    // where config = {cmd, args, cwd, env, additionalMounts, ...}.
+    // Detect this by checking if the third arg has a 'cmd' property.
+    let binary, args, opts;
+    if (optsOrConfig && typeof optsOrConfig === 'object' && optsOrConfig.cmd) {
+      // New calling convention: spawn(id, name, {cmd, args, cwd, env, ...})
+      binary = optsOrConfig.cmd;
+      args = optsOrConfig.args || [];
+      opts = optsOrConfig;
+    } else {
+      // Legacy calling convention: spawn(binary, args, {cwd, env, ...})
+      binary = processIdOrBinary;
+      args = argsOrName;
+      opts = optsOrConfig;
+    }
     // The orchestrator may pass args as a single string — split it.
     if (typeof args === 'string') {
       args = args.split(/\s+/).filter(Boolean);
