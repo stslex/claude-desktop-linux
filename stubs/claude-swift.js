@@ -342,6 +342,24 @@ const _vmBase = {
   isReady() {
     return true;
   },
+
+  /**
+   * Get memory info for the VM.
+   * On Linux there is no VM — return host memory info.
+   * @returns {{ totalMemoryMB: number, freeMemoryMB: number }}
+   */
+  getMemoryInfo() {
+    const totalMB = Math.round(os.totalmem() / (1024 * 1024));
+    const freeMB  = Math.round(os.freemem()  / (1024 * 1024));
+    return { totalMemoryMB: totalMB, freeMemoryMB: freeMB };
+  },
+
+  // CRITICAL: `then` must be explicitly undefined (not a function) so that
+  // the vm object is NOT treated as a thenable by the Promise resolution
+  // protocol.  The Proxy below returns a function for any unknown property,
+  // which would make `await vm` hang forever because the noop `then` never
+  // calls resolve/reject.
+  then: undefined,
 };
 
 // Getter-style properties that the orchestrator may check as properties or methods.
@@ -387,4 +405,7 @@ vm._procs     = _procs;
 // double-wrapping: import().default would become { default: { vm } }
 // and .vm would be undefined.
 // ---------------------------------------------------------------------------
-module.exports = { vm };
+// `then: undefined` prevents the CJS→ESM interop from treating this module
+// as a thenable during `await import(...)`.  Without it, the Proxy on `vm`
+// would return a function for `.then`, causing the dynamic import to hang.
+module.exports = { vm, then: undefined };
