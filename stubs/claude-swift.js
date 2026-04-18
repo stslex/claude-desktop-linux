@@ -237,6 +237,10 @@ const _vmBase = {
    * @returns {Promise<number>}  The child process PID (used as stable handle).
    */
   spawn(binary, args = [], opts = {}) {
+    // The orchestrator may pass args as a single string — split it.
+    if (typeof args === 'string') {
+      args = args.split(/\s+/).filter(Boolean);
+    }
     binary = resolveBinary(binary);
     opts = translatePaths(opts);
     const { cwd, env, additionalMounts = [] } = opts;
@@ -289,13 +293,16 @@ const _vmBase = {
   /**
    * Kill a previously spawned process.
    * @param {number} pid
+   * @param {string} [signal]
+   * @returns {Promise<void>}
    */
-  kill(pid) {
+  kill(pid, signal) {
     const child = _procs.get(pid);
     if (child) {
-      child.kill();
+      child.kill(signal || 'SIGTERM');
       _procs.delete(pid);
     }
+    return Promise.resolve();
   },
 
   /**
