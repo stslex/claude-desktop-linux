@@ -8,16 +8,37 @@ const fs   = require('fs');
 // ---------------------------------------------------------------------------
 // State — module-scope singletons.
 // ---------------------------------------------------------------------------
-/** @type {{ onReady?: Function, onExit?: Function, onStdout?: Function, onStderr?: Function }} */
+/**
+ * Callbacks registered via setEventCallbacks().
+ * The orchestrator passes 7 individual function arguments (not an object):
+ *   setEventCallbacks(onStdout, onStderr, onExit, onError,
+ *                     onNetworkStatus, onApiReachability, onStartupStep)
+ *
+ * Callback signatures (id = UUID string assigned by the orchestrator):
+ *   onStdout(id, data: Buffer)
+ *   onStderr(id, data: Buffer)
+ *   onExit(id, code: number|null, signal: string|null)
+ *   onError(id, message: string)
+ */
 let _callbacks = {};
 
-/** @type {Map<number, import('child_process').ChildProcess>} */
+/** @type {Map<string, import('child_process').ChildProcess>}  keyed by UUID */
 const _procs = new Map();
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-const COWORK_BACKEND = process.env.COWORK_BACKEND || 'bubblewrap';
+const COWORK_BACKEND = (() => {
+  const explicit = process.env.COWORK_BACKEND;
+  if (explicit) return explicit;
+  // Auto-detect: use bubblewrap only if bwrap is available
+  try {
+    require('child_process').execFileSync('which', ['bwrap'], { stdio: 'ignore', timeout: 2000 });
+    return 'bubblewrap';
+  } catch (_) {
+    return 'direct';
+  }
+})();
 const DEBUG          = process.env.COWORK_DEBUG === '1';
 const SESSION_BASE   = path.join(os.homedir(), '.local', 'share', 'claude-linux', 'sessions');
 
@@ -29,16 +50,36 @@ const VM_BINARY_PATHS = ['/usr/local/bin/claude', '/usr/local/bin/claude-code'];
 
 /**
  * Resolve a single path, translating VM-style paths to real host paths.
+ *
+ * The orchestrator's fx() helper replaces "$HOME" with "/sessions/<name>",
+ * so on the host we must reverse that mapping:
+ *   /sessions/<name>/mnt/<mount>/…  → SESSION_BASE/<name>/<mount>/…
+ *   /sessions/<name>/…              → $HOME/…   (reverse of fx)
+ *
  * @param {string} p
  * @returns {string}
  */
 function translatePath(p) {
   if (typeof p !== 'string') return p;
+
+  // Pattern 1: /sessions/<name>/mnt/<mount>/…
   const m = SESSION_RE.exec(p);
   if (m) {
     const [, uuid, mountName, rest] = m;
     return path.join(SESSION_BASE, uuid, mountName) + (rest || '');
   }
+
+  // Pattern 2: /sessions/<name>/… — reverse of fx("$HOME/…", name)
+  if (p.startsWith('/sessions/')) {
+    const m2 = /^\/sessions\/[^/]+(\/.*)?$/.exec(p);
+    if (m2) {
+      const rest = m2[1];
+      return rest && rest.length > 1
+        ? path.join(os.homedir(), rest)
+        : os.homedir();
+    }
+  }
+
   return p;
 }
 
@@ -123,83 +164,16 @@ function bwrapPrefix(sessionDir) {
   ];
 }
 
-/**
- * Translate VM-style /sessions/… paths in spawn opts to real host paths.
- *
- * path-translator.mjs patches path.join/path.resolve/fs.promises globally,
- * but child_process.spawn({cwd}) passes cwd directly to libuv without
- * going through path.join — so we must translate cwd (and additionalMounts
- * hostPath values) explicitly here.
- *
- * Translation rule (must stay in sync with patches/path-translator.mjs):
- *   /sessions/<uuid>/mnt/<mount-name>/…
- *     → SESSION_BASE/<uuid>/<mount-name>/…
- *
- * @param {object} opts
- * @returns {object}
- */
-function translatePaths(opts) {
-  if (!opts || typeof opts !== 'object') return opts;
-
-  const result = { ...opts };
-
-  // -- Translate cwd --
-  if (typeof result.cwd === 'string') {
-    const m = SESSION_RE.exec(result.cwd);
-    if (m) {
-      const [, uuid, mountName, rest] = m;
-      const translated = path.join(SESSION_BASE, uuid, mountName) + (rest || '');
-      if (DEBUG) {
-        process.stderr.write(`[claude-swift stub] translatePaths cwd: ${result.cwd} → ${translated}\n`);
-      }
-      result.cwd = translated;
-    }
-  }
-
-  // -- Translate env.PATH entries --
-  if (result.env && typeof result.env.PATH === 'string') {
-    const translated = result.env.PATH
-      .split(':')
-      .map(p => translatePath(p))
-      .join(':');
-    if (translated !== result.env.PATH) {
-      if (DEBUG) {
-        process.stderr.write(`[claude-swift stub] translatePaths env.PATH: ${result.env.PATH} → ${translated}\n`);
-      }
-      result.env = { ...result.env, PATH: translated };
-    }
-  }
-
-  // -- Translate additionalMounts[].hostPath --
-  if (Array.isArray(result.additionalMounts)) {
-    result.additionalMounts = result.additionalMounts.map((mount) => {
-      if (!mount || typeof mount.hostPath !== 'string') return mount;
-      const m = SESSION_RE.exec(mount.hostPath);
-      if (!m) return mount;
-      const [, uuid, mountName, rest] = m;
-      const translated = path.join(SESSION_BASE, uuid, mountName) + (rest || '');
-      if (DEBUG) {
-        process.stderr.write(
-          `[claude-swift stub] translatePaths mount "${mount.name}": ${mount.hostPath} → ${translated}\n`
-        );
-      }
-      return { ...mount, hostPath: translated };
-    });
-  }
-
-  return result;
-}
-
 // ---------------------------------------------------------------------------
 // VM interface — matches the shape the Cowork orchestrator expects.
 // ---------------------------------------------------------------------------
 const _vmBase = {
   /**
-   * Store the event callback set.
-   * @param {{ onReady?: Function, onExit?: Function, onStdout?: Function, onStderr?: Function }} cbs
+   * Store the event callbacks.
+   * The orchestrator passes 7 individual functions, NOT an object.
    */
-  setEventCallbacks(cbs) {
-    _callbacks = { ..._callbacks, ...cbs };
+  setEventCallbacks(onStdout, onStderr, onExit, onError, onNetworkStatus, onApiReachability, onStartupStep) {
+    _callbacks = { onStdout, onStderr, onExit, onError, onNetworkStatus, onApiReachability, onStartupStep };
   },
 
   /**
@@ -219,82 +193,111 @@ const _vmBase = {
 
   /**
    * Spawn a subprocess, optionally inside a bubblewrap sandbox.
-   * Stores the child in _procs keyed by PID.
    *
-   * @param {string}   binary  Executable to run.
-   * @param {string[]} args    Arguments.
-   * @param {{ cwd?: string, env?: object, additionalMounts?: Array<{name: string, hostPath: string}> }} opts
-   * @returns {Promise<number>}  The child process PID (used as stable handle).
+   * The orchestrator calls:
+   *   vm.spawn(id, processName, command, args, cwd, env,
+   *            additionalMounts, isResume, allowedDomains, oneShot,
+   *            mountSkeletonHome, mountConda)
+   *
+   * Processes are tracked by UUID (`id`), not OS PID — the orchestrator
+   * uses the same UUID for writeStdin / kill / callbacks.
+   *
+   * @returns {Promise<void>}
    */
-  spawn(binary, args = [], opts = {}) {
-    binary = resolveBinary(binary);
-    opts = translatePaths(opts);
-    const { cwd, env, additionalMounts = [] } = opts;
+  spawn(id, processName, command, args, cwd, env, additionalMounts,
+        isResume, allowedDomains, oneShot, mountSkeletonHome, mountConda) {
 
-    const sessionDir = cwd || path.join(SESSION_BASE, 'default');
-    fs.mkdirSync(sessionDir, { recursive: true });
+    if (!Array.isArray(args)) args = [];
 
-    if (typeof globalThis.__claudeRegisterMounts === 'function' && additionalMounts.length) {
-      const sessionId = path.basename(sessionDir);
-      globalThis.__claudeRegisterMounts(sessionId, additionalMounts);
+    // Always log spawn parameters so failures are diagnosable.
+    process.stderr.write(
+      `[claude-swift stub] spawn id=${id} name=${processName} ` +
+      `cmd=${command} args=[${args.join(' ')}] cwd=${cwd || '(none)'}\n`
+    );
+
+    // Translate VM paths → host paths.
+    const resolvedCommand = translatePath(command);
+    const binary = resolveBinary(resolvedCommand);
+    const resolvedArgs = args.map(a => typeof a === 'string' ? translatePath(a) : a);
+    const resolvedCwd = cwd ? translatePath(cwd) : undefined;
+
+    // Translate env PATH entries.
+    let resolvedEnv = env;
+    if (env && typeof env.PATH === 'string') {
+      resolvedEnv = {
+        ...env,
+        PATH: env.PATH.split(':').map(p => translatePath(p)).join(':'),
+      };
     }
 
-    let argv, spawnBin;
+    const sessionDir = resolvedCwd || path.join(SESSION_BASE, processName || 'default');
+    fs.mkdirSync(sessionDir, { recursive: true });
+
+    process.stderr.write(
+      `[claude-swift stub] spawn resolved: binary=${binary} ` +
+      `cwd=${sessionDir} args=[${resolvedArgs.join(' ')}]\n`
+    );
+
+    let spawnBin, argv;
     if (COWORK_BACKEND === 'bubblewrap') {
       const bwrap = bwrapPrefix(sessionDir);
       spawnBin = bwrap[0];
-      argv = [...bwrap.slice(1), binary, ...args];
+      argv = [...bwrap.slice(1), binary, ...resolvedArgs];
     } else {
       spawnBin = binary;
-      argv = args;
+      argv = resolvedArgs;
     }
 
     const child = cpSpawn(spawnBin, argv, {
       cwd: sessionDir,
-      env: { ...process.env, ...env },
+      env: { ...process.env, ...resolvedEnv },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    _procs.set(child.pid, child);
+    // Key by UUID — the orchestrator uses the UUID for writeStdin/kill.
+    _procs.set(id, child);
 
     child.stdout.on('data', (data) => {
-      if (typeof _callbacks.onStdout === 'function') _callbacks.onStdout(child.pid, data);
+      if (typeof _callbacks.onStdout === 'function') _callbacks.onStdout(id, data);
     });
     child.stderr.on('data', (data) => {
-      if (typeof _callbacks.onStderr === 'function') _callbacks.onStderr(child.pid, data);
+      if (typeof _callbacks.onStderr === 'function') _callbacks.onStderr(id, data);
     });
     child.on('exit', (code, signal) => {
-      _procs.delete(child.pid);
-      if (typeof _callbacks.onExit === 'function') _callbacks.onExit(child.pid, code, signal);
+      _procs.delete(id);
+      if (typeof _callbacks.onExit === 'function') _callbacks.onExit(id, code, signal);
     });
     child.on('error', (err) => {
       process.stderr.write(`[claude-swift stub] spawn error (${spawnBin}): ${err.message}\n`);
-      _procs.delete(child.pid);
-      if (typeof _callbacks.onExit === 'function') _callbacks.onExit(child.pid, 1, null);
+      _procs.delete(id);
+      if (typeof _callbacks.onExit === 'function') _callbacks.onExit(id, 1, null);
     });
 
-    return Promise.resolve(child.pid);
+    return Promise.resolve();
   },
 
   /**
    * Kill a previously spawned process.
-   * @param {number} pid
+   * @param {string} id  UUID assigned by the orchestrator.
+   * @param {string} [signal]
+   * @returns {Promise<void>}
    */
-  kill(pid) {
-    const child = _procs.get(pid);
+  kill(id, signal) {
+    const child = _procs.get(id);
     if (child) {
-      child.kill();
-      _procs.delete(pid);
+      child.kill(signal || 'SIGTERM');
+      _procs.delete(id);
     }
+    return Promise.resolve();
   },
 
   /**
    * Write data to the stdin of a spawned process.
-   * @param {number} pid
+   * @param {string} id  UUID assigned by the orchestrator.
    * @param {Buffer|string} data
    */
-  writeStdin(pid, data) {
-    const child = _procs.get(pid);
+  writeStdin(id, data) {
+    const child = _procs.get(id);
     if (child && child.stdin) {
       child.stdin.write(data);
     }
@@ -303,24 +306,99 @@ const _vmBase = {
   /**
    * Report whether the "guest" (VM/process) is connected.
    * On Linux there is no VM — always return true so the orchestrator proceeds.
-   * @returns {boolean}
+   * @returns {Promise<boolean>}
    */
   isGuestConnected() {
-    return true;
+    return Promise.resolve(true);
+  },
+
+  /**
+   * Register a callback for guest requests (guest→host IPC).
+   * On Linux there is no VM — store but never fire.
+   * @param {Function} cb
+   */
+  setGuestRequestCallback(cb) {
+    _callbacks.onGuestRequest = cb;
+  },
+
+  /**
+   * Send a response back to the guest (host→guest IPC).
+   * On Linux there is no VM — no-op.
+   */
+  sendGuestResponse() {},
+
+  /**
+   * Get memory balloon state.
+   * On Linux there is no VM — return a neutral state.
+   * @returns {{ currentMemoryMB: number, targetMemoryMB: number }}
+   */
+  getBalloonState() {
+    const totalMB = Math.round(os.totalmem() / (1024 * 1024));
+    return { currentMemoryMB: totalMB, targetMemoryMB: totalMB };
+  },
+
+  /**
+   * Get host memory info.
+   * @returns {{ totalMemoryMB: number, freeMemoryMB: number }}
+   */
+  getHostMemoryInfo() {
+    const totalMB = Math.round(os.totalmem() / (1024 * 1024));
+    const freeMB  = Math.round(os.freemem()  / (1024 * 1024));
+    return { totalMemoryMB: totalMB, freeMemoryMB: freeMB };
+  },
+
+  /**
+   * Check whether a spawned process is still running.
+   * @param {string} id  UUID assigned by the orchestrator.
+   * @returns {Promise<{running: boolean, exitCode?: number}>}
+   */
+  isProcessRunning(id) {
+    return Promise.resolve({ running: _procs.has(id) });
+  },
+
+  /**
+   * Install the SDK into the session directory.
+   * On Linux the SDK (claude-code) is already on the host — no-op.
+   * @returns {Promise<void>}
+   */
+  installSdk() {
+    return Promise.resolve();
+  },
+
+  /**
+   * Register an approved OAuth token for the MITM proxy.
+   * On Linux there is no MITM proxy — no-op.
+   */
+  addApprovedOauthToken() {},
+
+  /**
+   * Get disk info for session directories.
+   * @returns {{ totalBytes: number, freeBytes: number, sessions: Array }}
+   */
+  getSessionsDiskInfo() {
+    const totalMB = Math.round(os.totalmem() / (1024 * 1024));
+    return { totalBytes: totalMB * 1024 * 1024, freeBytes: totalMB * 1024 * 1024, sessions: [] };
+  },
+
+  /**
+   * Delete session directories.
+   * @param {string[]} _names
+   * @returns {{ deleted: string[], errors: object }}
+   */
+  deleteSessionDirs(_names) {
+    return Promise.resolve({ deleted: [], errors: {} });
   },
 
   /**
    * Stop the VM — on Linux, kill all tracked child processes and reset state.
    */
   stopVM() {
-    // Snapshot PIDs before clearing so callbacks fire with correct data.
     const entries = [..._procs.entries()];
     _procs.clear();
-    for (const [pid, child] of entries) {
+    for (const [id, child] of entries) {
       try { child.kill('SIGTERM'); } catch {}
       if (typeof _callbacks.onExit === 'function') {
-        const cbPid = pid;
-        process.nextTick(() => _callbacks.onExit(cbPid, null, 'SIGTERM'));
+        process.nextTick(() => _callbacks.onExit(id, null, 'SIGTERM'));
       }
     }
   },
@@ -342,6 +420,24 @@ const _vmBase = {
   isReady() {
     return true;
   },
+
+  /**
+   * Get memory info for the VM.
+   * On Linux there is no VM — return host memory info.
+   * @returns {{ totalMemoryMB: number, freeMemoryMB: number }}
+   */
+  getMemoryInfo() {
+    const totalMB = Math.round(os.totalmem() / (1024 * 1024));
+    const freeMB  = Math.round(os.freemem()  / (1024 * 1024));
+    return { totalMemoryMB: totalMB, freeMemoryMB: freeMB };
+  },
+
+  // CRITICAL: `then` must be explicitly undefined (not a function) so that
+  // the vm object is NOT treated as a thenable by the Promise resolution
+  // protocol.  The Proxy below returns a function for any unknown property,
+  // which would make `await vm` hang forever because the noop `then` never
+  // calls resolve/reject.
+  then: undefined,
 };
 
 // Getter-style properties that the orchestrator may check as properties or methods.
@@ -380,6 +476,14 @@ vm._callbacks = _callbacks;
 vm._procs     = _procs;
 
 // ---------------------------------------------------------------------------
-// Export shape — the app does: require('@ant/claude-swift').default.vm
+// Export shape — the app loads via dynamic import():
+//   tN = (await import("@ant/claude-swift")).default
+// Node's CJS→ESM interop makes module.exports the `.default` property,
+// so we export { vm } directly (NOT { default: { vm } }) to avoid
+// double-wrapping: import().default would become { default: { vm } }
+// and .vm would be undefined.
 // ---------------------------------------------------------------------------
-module.exports = { default: { vm } };
+// `then: undefined` prevents the CJS→ESM interop from treating this module
+// as a thenable during `await import(...)`.  Without it, the Proxy on `vm`
+// would return a function for `.then`, causing the dynamic import to hang.
+module.exports = { vm, then: undefined };

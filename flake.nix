@@ -284,8 +284,25 @@ print('Prepended startup line to', main)
                 "
 
                 # Write minimal NixOS launcher
-                printf '#!/bin/sh\nexec "%s" --no-sandbox "%s/lib/claude-desktop/app" "$@"\n' \
-                  "${electronBin}" "$out" > $out/bin/claude-desktop
+                # CLAUDE_CODE_LOCAL_BINARY: tell the CCD binary manager
+                # to use the system-installed claude binary directly,
+                # bypassing the download/prepare flow that breaks because
+                # getHostTarget() gets incorrectly patched by the
+                # platform-gate finder.
+                cat > $out/bin/claude-desktop <<LAUNCHER
+#!/bin/sh
+# Auto-detect claude binary if not already set
+if [ -z "\$CLAUDE_CODE_LOCAL_BINARY" ]; then
+  for __b in claude claude-code; do
+    __p="\$(command -v "\$__b" 2>/dev/null)"
+    if [ -n "\$__p" ] && [ -x "\$__p" ]; then
+      export CLAUDE_CODE_LOCAL_BINARY="\$__p"
+      break
+    fi
+  done
+fi
+exec "${electronBin}" --no-sandbox "$out/lib/claude-desktop/app" "\$@"
+LAUNCHER
                 chmod +x $out/bin/claude-desktop
               '' else ''
                 # Default: keep original launcher + bundled electron

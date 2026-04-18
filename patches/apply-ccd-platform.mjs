@@ -141,6 +141,78 @@ if (locations.getBinaryPathIfReady) {
 }
 
 // ---------------------------------------------------------------------------
+// Patch 3 — getHostTarget: restore proper target config
+//
+// The platform-gate finder (apply-platform-gate.mjs) may have incorrectly
+// replaced getHostTarget() with {return{status:"supported",config:{}}}
+// because it scores high on the gate heuristics (contains "darwin", status
+// strings, conditionals).  But getHostTarget is NOT a gate — it returns the
+// CCD binary download target configuration that prepareForTarget() needs.
+// We must restore it with the correct structure.
+// ---------------------------------------------------------------------------
+if (locations.getHostTarget) {
+  // Compute cumulative delta from all prior patches
+  let cumulativeDelta = GP_REPLACEMENT.length - (GP.end - GP.start);
+  // If getBinaryPathIfReady was also patched, account for its delta too
+  if (locations.getBinaryPathIfReady) {
+    const BPAR = locations.getBinaryPathIfReady;
+    const bparAdjStart = BPAR.start + (BPAR.start > GP.start ? (GP_REPLACEMENT.length - (GP.end - GP.start)) : 0);
+    const bparAdjEnd   = BPAR.end   + (BPAR.end   > GP.start ? (GP_REPLACEMENT.length - (GP.end - GP.start)) : 0);
+    // getBinaryPathIfReady is a prepend, so the original body is preserved
+    // with the probe inserted.  The delta is the length of the probe.
+    const LINUX_PATH_PROBE_LEN = (
+      'if(process.platform==="linux"){' +
+        'try{' +
+          'const{execSync:__ex}=require("child_process");' +
+          'const{existsSync:__ex2}=require("fs");' +
+          'for(const __b of["claude","claude-code"]){' +
+            'try{' +
+              'const __p=__ex("which "+__b+" 2>/dev/null",{stdio:"pipe",encoding:"utf8"}).trim();' +
+              'if(__p&&__ex2(__p))return __p;' +
+            '}catch(__e2){}' +
+          '}' +
+        '}catch(__e){}' +
+      '}'
+    ).length;
+    // Only add if getBinaryPathIfReady was before getHostTarget
+    if (BPAR.start < locations.getHostTarget.start) {
+      cumulativeDelta += LINUX_PATH_PROBE_LEN;
+    }
+  }
+
+  const HT = locations.getHostTarget;
+  const htAdjStart = HT.start + (HT.start > GP.start ? cumulativeDelta : 0);
+  const htAdjEnd   = HT.end   + (HT.end   > GP.start ? cumulativeDelta : 0);
+
+  if (src[htAdjStart] !== '{' || src[htAdjEnd - 1] !== '}') {
+    process.stderr.write(
+      `[apply-ccd-platform] getHostTarget range [${htAdjStart}..${htAdjEnd}] ` +
+      `does not look like a block statement — skipping this patch.\n`
+    );
+  } else {
+    // Restore getHostTarget with the proper target config structure.
+    // This mirrors getVMTarget() but for the host binary.
+    const HT_REPLACEMENT =
+      '{return{storageDir:this.storageDir,' +
+      'platform:this.getHostPlatform(),' +
+      'binaryName:"claude",' +
+      'logPrefix:"[ClaudeCodeManager-Host]"}}';
+
+    process.stderr.write(
+      `[apply-ccd-platform] Patching getHostTarget [${htAdjStart}..${htAdjEnd}]\n` +
+      `  Original: ${src.slice(htAdjStart, htAdjEnd)}\n` +
+      `  Replacement: ${HT_REPLACEMENT}\n`
+    );
+
+    src = src.slice(0, htAdjStart) + HT_REPLACEMENT + src.slice(htAdjEnd);
+  }
+} else {
+  process.stderr.write(
+    '[apply-ccd-platform] getHostTarget not in location JSON — skipping patch 3.\n'
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Write
 // ---------------------------------------------------------------------------
 writeFileSync(bundlePath, src, 'utf8');
