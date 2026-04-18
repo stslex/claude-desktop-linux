@@ -303,10 +303,45 @@ const _vmBase = {
   /**
    * Report whether the "guest" (VM/process) is connected.
    * On Linux there is no VM — always return true so the orchestrator proceeds.
-   * @returns {boolean}
+   * @returns {Promise<boolean>}
    */
   isGuestConnected() {
-    return true;
+    return Promise.resolve(true);
+  },
+
+  /**
+   * Register a callback for guest requests (guest→host IPC).
+   * On Linux there is no VM — store but never fire.
+   * @param {Function} cb
+   */
+  setGuestRequestCallback(cb) {
+    _callbacks.onGuestRequest = cb;
+  },
+
+  /**
+   * Send a response back to the guest (host→guest IPC).
+   * On Linux there is no VM — no-op.
+   */
+  sendGuestResponse() {},
+
+  /**
+   * Get memory balloon state.
+   * On Linux there is no VM — return a neutral state.
+   * @returns {{ currentMemoryMB: number, targetMemoryMB: number }}
+   */
+  getBalloonState() {
+    const totalMB = Math.round(os.totalmem() / (1024 * 1024));
+    return { currentMemoryMB: totalMB, targetMemoryMB: totalMB };
+  },
+
+  /**
+   * Get host memory info.
+   * @returns {{ totalMemoryMB: number, freeMemoryMB: number }}
+   */
+  getHostMemoryInfo() {
+    const totalMB = Math.round(os.totalmem() / (1024 * 1024));
+    const freeMB  = Math.round(os.freemem()  / (1024 * 1024));
+    return { totalMemoryMB: totalMB, freeMemoryMB: freeMB };
   },
 
   /**
