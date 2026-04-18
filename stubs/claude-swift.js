@@ -17,7 +17,17 @@ const _procs = new Map();
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-const COWORK_BACKEND = process.env.COWORK_BACKEND || 'bubblewrap';
+const COWORK_BACKEND = (() => {
+  const explicit = process.env.COWORK_BACKEND;
+  if (explicit) return explicit;
+  // Auto-detect: use bubblewrap only if bwrap is available
+  try {
+    require('child_process').execFileSync('which', ['bwrap'], { stdio: 'ignore', timeout: 2000 });
+    return 'bubblewrap';
+  } catch (_) {
+    return 'direct';
+  }
+})();
 const DEBUG          = process.env.COWORK_DEBUG === '1';
 const SESSION_BASE   = path.join(os.homedir(), '.local', 'share', 'claude-linux', 'sessions');
 
@@ -342,6 +352,47 @@ const _vmBase = {
     const totalMB = Math.round(os.totalmem() / (1024 * 1024));
     const freeMB  = Math.round(os.freemem()  / (1024 * 1024));
     return { totalMemoryMB: totalMB, freeMemoryMB: freeMB };
+  },
+
+  /**
+   * Check whether a spawned process is still running.
+   * @param {number} pid
+   * @returns {Promise<boolean>}
+   */
+  isProcessRunning(pid) {
+    return Promise.resolve(_procs.has(pid));
+  },
+
+  /**
+   * Install the SDK into the session directory.
+   * On Linux the SDK (claude-code) is already on the host — no-op.
+   * @returns {Promise<void>}
+   */
+  installSdk() {
+    return Promise.resolve();
+  },
+
+  /**
+   * Register an approved OAuth token for the MITM proxy.
+   * On Linux there is no MITM proxy — no-op.
+   */
+  addApprovedOauthToken() {},
+
+  /**
+   * Get disk info for session directories.
+   * @returns {{ totalBytes: number, freeBytes: number, usedBytes: number }}
+   */
+  getSessionsDiskInfo() {
+    const totalMB = Math.round(os.totalmem() / (1024 * 1024));
+    return { totalBytes: totalMB * 1024 * 1024, freeBytes: totalMB * 1024 * 1024, usedBytes: 0 };
+  },
+
+  /**
+   * Delete session directories.
+   * @returns {Promise<void>}
+   */
+  deleteSessionDirs() {
+    return Promise.resolve();
   },
 
   /**
