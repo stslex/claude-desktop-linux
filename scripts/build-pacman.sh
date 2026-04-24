@@ -265,9 +265,8 @@ INSTALL_EOF
 log "Generating .MTREE..."
 if ! (cd "$PKG_ROOT" && LANG=C bsdtar --uid 0 --gid 0 -czf .MTREE --format=mtree \
     --options='!all,use-set,type,uid,gid,mode,time,size,md5,sha256,link' \
-    .PKGINFO .INSTALL usr/) 2>/dev/null; then
-    log "WARNING: bsdtar --format=mtree failed — creating minimal .MTREE"
-    # Fallback: create a gzipped empty mtree (pacman can install without it).
+    .PKGINFO .INSTALL usr/) 2>&1; then
+    log "WARNING: bsdtar --format=mtree failed (see above) — creating minimal .MTREE"
     (cd "$PKG_ROOT" && echo '#mtree' | gzip > .MTREE)
 fi
 
@@ -278,18 +277,25 @@ mkdir -p "$OUTPUT_DIR"
 DEST_PKG="$OUTPUT_DIR/claude-desktop-${FULL_VERSION}-x86_64.pkg.tar.zst"
 
 log "Building pacman package..."
-# bsdtar must run from the package root so paths are relative
-(cd "$PKG_ROOT" && bsdtar --uid 0 --gid 0 -cf - .PKGINFO .INSTALL .MTREE usr/ | zstd -T0 -19 -o "$DEST_PKG")
+# Split into two steps (tar then compress) to avoid pipe failures when
+# zstd reads from stdin with multithreading — observed as silent failures
+# in CI that caused every release to ship without a Pacman package.
+TAR_TMP="$(mktemp "${BUILD_DIR}/pacman-pkg-XXXXXX")"
+trap 'rm -f "$TAR_TMP"' EXIT
+log "Creating tar archive..."
+(cd "$PKG_ROOT" && bsdtar --uid 0 --gid 0 -cf "$TAR_TMP" .PKGINFO .INSTALL .MTREE usr/)
+log "Compressing with zstd..."
+zstd -f -T0 -19 -o "$DEST_PKG" "$TAR_TMP"
+rm -f "$TAR_TMP"
+trap - EXIT
 
 sha256sum "$DEST_PKG" | awk '{print $1}' > "${DEST_PKG}.sha256"
 
 # ---------------------------------------------------------------------------
 # Verify the package is a readable archive before publishing
 # ---------------------------------------------------------------------------
-log "Verifying package archive..."
-# Use zstd decompress + bsdtar pipeline for broader compatibility (avoids
-# depending on libarchive having built-in zstd support).
-if ! zstd -d -c "$DEST_PKG" 2>/dev/null | bsdtar -tf - > /dev/null 2>&1; then
+log "Verifying package archive ($(du -h "$DEST_PKG" | awk '{print $1}'))..."
+if ! zstd -d -c "$DEST_PKG" 2>&1 | bsdtar -tf - > /dev/null 2>&1; then
     log "ERROR: Built package is not a valid archive: $DEST_PKG"
     exit 1
 fi
