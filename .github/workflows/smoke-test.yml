@@ -106,6 +106,21 @@ jobs:
           retention-days: 3
           if-no-files-found: error
 
+      - name: Verify Pacman package was built
+        run: |
+          PACMAN_PKG=$(ls output/*.pkg.tar.zst 2>/dev/null | head -1)
+          if [[ -z "$PACMAN_PKG" ]]; then
+            echo "::warning::Pacman package (.pkg.tar.zst) was NOT built — check build-pacman.sh logs above"
+            # Show the pacman build log if it exists
+            if [[ -f /tmp/claude-build/build-pacman.log ]]; then
+              echo "=== Pacman build log ==="
+              cat /tmp/claude-build/build-pacman.log
+              echo "========================"
+            fi
+          else
+            echo "Pacman package built: $PACMAN_PKG ($(du -h "$PACMAN_PKG" | awk '{print $1}'))"
+          fi
+
       # Separate upload for the Nix tarball so the nix-smoke-test job can
       # consume it without downloading the whole RPM artifact bundle.
       - name: Upload Nix tarball artifact

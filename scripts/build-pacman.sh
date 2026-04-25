@@ -42,6 +42,7 @@ for cmd in bsdtar zstd unzip; do
         log "ERROR: $cmd not found. Install: sudo apt-get install libarchive-tools zstd unzip"
         exit 1
     fi
+    log "Found $cmd: $(command -v "$cmd") ($(${cmd} --version 2>&1 | head -1 || echo 'unknown version'))"
 done
 
 VERSION="$(cat "$BUILD_DIR/VERSION")"
@@ -277,9 +278,29 @@ fi
 mkdir -p "$OUTPUT_DIR"
 DEST_PKG="$OUTPUT_DIR/claude-desktop-${FULL_VERSION}-x86_64.pkg.tar.zst"
 
+log "Pre-build package tree summary:"
+log "  PKG_ROOT    : $PKG_ROOT"
+log "  DEST_PKG    : $DEST_PKG"
+(cd "$PKG_ROOT" && du -sh usr/ .PKGINFO .INSTALL .MTREE 2>&1) | while IFS= read -r line; do
+    log "  $line"
+done
+
 log "Building pacman package..."
-# bsdtar must run from the package root so paths are relative
-(cd "$PKG_ROOT" && bsdtar --uid 0 --gid 0 -cf - .PKGINFO .INSTALL .MTREE usr/ | zstd -T0 -19 -o "$DEST_PKG")
+# bsdtar must run from the package root so paths are relative.
+# Use zstd level 10 instead of 19 — level 19 is extremely memory-hungry
+# under multi-threading (-T0) and can cause OOM kills on CI runners,
+# while level 10 is ~2x faster and only ~5% larger.
+set +e
+(cd "$PKG_ROOT" && bsdtar --uid 0 --gid 0 -cf - .PKGINFO .INSTALL .MTREE usr/ | zstd -T0 -10 -o "$DEST_PKG") 2>&1
+PACK_RC=$?
+set -e
+
+if [[ $PACK_RC -ne 0 ]]; then
+    log "ERROR: bsdtar | zstd pipeline failed (exit $PACK_RC)"
+    log "Retrying with single-threaded zstd -1 as fallback..."
+    rm -f "$DEST_PKG"
+    (cd "$PKG_ROOT" && bsdtar --uid 0 --gid 0 -cf - .PKGINFO .INSTALL .MTREE usr/ | zstd -1 -o "$DEST_PKG")
+fi
 
 sha256sum "$DEST_PKG" | awk '{print $1}' > "${DEST_PKG}.sha256"
 
