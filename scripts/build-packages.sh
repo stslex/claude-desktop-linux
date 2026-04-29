@@ -93,11 +93,11 @@ fi
 # ---------------------------------------------------------------------------
 log "--- Pacman ---"
 PACMAN_OK=false
-if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" REPACK="${REPACK_NUM:-0}" VERSION_SUFFIX="$VERSION_SUFFIX" "$SCRIPT_DIR/build-pacman.sh"; then
+if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" REPACK="${REPACK_NUM:-0}" VERSION_SUFFIX="$VERSION_SUFFIX" "$SCRIPT_DIR/build-pacman.sh" 2>&1; then
     PACMAN_OK=true
     log "Pacman build succeeded."
 else
-    log "Pacman build failed (bsdtar/zstd may not be available — skipping)."
+    log "WARNING: Pacman build failed (exit code $?) — check output above for details."
 fi
 
 # ---------------------------------------------------------------------------

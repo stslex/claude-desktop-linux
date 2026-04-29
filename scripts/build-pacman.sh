@@ -278,8 +278,10 @@ mkdir -p "$OUTPUT_DIR"
 DEST_PKG="$OUTPUT_DIR/claude-desktop-${FULL_VERSION}-x86_64.pkg.tar.zst"
 
 log "Building pacman package..."
-# bsdtar must run from the package root so paths are relative
-(cd "$PKG_ROOT" && bsdtar --uid 0 --gid 0 -cf - .PKGINFO .INSTALL .MTREE usr/ | zstd -T0 -19 -o "$DEST_PKG")
+# bsdtar must run from the package root so paths are relative.
+# Use zstd level 3 (Arch default) — level 19 can OOM or stall on CI runners
+# when compressing the ~300 MB Electron bundle.
+(cd "$PKG_ROOT" && bsdtar --uid 0 --gid 0 -cf - .PKGINFO .INSTALL .MTREE usr/ | zstd -T0 -3 -o "$DEST_PKG")
 
 sha256sum "$DEST_PKG" | awk '{print $1}' > "${DEST_PKG}.sha256"
 
