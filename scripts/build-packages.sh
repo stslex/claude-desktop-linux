@@ -93,12 +93,18 @@ fi
 # ---------------------------------------------------------------------------
 log "--- Pacman ---"
 PACMAN_OK=false
-if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" REPACK="${REPACK_NUM:-0}" VERSION_SUFFIX="$VERSION_SUFFIX" "$SCRIPT_DIR/build-pacman.sh"; then
+PACMAN_LOG="$(mktemp)"
+if BUILD_DIR="$BUILD_DIR" OUTPUT_DIR="$OUTPUT_DIR" REPACK="${REPACK_NUM:-0}" VERSION_SUFFIX="$VERSION_SUFFIX" "$SCRIPT_DIR/build-pacman.sh" 2>&1 | tee "$PACMAN_LOG"; then
     PACMAN_OK=true
     log "Pacman build succeeded."
 else
-    log "Pacman build failed (bsdtar/zstd may not be available — skipping)."
+    log "Pacman build FAILED. Full output above. Last 20 lines:"
+    tail -20 "$PACMAN_LOG" >&2
+    if [[ "${CI:-}" == "true" ]]; then
+        log "ERROR: Pacman build failed in CI where all dependencies should be available."
+    fi
 fi
+rm -f "$PACMAN_LOG"
 
 # ---------------------------------------------------------------------------
 # Build Nix tarball
