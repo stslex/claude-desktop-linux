@@ -65,3 +65,4 @@ export function tryParse(src, file, extraOpts, log) {
 export function createLogger(prefix) {
   return (msg) => process.stderr.write(`[${prefix}] ${msg}\n`);
 }
+// guard adversarial test marker, delete this branch
