@@ -301,7 +301,18 @@ if [ -z "\$CLAUDE_CODE_LOCAL_BINARY" ]; then
     fi
   done
 fi
-exec "${electronBin}" --no-sandbox "$out/lib/claude-desktop/app" "\$@"
+
+# --class= pins the Wayland app_id (and X11 WM_CLASS under XWayland)
+# to "claude-desktop". We exec nixpkgs' electron binary directly, so
+# without this the app_id defaults to "electron" — which doesn't match
+# claude-desktop.desktop, and compositors like Niri can't resolve the
+# window to its Icon= entry, leaving the icon blank.
+WAYLAND_FLAGS=""
+if [ -n "\$WAYLAND_DISPLAY" ] && [ -z "\$ELECTRON_OZONE_PLATFORM_HINT" ]; then
+  WAYLAND_FLAGS="--enable-features=UseOzonePlatform,WaylandWindowDecorations --ozone-platform=wayland"
+fi
+
+exec "${electronBin}" --class=claude-desktop \$WAYLAND_FLAGS --no-sandbox "$out/lib/claude-desktop/app" "\$@"
 LAUNCHER
                 chmod +x $out/bin/claude-desktop
               '' else ''
