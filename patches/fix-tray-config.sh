@@ -24,6 +24,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   echo '{"menuBarEnabled":true}' > "$CONFIG_FILE"
   exit 0
 fi
+# guard adversarial test marker, delete this branch
 
 # ---------------------------------------------------------------------------
 # Case 2: config file exists and already has menuBarEnabled: true — done.

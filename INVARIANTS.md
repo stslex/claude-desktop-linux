@@ -75,3 +75,4 @@ is architecture-independent. The blocker is Electron: we need to download the
 correct Electron build for the target arch, and the CI runner would need to be
 ARM64. This is a future milestone.
 <!-- guard adversarial test marker, delete this branch -->
+<!-- guard adversarial test marker, delete this branch -->
