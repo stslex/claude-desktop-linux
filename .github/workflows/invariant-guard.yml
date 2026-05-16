@@ -1,0 +1,141 @@
+name: Invariant Guard
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+  pull_request:
+    branches:
+      - main
+      - dev
+
+permissions:
+  contents: read
+
+jobs:
+  invariant-guard:
+    name: invariant-guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Reject bundled invariant/code changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Anti-tamper: disabling or altering this guard requires a standalone
+          # maintainer-only commit. This job fails closed if this workflow changes
+          # in the same event range as INVARIANTS.md or behavior-changing dirs.
+
+          EVENT_NAME="${{ github.event_name }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "${{ github.event.pull_request.base.ref }}"
+            fi
+            if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+              echo "::error::Cannot compute invariant guard diff: missing PR base commit ${BASE_SHA}"
+              exit 1
+            fi
+            if ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+              echo "::error::Cannot compute invariant guard diff: missing PR head commit ${HEAD_SHA}"
+              exit 1
+            fi
+            DIFF_BASE="$(git merge-base "$BASE_SHA" "$HEAD_SHA")" || {
+              echo "::error::Cannot compute invariant guard diff: merge-base failed"
+              exit 1
+            }
+            REV_RANGE="${DIFF_BASE}..${HEAD_SHA}"
+          elif [[ "$EVENT_NAME" == "push" ]]; then
+            BASE_SHA="${{ github.event.before }}"
+            if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
+              echo "::error::Cannot compute invariant guard diff: push base commit is unavailable"
+              exit 1
+            fi
+            if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+              echo "::error::Cannot compute invariant guard diff: missing push base commit ${BASE_SHA}"
+              exit 1
+            fi
+            if ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+              echo "::error::Cannot compute invariant guard diff: missing push head commit ${HEAD_SHA}"
+              exit 1
+            fi
+            DIFF_BASE="$BASE_SHA"
+            REV_RANGE="${BASE_SHA}..${HEAD_SHA}"
+          else
+            echo "::error::Cannot compute invariant guard diff: unsupported event ${EVENT_NAME}"
+            exit 1
+          fi
+
+          changed_files="$(git diff --name-only "$DIFF_BASE" "$HEAD_SHA" --)" || {
+            echo "::error::Cannot compute invariant guard diff"
+            exit 1
+          }
+
+          invariant_changed=0
+          code_changed=0
+          guard_changed=0
+
+          if grep -Fxq 'INVARIANTS.md' <<< "$changed_files"; then
+            invariant_changed=1
+          fi
+          if grep -Eq '^(scripts|patches|stubs|packaging)/' <<< "$changed_files"; then
+            code_changed=1
+          fi
+          if grep -Fxq '.github/workflows/invariant-guard.yml' <<< "$changed_files"; then
+            guard_changed=1
+          fi
+
+          fail=0
+          if [[ "$invariant_changed" == "1" && "$code_changed" == "1" ]]; then
+            fail=1
+          fi
+          if [[ "$guard_changed" == "1" && ( "$invariant_changed" == "1" || "$code_changed" == "1" ) ]]; then
+            fail=1
+          fi
+
+          if [[ "$fail" == "0" ]]; then
+            echo "Invariant guard passed."
+            exit 0
+          fi
+
+          echo "::error::Invariant / non-goal changes MUST be a standalone docs-only commit, separately reviewed by the maintainer. Bundling them with behavior changes is the exact scope-creep pattern this guard exists to stop (ref: ba7dae5, 0debd31)."
+
+          echo "Changed protected/code/guard files:"
+          grep -E '^(INVARIANTS\.md|\.github/workflows/invariant-guard\.yml|scripts/|patches/|stubs/|packaging/)' <<< "$changed_files" || true
+
+          commit_list="$(git rev-list --reverse "$REV_RANGE")" || {
+            echo "::error::Cannot compute offending commit list"
+            exit 1
+          }
+          if [[ -z "$commit_list" ]]; then
+            echo "::error::No commits found in computed range ${REV_RANGE}"
+            exit 1
+          fi
+
+          echo "Offending commit SHAs:"
+          related_found=0
+          while IFS= read -r commit_sha; do
+            commit_files="$(git diff-tree --root --no-commit-id --name-only -r "$commit_sha" --)" || {
+              echo "::error::Cannot inspect commit ${commit_sha}"
+              exit 1
+            }
+            if grep -Eq '^(INVARIANTS\.md|\.github/workflows/invariant-guard\.yml|scripts/|patches/|stubs/|packaging/)' <<< "$commit_files"; then
+              git show -s --format='- %H %s' "$commit_sha"
+              related_found=1
+            fi
+          done <<< "$commit_list"
+
+          if [[ "$related_found" == "0" ]]; then
+            echo "- ${HEAD_SHA}"
+          fi
+
+          exit 1

@@ -445,24 +445,7 @@ next launch.  See "Dispatch on Linux" section above for details.
 
 ## Explicit Non-Goals
 
-**Targeted platform header injection (not general spoofing).**
-`stubs/platform-headers.js` injects `Anthropic-Client-OS-Platform: darwin` and
-`Anthropic-Client-OS-Version: 14.0` on HTTP requests to `*.anthropic.com` and
-`*.claude.ai` only.  Anthropic's server checks these headers to decide whether to
-enable Cowork and serve the claude-code binary bundle — without them, Cowork never
-activates regardless of local patches.  Every working Linux Cowork implementation
-sends these headers.  We do NOT modify User-Agent strings, general browsing
-headers, or requests to any non-Anthropic domain.
-
-**No Computer Use.** Requires capturing the screen and injecting mouse/keyboard
-events. The current Cowork architecture on macOS uses `AXUIElement` (macOS
-Accessibility API) for this. Replacing it with `xdotool`/`scrot` is possible but
-produces a fragile implementation that breaks across desktop environments.
-
-**No ARM64.** The macOS DMG contains a universal binary, so the app.asar itself
-is architecture-independent. The blocker is Electron: we need to download the
-correct Electron build for the target arch, and the CI runner would need to be
-ARM64. This is a future milestone.
+Invariants and non-goals are defined in INVARIANTS.md (change-protected, see .github/workflows/invariant-guard.yml).
 
 ---
 
