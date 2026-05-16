@@ -197,6 +197,33 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Patch — Tray rebuild race: mutex + post-destroy delay + in-place fast-path
+#                            + startup-window skip on nativeTheme.updated.
+# Fixes dead Quit/Show tray-menu items on Linux: the upstream rebuild fn
+# destroy()s + new Tray()s racing SNI/dbusmenu registration, so the DBus
+# host ends up bound to a stale Tray. Failure-mode is fail-loud: exit 1
+# (caught by the syntax-validation step below) rather than silently
+# producing a broken bundle.
+# ---------------------------------------------------------------------------
+log "Patching tray rebuild race (mutex + delay + fast-path + startup gate)..."
+
+TRAY_RACE_LOG="$BUILD_DIR/patch-tray-rebuild-race.log"
+
+set +e
+node "$PATCHES_DIR/fix-tray-rebuild-race.mjs" "$APP_DIR" --bundle "$TRAY_BUNDLE" \
+  2>"$TRAY_RACE_LOG"
+TRAY_RACE_EXIT=$?
+set -e
+
+cat "$TRAY_RACE_LOG" >&2
+
+if [[ $TRAY_RACE_EXIT -ne 0 ]]; then
+  log "ERROR: fix-tray-rebuild-race.mjs failed (exit $TRAY_RACE_EXIT) — tray menu items will be dead on Linux."
+  exit 1
+fi
+log "Tray rebuild race patched."
+
+# ---------------------------------------------------------------------------
 # Patch 2 — CCD platform: add linux-x64/linux-arm64 support
 # ---------------------------------------------------------------------------
 # NOTE: This runs AFTER the platform-gate apply intentionally. The gate
@@ -685,6 +712,7 @@ touch "$GUARD"
 log "------------------------------------------------------------"
 log "Patch summary"
 log "  Platform-gate patch : $GATE_SUMMARY (all gates patched to return {status:\"supported\"})"
+log "  Tray rebuild race   : mutex + 250ms post-destroy delay + in-place fast-path + 3s startup gate"
 log "  CCD platform patch  : linux-x64/linux-arm64 added to getHostPlatform + getBinaryPathIfReady"
 log "  VM download patch   : download_and_sdk_prepare returns early on Linux"
 log "  Bundle download gate: platform check bypassed for Linux"
