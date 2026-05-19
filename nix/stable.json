@@ -1,6 +1,6 @@
 {
   "channel": "stable",
-  "version": "1.8089.0",
-  "url": "https://github.com/stslex/claude-desktop-linux/releases/download/v1.8089.0-repack-0/claude-desktop-1.8089.0-repack-0-x86_64-nix.tar.gz",
-  "sha256": "4e787dba0706fe9acab96e4ce4bcd845284d7b63ff7e6c4abbc6718d5629e3d5"
+  "version": "1.8089.1",
+  "url": "https://github.com/stslex/claude-desktop-linux/releases/download/v1.8089.1-repack-0/claude-desktop-1.8089.1-repack-0-x86_64-nix.tar.gz",
+  "sha256": "e9f4b9c281c883725aa5fa455d15a7072b7a7cc63a7e0e92e8c885093affc031"
 }
