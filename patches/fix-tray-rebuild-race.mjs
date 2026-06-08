@@ -197,6 +197,20 @@ if (!m.menuFuncName)       missing.push('menuFuncName');
 if (!m.iconPathVar)        missing.push('iconPathVar');
 if (!m.enabledLocalName)   missing.push('enabledLocalName');
 if (missing.length) {
+  // Dump the located function so the CI log captures the exact upstream
+  // shape. Patching minified third-party code is inherently brittle: when a
+  // new upstream version renames variables or restructures the rebuild fn,
+  // the extractor above stops resolving one of the five identifiers. Printing
+  // the body here lets the extractor be repaired without needing the bundle
+  // in hand (it is otherwise only reachable inside CI). patch-cowork.sh treats
+  // this exit non-fatally, so the dump surfaces as a build warning.
+  const SNIPPET_LIMIT = 2400;
+  const fnSrc = src0.slice(m.fnStart, Math.min(m.fnEnd, m.fnStart + SNIPPET_LIMIT));
+  const truncated = m.fnEnd - m.fnStart > SNIPPET_LIMIT ? ' (truncated)' : '';
+  log(`sig=${JSON.stringify(m.sig)} resolved={tray:${m.trayVarName},electron:${m.electronVarName},menu:${m.menuFuncName},iconPath:${m.iconPathVar},enabled:${m.enabledLocalName}}`);
+  log(`--- ${m.name}() source${truncated} ---`);
+  log(fnSrc);
+  log(`--- end ${m.name}() source ---`);
   die(`Located ${m.name}() but failed to extract identifiers: ${missing.join(', ')}`);
 }
 
