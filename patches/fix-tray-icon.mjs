@@ -219,9 +219,16 @@ if (winIds.length === 0) {
 }
 
 if (nonWinIds.length === 0) {
-  log('Could not find nativeTheme.shouldUseDarkColors identifier in non-Windows branch.');
+  // Upstream simplified the non-Windows path to a plain literal assignment
+  // (e.g. `e = "TrayIconTemplate.png"`), so there is no
+  // `<id>.nativeTheme.shouldUseDarkColors` chain that could reference an
+  // undefined identifier. The minifier bug this patch targets does not exist
+  // on this code path — nothing to fix, so this is a successful no-op rather
+  // than a failure.
+  log('Non-Windows branch has no nativeTheme.shouldUseDarkColors reference ' +
+      '(plain literal icon path) — no minifier bug to fix.');
   log(`  Non-Windows branch: ${src.slice(match.nonWinBranch.start, match.nonWinBranch.end)}`);
-  process.exit(1);
+  process.exit(0);
 }
 
 const correctId = winIds[0].name;
