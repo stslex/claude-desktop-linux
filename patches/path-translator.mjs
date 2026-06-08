@@ -74,6 +74,11 @@ if (!global[INIT_SYM] && process.type === 'browser') {
   const _origJoin    = path.join.bind(path);
   const _origResolve = path.resolve.bind(path);
 
+  // One-shot flags: log each non-string-arg event at most once so logs stay
+  // readable even when the bad call fires thousands of times per session.
+  let _joinNSLogged    = false;
+  let _resolveNSLogged = false;
+
   /** Set of session IDs whose directories have already been created. */
   const _createdSessionDirs = new Set();
 
@@ -108,8 +113,47 @@ if (!global[INIT_SYM] && process.type === 'browser') {
   // -------------------------------------------------------------------------
 
   // path.join, path.resolve
-  path.join    = (...segments) => translatePath(_origJoin(...segments));
-  path.resolve = (...segments) => translatePath(_origResolve(...segments));
+  //
+  // Non-string guard: the application sometimes passes a plain Object to
+  // path.join (CASE B — the translator is the messenger, not the culprit;
+  // translatePath always returns a string when given a string, so it cannot
+  // produce the bad value).  Log the event ONCE with a short stack so the
+  // real call site is visible in the logs, then forward the original args to
+  // the real join — which throws if Node rejects them — so the error is
+  // attributed to the actual caller rather than to this wrapper.
+  path.join = (...segments) => {
+    const badIdx = segments.findIndex(s => typeof s !== 'string');
+    if (badIdx !== -1) {
+      if (!_joinNSLogged) {
+        _joinNSLogged = true;
+        const v = segments[badIdx];
+        process.stderr.write(
+          `[path-translator] non-string arg to join: ${String(v)} typeof=${typeof v}` +
+          ` (arg[${badIdx}] of ${segments.length})\n` +
+          new Error().stack.split('\n').slice(1, 5).join('\n') + '\n'
+        );
+      }
+      return _origJoin(...segments);
+    }
+    return translatePath(_origJoin(...segments));
+  };
+
+  path.resolve = (...segments) => {
+    const badIdx = segments.findIndex(s => typeof s !== 'string');
+    if (badIdx !== -1) {
+      if (!_resolveNSLogged) {
+        _resolveNSLogged = true;
+        const v = segments[badIdx];
+        process.stderr.write(
+          `[path-translator] non-string arg to resolve: ${String(v)} typeof=${typeof v}` +
+          ` (arg[${badIdx}] of ${segments.length})\n` +
+          new Error().stack.split('\n').slice(1, 5).join('\n') + '\n'
+        );
+      }
+      return _origResolve(...segments);
+    }
+    return translatePath(_origResolve(...segments));
+  };
 
   // fs.promises: open / readFile / writeFile / stat / readdir
   for (const method of ['open', 'readFile', 'writeFile', 'stat', 'readdir']) {
