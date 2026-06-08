@@ -1,5 +1,6 @@
 'use strict';
 
+const { EventEmitter } = require('events');
 const { spawn: cpSpawn } = require('child_process');
 const path = require('path');
 const os   = require('os');
@@ -432,6 +433,15 @@ const _vmBase = {
     return { totalMemoryMB: totalMB, freeMemoryMB: freeMB };
   },
 
+  /**
+   * Report virtualization support.
+   * The orchestrator checks this before starting the VM; "supported" lets it proceed.
+   * Called both synchronously (require().vm.isVirtualizationSupported()) and
+   * via go() (async vm object).  On Linux there is no VM — always report supported.
+   * @returns {string}
+   */
+  isVirtualizationSupported() { return 'supported'; },
+
   // CRITICAL: `then` must be explicitly undefined (not a function) so that
   // the vm object is NOT treated as a thenable by the Promise resolution
   // protocol.  The Proxy below returns a function for any unknown property,
@@ -477,13 +487,28 @@ vm._procs     = _procs;
 
 // ---------------------------------------------------------------------------
 // Export shape — the app loads via dynamic import():
-//   tN = (await import("@ant/claude-swift")).default
-// Node's CJS→ESM interop makes module.exports the `.default` property,
-// so we export { vm } directly (NOT { default: { vm } }) to avoid
-// double-wrapping: import().default would become { default: { vm } }
-// and .vm would be undefined.
+//   Nr = (await import("@ant/claude-swift")).default
+// Node's CJS→ESM interop makes module.exports the `.default` property.
+//
+// 1.11187.4 CHANGE: the orchestrator now treats the default export itself as
+// an EventEmitter — vfr() calls Nr.removeListener() and Nr.on() immediately
+// on load (FLe/OLe), before any other method.  We therefore export an
+// EventEmitter instance that also carries .vm and the other namespaces the
+// orchestrator reads on the default export.  Events never fire on Linux (no
+// native Quick Entry / dictation / VM-lifecycle source) — harmless.
+//
+// `then: undefined` keeps the export non-thenable under `await import()`.
 // ---------------------------------------------------------------------------
-// `then: undefined` prevents the CJS→ESM interop from treating this module
-// as a thenable during `await import(...)`.  Without it, the Proxy on `vm`
-// would return a function for `.then`, causing the dynamic import to hang.
-module.exports = { vm, then: undefined };
+const _module = new EventEmitter();
+_module.setMaxListeners(0);          // orchestrator subscribes to ~10 events
+_module.vm           = vm;           // existing Proxy, unchanged
+_module.then         = undefined;    // prevent thenable detection
+_module.api          = { setCredentials() {} };
+_module.quickAccess  = {
+  overlay:   { setLoggedIn() {}, setRecentChats() {}, setActiveChatId() {}, toggle() {} },
+  dictation: { stop() {}, show() {}, toggle() {}, setLanguage() {} },
+};
+_module.midnightOwl  = { setEnabled() {} };
+_module.wakeScheduler = null;        // accessed as Nr?.wakeScheduler ?? null — null-guarded
+_module.computerUse  = null;         // guarded: if(!A.computerUse) throw — only throws on use
+module.exports = _module;
