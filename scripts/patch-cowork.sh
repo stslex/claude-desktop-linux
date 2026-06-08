@@ -227,9 +227,11 @@ set -e
 cat "$TRAY_RACE_LOG" >&2
 
 if [[ $TRAY_RACE_EXIT -ne 0 ]]; then
+  TRAY_RACE_STATUS="SKIPPED (could not match upstream bundle — see warning above)"
   log "WARNING: fix-tray-rebuild-race.mjs failed (exit $TRAY_RACE_EXIT) — tray menu items may be dead on Linux."
   log "  Bundle left untouched (patch is all-or-nothing); build continues. See log above for the located function shape."
 else
+  TRAY_RACE_STATUS="mutex + 250ms post-destroy delay + in-place fast-path + 3s startup gate"
   log "Tray rebuild race patched."
 fi
 
@@ -722,7 +724,7 @@ touch "$GUARD"
 log "------------------------------------------------------------"
 log "Patch summary"
 log "  Platform-gate patch : $GATE_SUMMARY (all gates patched to return {status:\"supported\"})"
-log "  Tray rebuild race   : mutex + 250ms post-destroy delay + in-place fast-path + 3s startup gate"
+log "  Tray rebuild race   : $TRAY_RACE_STATUS"
 log "  CCD platform patch  : linux-x64/linux-arm64 added to getHostPlatform + getBinaryPathIfReady"
 log "  VM download patch   : download_and_sdk_prepare returns early on Linux"
 log "  Bundle download gate: platform check bypassed for Linux"
