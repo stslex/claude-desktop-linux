@@ -74,6 +74,11 @@ if (!global[INIT_SYM] && process.type === 'browser') {
   const _origJoin    = path.join.bind(path);
   const _origResolve = path.resolve.bind(path);
 
+  // Per-call-site Sets: log each non-string-arg event at most once PER distinct
+  // call site so siblings aren't hidden, but the same hot path doesn't spam.
+  const _joinNSSeen    = new Set();
+  const _resolveNSSeen = new Set();
+
   /** Set of session IDs whose directories have already been created. */
   const _createdSessionDirs = new Set();
 
@@ -108,8 +113,64 @@ if (!global[INIT_SYM] && process.type === 'browser') {
   // -------------------------------------------------------------------------
 
   // path.join, path.resolve
-  path.join    = (...segments) => translatePath(_origJoin(...segments));
-  path.resolve = (...segments) => translatePath(_origResolve(...segments));
+  //
+  // Non-string guard: the application sometimes passes a plain Object to
+  // path.join (CASE B — the translator is the messenger, not the culprit;
+  // translatePath always returns a string when given a string, so it cannot
+  // produce the bad value).  Log the event once PER distinct call site so
+  // siblings aren't hidden; forward the original args to the real join —
+  // which throws if Node rejects them — so the error is attributed to the
+  // actual caller rather than to this wrapper.
+  //
+  // Exception: the managed-settings path (arg[0] = upstream Mqr()'s
+  // {status,config} struct, arg[1] = "managed-settings.json") is handled as
+  // a known-safe special case — Linux is not MDM-managed, so substitute the
+  // real config dir; the subsequent read returns ENOENT which the app treats
+  // as "no managed policy" and proceeds normally.
+  path.join = (...segments) => {
+    const badIdx = segments.findIndex(s => typeof s !== 'string');
+    if (badIdx !== -1) {
+      // Managed-settings special case: upstream Mqr() returns {status,config}
+      // on Linux instead of a dir string; dTt() path.join()s it with
+      // "managed-settings.json".  Substitute the real config dir so the app
+      // can proceed (ENOENT = no managed policy).  Unblocks LocalPluginsReader
+      // and LocalSessions.start.
+      if (badIdx === 0 && segments.includes('managed-settings.json')) {
+        const rest = segments.slice(1).filter(s => typeof s === 'string');
+        return _origJoin(os.homedir(), '.config', 'Claude', ...rest);
+      }
+      const frame = new Error().stack.split('\n')[2] || '';
+      if (!_joinNSSeen.has(frame)) {
+        _joinNSSeen.add(frame);
+        const v = segments[badIdx];
+        process.stderr.write(
+          `[path-translator] non-string arg to join: ${String(v)} typeof=${typeof v}` +
+          ` (arg[${badIdx}] of ${segments.length})\n` +
+          new Error().stack.split('\n').slice(1, 5).join('\n') + '\n'
+        );
+      }
+      return _origJoin(...segments);
+    }
+    return translatePath(_origJoin(...segments));
+  };
+
+  path.resolve = (...segments) => {
+    const badIdx = segments.findIndex(s => typeof s !== 'string');
+    if (badIdx !== -1) {
+      const frame = new Error().stack.split('\n')[2] || '';
+      if (!_resolveNSSeen.has(frame)) {
+        _resolveNSSeen.add(frame);
+        const v = segments[badIdx];
+        process.stderr.write(
+          `[path-translator] non-string arg to resolve: ${String(v)} typeof=${typeof v}` +
+          ` (arg[${badIdx}] of ${segments.length})\n` +
+          new Error().stack.split('\n').slice(1, 5).join('\n') + '\n'
+        );
+      }
+      return _origResolve(...segments);
+    }
+    return translatePath(_origResolve(...segments));
+  };
 
   // fs.promises: open / readFile / writeFile / stat / readdir
   for (const method of ['open', 'readFile', 'writeFile', 'stat', 'readdir']) {
