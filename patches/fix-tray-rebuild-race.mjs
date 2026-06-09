@@ -106,6 +106,11 @@ function inspectFunction(node) {
 
   const sig = { destroy: 0, newTray: 0, setContextMenu: 0, menuBarEnabled: 0, isReady: 0 };
   let trayVarName, electronVarName, menuFuncName, iconPathVar, enabledLocalName;
+  // State for indirect menuFuncName resolution: upstream may hoist the builder call
+  // into an assignment (vT = builder()) before passing the variable to setContextMenu.
+  let _menuArgIdent  = null;   // Identifier name used as setContextMenu arg
+  let _menuArgOffset = Infinity; // AST offset of that setContextMenu call
+  let _menuFuncNameForm = null;  // 'direct call' | 'assignment to <ident>' (for logging)
 
   simple(body, {
     CallExpression(n) {
@@ -124,7 +129,16 @@ function inspectFunction(node) {
         sig.setContextMenu++;
         const arg = n.arguments?.[0];
         if (arg?.type === 'CallExpression' && arg.callee?.type === 'Identifier') {
-          menuFuncName ||= arg.callee.name;
+          // Direct form: rE.setContextMenu(builder())
+          if (!menuFuncName) {
+            menuFuncName = arg.callee.name;
+            _menuFuncNameForm = 'direct call';
+          }
+        } else if (!menuFuncName && arg?.type === 'Identifier') {
+          // Indirect form: rE.setContextMenu(vT) — record for second-pass resolution.
+          // Update on every occurrence so we track the last (rightmost) call site.
+          _menuArgIdent  = arg.name;
+          _menuArgOffset = n.start;
         }
       }
       if (n.arguments?.[0]?.type === 'Literal'
@@ -157,6 +171,39 @@ function inspectFunction(node) {
     },
   });
 
+  // Second pass: indirect menuFuncName resolution.
+  // If setContextMenu received an Identifier (vT), find the last AssignmentExpression
+  // or VariableDeclarator inside this function body that assigns a CallExpression with
+  // an Identifier callee to that variable, at an offset before the setContextMenu call.
+  if (!menuFuncName && _menuArgIdent !== null) {
+    let bestOffset = -1;
+    simple(body, {
+      AssignmentExpression(n) {
+        if (n.operator !== '='
+            || n.left?.type  !== 'Identifier' || n.left.name  !== _menuArgIdent
+            || n.right?.type !== 'CallExpression'
+            || n.right.callee?.type !== 'Identifier'
+            || n.start > _menuArgOffset) return;
+        if (n.start > bestOffset) {
+          bestOffset        = n.start;
+          menuFuncName      = n.right.callee.name;
+          _menuFuncNameForm = `assignment to ${_menuArgIdent}`;
+        }
+      },
+      VariableDeclarator(n) {
+        if (n.id?.type  !== 'Identifier' || n.id.name   !== _menuArgIdent
+            || n.init?.type !== 'CallExpression'
+            || n.init.callee?.type !== 'Identifier'
+            || n.start > _menuArgOffset) return;
+        if (n.start > bestOffset) {
+          bestOffset        = n.start;
+          menuFuncName      = n.init.callee.name;
+          _menuFuncNameForm = `VariableDeclarator for ${_menuArgIdent}`;
+        }
+      },
+    });
+  }
+
   const score = (sig.destroy ? 1 : 0) + (sig.newTray ? 1 : 0)
               + (sig.setContextMenu ? 1 : 0) + (sig.menuBarEnabled ? 1 : 0)
               + (sig.isReady ? 1 : 0);
@@ -169,6 +216,7 @@ function inspectFunction(node) {
       bodyStart: body.start, bodyEnd: body.end,
       score, sig,
       trayVarName, electronVarName, menuFuncName, iconPathVar, enabledLocalName,
+      _menuFuncNameForm,
     });
   }
 }
@@ -216,6 +264,7 @@ if (missing.length) {
 
 log(`Rebuild fn: ${m.name}() body=[${m.bodyStart}..${m.bodyEnd}] score=${m.score}/5`);
 log(`  electron=${m.electronVarName}  tray=${m.trayVarName}  menu=${m.menuFuncName}()  iconPath=${m.iconPathVar}  enabledLocal=${m.enabledLocalName}`);
+log(`  menuFuncName=${m.menuFuncName} resolved via ${m._menuFuncNameForm || 'unknown'}`);
 
 // ---------------------------------------------------------------------------
 // (2) Locate nativeTheme.on("updated", cb) where cb calls m.name().
