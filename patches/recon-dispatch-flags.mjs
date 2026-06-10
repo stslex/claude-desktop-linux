@@ -369,8 +369,16 @@ function scanFile(file) {
   if (hasAnyHash) {
     walk.ancestor(ast, {
       Literal(node, _state, ancestors) {
-        if (typeof node.value !== 'number') return;
-        const list = occurrences.get(node.value);
+        // The flag ids appear EITHER as numeric literals (older bundles) OR as
+        // STRING keys passed to the flag store, e.g. tQ("3572572142", …) /
+        // lt("1143815894").  The first version of this recon only inspected
+        // numeric Literal nodes, which produced a false "NOT FOUND" on bundles
+        // (incl. 1.11187.4) that key flags by string — match both here.
+        let key = null;
+        if (typeof node.value === 'number') key = node.value;
+        else if (typeof node.value === 'string' && /^\d+$/.test(node.value)) key = Number(node.value);
+        if (key === null) return;
+        const list = occurrences.get(key);
         if (!list) return;
 
         const parent = ancestors[ancestors.length - 2];

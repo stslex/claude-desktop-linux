@@ -1,162 +1,109 @@
+#!/usr/bin/env node
 /**
- * patch-dispatch.mjs
+ * patch-dispatch.mjs  —  EXPERIMENTAL (ENABLE_EXPERIMENTAL_PATCHES=1 only)
  *
- * AST-based patches that force-enable GrowthBook feature flags required for
- * Dispatch on Linux.  These flags are hash constants that appear as plain
- * numeric literals in the minified JS.
+ * Force-enables the GrowthBook feature flags that gate Dispatch / "Local Agent
+ * Mode" (LAM) so the sessions-bridge can run on the Linux repackage.
  *
- * Sub-patches:
- *   A) Sessions-bridge init gate   (hash: 3572572142)
- *   B) Remote session control check (hash: 2216414644)
- *   C) Platform label               (function returning "Darwin"/"Windows" for platform)
- *   D) hostLoopMode                 (hash: 1143815894)
+ * ── Why this rewrite ──────────────────────────────────────────────────────
+ * The previous version of this script searched for the three reference flag
+ * hashes (3572572142 / 2216414644 / 1143815894) as *numeric* literals and then
+ * flipped the nearest `!0`/`!1` boolean it could find.  On 1.11187.4 that is
+ * doubly wrong:
+ *   1. The hashes are no longer numeric literals — they appear as *string*
+ *      keys passed to the flag store (`tQ("3572572142", …)`,
+ *      `lt("1143815894")`).  An AST walk that only inspects numeric Literal
+ *      nodes (as the old recon did) reports them as "NOT FOUND".  They ARE
+ *      present; the recon had a false negative.
+ *   2. "Flip the nearest boolean" is a fragile heuristic that mutated unrelated
+ *      code and corrupted the bundle (SIGSEGV on launch) — which is why this
+ *      patch was quarantined behind the experimental flag in the first place.
+ *
+ * ── What this version does ────────────────────────────────────────────────
+ * Dispatch flags are served by a GrowthBook-style store.  In the minified main
+ * bundle the store is a module-local object (`zd` in 1.11187.4) replaced
+ * wholesale by a single setter:
+ *
+ *     function KAt(A){ const e=zd; zd=A, mF=!0; … emit per-key change events … }
+ *
+ * Readers consult it two ways, both of which we must satisfy:
+ *     lt(id)  ->  (zd[id]?.on) ?? false                 // isFeatureOn
+ *     V7A     =  !!(zd["3572572142"]?.on) || SAn        // direct .on read
+ *
+ * So flipping the *reader* (lt) is not enough — `V7A` reads `.on` straight off
+ * the store entry.  The robust, single-site fix is to force the target flag
+ * entries `on:true` *inside the store setter*, before `zd` is published.  The
+ * setter's own diff/emit logic then notifies every subscriber (including the
+ * one that recomputes `V7A` and starts the bridge), and the override survives
+ * every flag refresh because the setter runs on every refresh.
+ *
+ * We match the setter by SHAPE (not by minified name): an assignment
+ * `STORE = <param>` immediately followed by `READY = !0` in the same sequence,
+ * where STORE is an identifier that is elsewhere indexed and has `.on` read off
+ * it (the isFeatureOn signature) and <param> is the setter's sole parameter.
+ * The right-hand `<param>` is rewritten to an IIFE that force-enables the flags
+ * and returns the (mutated) object.
+ *
+ * Flags forced on (all verified to gate Dispatch on 1.11187.4):
+ *   3572572142  sessions-bridge init gate   — drives V7A; without it the bridge
+ *               never calls .start() (logs "init skipped — gate off
+ *               (yukon_silver_cuttlefish_desktop)").
+ *   1143815894  hostLoopMode                — Cdt()=lt("1143815894"); makes
+ *               yD() pick host-loop execution (run the dispatched session
+ *               directly on the host) instead of the macOS VM, which does not
+ *               exist on Linux.
+ *   2216414644  remote session control      — lt("2216414644"); without it a
+ *               mobile-channel ("dispatched from phone") session throws
+ *               "Remote session control is disabled".
+ *
+ * This patch is purely client-side.  It does NOT, and cannot, satisfy the
+ * server-side requirements: the account must be entitled for Cowork / Claude
+ * Code sessions (registration POST /v1/environments/bridge returns 403
+ * "Cowork OAuth denied" otherwise), and background wake-up of a closed app
+ * still depends on APNs/FCM push, which is out of scope.  See the build summary
+ * and docs for the full caveat list.
  *
  * Usage:
  *   node patches/patch-dispatch.mjs <app-extracted-dir>
  *
- * Exits 0 on success, 1 if critical sub-patches fail.
+ * Optional env:
+ *   DISPATCH_FORCE_FLAGS   Comma-separated extra/override flag ids to force on
+ *                          (added to the defaults above).
+ *
+ * Exit codes (INVARIANTS.md — patches self-validate):
+ *   0  Store setter found and patched.
+ *   1  Store setter pattern not found (the bundle shape changed) or the
+ *      resulting bundle no longer parses.  patch-cowork.sh treats this as a
+ *      non-fatal WARNING, so `main`/default builds are unaffected.
  */
 
-import { readFileSync, writeFileSync } from 'fs';
-import { join, relative } from 'path';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { join } from 'path';
 import * as walk from 'acorn-walk';
 import { collectJsFiles, tryParse, createLogger } from './patch-utils.mjs';
 
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
-const FLAG_HASHES = {
-  sessionsBridge: 3572572142,
-  remoteSessionControl: 2216414644,
-  hostLoopMode: 1143815894,
-};
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 const log = createLogger('patch-dispatch');
 
-/**
- * Walk ancestors to find the nearest enclosing scope (function or block).
- */
-function findEnclosingScope(ancestors) {
-  for (let i = ancestors.length - 1; i >= 0; i--) {
-    const a = ancestors[i];
-    if (
-      a.type === 'FunctionDeclaration' ||
-      a.type === 'FunctionExpression' ||
-      a.type === 'ArrowFunctionExpression' ||
-      a.type === 'BlockStatement'
-    ) {
-      return a;
-    }
-  }
-  return null;
-}
+// ---------------------------------------------------------------------------
+// Flags to force on. The three defaults all gate Dispatch/LAM on 1.11187.4.
+// ---------------------------------------------------------------------------
+const DEFAULT_FLAGS = [
+  { id: '3572572142', name: 'sessions-bridge init gate (drives V7A → bridge start)' },
+  { id: '1143815894', name: 'hostLoopMode (run dispatched session on host, no VM)' },
+  { id: '2216414644', name: 'remote session control (mobile/dispatched channel)' },
+];
 
-/**
- * Find a nearby boolean init (`!1` or `!0`) within a scope.
- * Returns { start, end, currentValue } or null.
- *
- * "Nearby" means: within the same function/block scope as the flag hash literal.
- * The boolean is typically in a VariableDeclarator init or an assignment.
- */
-function findNearbyBooleanInit(ast, src, flagNode, scope) {
-  const candidates = [];
+const extraFlags = (process.env.DISPATCH_FORCE_FLAGS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .map((id) => ({ id, name: 'extra (DISPATCH_FORCE_FLAGS)' }));
 
-  // Use ancestor walk so we can verify the boolean is in a VariableDeclarator
-  // init or AssignmentExpression right-hand side — not an arbitrary expression
-  // like a function argument or conditional test.
-  walk.ancestor(scope, {
-    UnaryExpression(node, _state, ancestors) {
-      // Match `!0` (true) or `!1` (false)
-      if (
-        node.operator === '!' &&
-        node.argument &&
-        node.argument.type === 'Literal' &&
-        (node.argument.value === 0 || node.argument.value === 1)
-      ) {
-        // Verify this boolean is an initializer or assignment target, not
-        // an arbitrary expression (e.g. function argument, return value).
-        const parent = ancestors[ancestors.length - 2];
-        const isVarInit = parent &&
-          parent.type === 'VariableDeclarator' &&
-          parent.init === node;
-        const isAssignment = parent &&
-          parent.type === 'AssignmentExpression' &&
-          parent.right === node;
-        if (!isVarInit && !isAssignment) return;
-
-        candidates.push({
-          start: node.start,
-          end: node.end,
-          currentValue: node.argument.value === 0, // !0 = true, !1 = false
-          raw: src.slice(node.start, node.end),
-        });
-      }
-    },
-  });
-
-  if (candidates.length === 0) return null;
-
-  // Find the closest boolean init to the flag hash.
-  // Prefer `!1` (false) since we want to flip false→true.
-  const falseCandidates = candidates.filter((c) => !c.currentValue);
-
-  // Pick the closest one to the flag literal by offset distance
-  const target = flagNode.start;
-  const pool = falseCandidates.length > 0 ? falseCandidates : candidates;
-  pool.sort((a, b) => Math.abs(a.start - target) - Math.abs(b.start - target));
-
-  return pool[0] || null;
-}
-
-/**
- * Find a conditional expression that uses the result of a call containing
- * the flag hash, and make it evaluate to the desired value.
- */
-function findConditionalNearFlag(ast, src, flagNode, scope) {
-  const candidates = [];
-
-  walk.ancestor(scope, {
-    ConditionalExpression(node, _state, ancestors) {
-      // Check if the test references code near our flag
-      const testSrc = src.slice(node.test.start, node.test.end);
-      if (
-        Math.abs(node.start - flagNode.start) < 2000 &&
-        node.test.type === 'UnaryExpression' &&
-        node.test.operator === '!'
-      ) {
-        candidates.push({
-          type: 'conditional-test',
-          start: node.test.start,
-          end: node.test.end,
-          raw: testSrc,
-        });
-      }
-    },
-    IfStatement(node, _state, ancestors) {
-      const testSrc = src.slice(node.test.start, node.test.end);
-      if (
-        Math.abs(node.start - flagNode.start) < 2000 &&
-        node.test.type === 'UnaryExpression' &&
-        node.test.operator === '!'
-      ) {
-        candidates.push({
-          type: 'if-test',
-          start: node.test.start,
-          end: node.test.end,
-          raw: testSrc,
-        });
-      }
-    },
-  });
-
-  return candidates[0] || null;
-}
+const FLAGS = [...DEFAULT_FLAGS, ...extraFlags];
+const FLAG_IDS = [...new Set(FLAGS.map((f) => f.id))];
 
 // ---------------------------------------------------------------------------
-// Main
+// CLI / paths
 // ---------------------------------------------------------------------------
 const appDir = process.argv[2];
 if (!appDir) {
@@ -165,387 +112,192 @@ if (!appDir) {
 }
 
 const viteDir = join(appDir, '.vite', 'build');
-const scanDirs = [viteDir, appDir];
+const mainBundle = join(viteDir, 'index.js');
 
-log('Scanning for Dispatch feature flag patterns...');
+// The store setter lives in the main bundle. Prefer it, but fall back to a
+// scan so the patch still works if the entry point is renamed.
+const candidateFiles = existsSync(mainBundle)
+  ? [mainBundle, ...collectJsFiles(viteDir, log).filter((f) => f !== mainBundle)]
+  : collectJsFiles(viteDir, log);
 
-// ---------------------------------------------------------------------------
-// Phase 1: Find all files containing our flag hashes
-// ---------------------------------------------------------------------------
-const flagLocations = new Map(); // hash → [{ file, src, ast, node, scope }]
-
-for (const hash of Object.values(FLAG_HASHES)) {
-  flagLocations.set(hash, []);
-}
-
-// Also track platform label function candidates
-const platformLabelCandidates = []; // { file, src, fnNode }
-
-for (const scanDir of scanDirs) {
-  const files = collectJsFiles(scanDir);
-
-  for (const file of files) {
-    let src;
-    try {
-      src = readFileSync(file, 'utf8');
-    } catch {
-      continue;
-    }
-
-    // Quick text filter
-    const hasAnyHash = Object.values(FLAG_HASHES).some((h) =>
-      src.includes(String(h)),
-    );
-    const hasPlatformLabel =
-      src.includes('"darwin"') ||
-      src.includes('"Darwin"') ||
-      src.includes('"win32"');
-
-    if (!hasAnyHash && !hasPlatformLabel) continue;
-
-    const ast = tryParse(src, file, { locations: true }, log);
-    if (!ast) continue;
-
-    const relFile = relative(appDir, file);
-
-    // Find flag hash literals
-    if (hasAnyHash) {
-      walk.ancestor(ast, {
-        Literal(node, _state, ancestors) {
-          if (typeof node.value !== 'number') return;
-          const locations = flagLocations.get(node.value);
-          if (!locations) return;
-
-          const scope = findEnclosingScope(ancestors);
-          locations.push({
-            file,
-            relFile,
-            src,
-            ast,
-            node,
-            scope,
-            ancestors: [...ancestors],
-          });
-        },
-      });
-    }
-
-    // Find platform label function (Sub-patch C)
-    // A function containing "darwin" and "win32" that returns a string like
-    // "Darwin", "Windows", "macOS", etc.
-    if (hasPlatformLabel) {
-      walk.simple(ast, {
-        FunctionDeclaration(node) {
-          checkPlatformLabelFn(node, file, relFile, src);
-        },
-        FunctionExpression(node) {
-          checkPlatformLabelFn(node, file, relFile, src);
-        },
-        ArrowFunctionExpression(node) {
-          checkPlatformLabelFn(node, file, relFile, src);
-        },
-      });
-    }
-  }
-
-  // Check if we found all hashes in this scan dir
-  const allFound = [...flagLocations.values()].every((l) => l.length > 0);
-  if (allFound && platformLabelCandidates.length > 0) break;
-}
-
-function checkPlatformLabelFn(node, file, relFile, src) {
-  if (!node.body) return;
-
-  const body = node.body.type === 'BlockStatement' ? node.body : node.body;
-  const fnSrc = src.slice(node.start, node.end);
-
-  // Must contain both "darwin" and "win32"
-  if (!fnSrc.includes('"darwin"') && !fnSrc.includes("'darwin'")) return;
-  if (!fnSrc.includes('"win32"') && !fnSrc.includes("'win32'")) return;
-
-  // Must return a string (look for return statements with string literals)
-  const strings = new Set();
-  walk.simple(body.type === 'BlockStatement' ? body : { type: 'ExpressionStatement', expression: body }, {
-    ReturnStatement(n) {
-      if (n.argument && n.argument.type === 'Literal' && typeof n.argument.value === 'string') {
-        strings.add(n.argument.value);
-      }
-    },
-  });
-
-  // Should NOT return { status: ... } objects (that's the Cowork gate)
-  let hasStatusReturn = false;
-  walk.simple(body.type === 'BlockStatement' ? body : { type: 'ExpressionStatement', expression: body }, {
-    ReturnStatement(n) {
-      if (
-        n.argument &&
-        n.argument.type === 'ObjectExpression' &&
-        n.argument.properties &&
-        n.argument.properties.some(
-          (p) => p.key && (p.key.name === 'status' || p.key.value === 'status'),
-        )
-      ) {
-        hasStatusReturn = true;
-      }
-    },
-  });
-
-  if (hasStatusReturn) return;
-
-  // Must return at least one human-readable platform name
-  const platformNames = ['Darwin', 'Windows', 'macOS', 'Mac', 'Win'];
-  const hasPlatformName = [...strings].some((s) =>
-    platformNames.some((pn) => s.includes(pn)),
-  );
-
-  if (!hasPlatformName && strings.size === 0) return;
-
-  // Compact: < 500 chars
-  if (fnSrc.length > 500) return;
-
-  platformLabelCandidates.push({
-    file,
-    relFile,
-    src,
-    fnNode: node,
-    bodyNode: body,
-    strings,
-    fnSrc,
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Phase 2: Report findings
-// ---------------------------------------------------------------------------
-const subPatchResults = {
-  A: { name: 'sessions-bridge', hash: FLAG_HASHES.sessionsBridge, applied: false },
-  B: { name: 'remote-session-control', hash: FLAG_HASHES.remoteSessionControl, applied: false },
-  C: { name: 'platform-label', hash: null, applied: false },
-  D: { name: 'hostLoopMode', hash: FLAG_HASHES.hostLoopMode, applied: false },
-};
-
-for (const [key, locs] of flagLocations) {
-  const name = Object.entries(FLAG_HASHES).find(([, v]) => v === key)?.[0] || 'unknown';
-  log(`Flag ${name} (${key}): ${locs.length} occurrence(s)`);
-  for (const loc of locs) {
-    log(`  ${loc.relFile} [${loc.node.start}]`);
-  }
-}
-
-log(`Platform label candidates: ${platformLabelCandidates.length}`);
-for (const c of platformLabelCandidates) {
-  log(`  ${c.relFile} [${c.fnNode.start}..${c.fnNode.end}]: returns ${[...c.strings].join(', ')}`);
-}
-
-// ---------------------------------------------------------------------------
-// Phase 3: Apply sub-patches
-// ---------------------------------------------------------------------------
-// Track all patches grouped by file for correct offset management
-const allPatches = new Map(); // file → [{ start, end, replacement, description }]
-
-function addPatch(file, src, start, end, replacement, description) {
-  if (!allPatches.has(file)) {
-    allPatches.set(file, { src, patches: [] });
-  }
-  allPatches.get(file).patches.push({ start, end, replacement, description });
-}
-
-// --- Sub-patch A: Sessions-bridge init gate ---
-{
-  const locs = flagLocations.get(FLAG_HASHES.sessionsBridge);
-  if (locs.length > 0) {
-    for (const loc of locs) {
-      if (!loc.scope) {
-        log(`Sub-patch A: No enclosing scope for flag at ${loc.relFile}:${loc.node.start}`);
-        continue;
-      }
-
-      const boolInit = findNearbyBooleanInit(loc.ast, loc.src, loc.node, loc.scope);
-      if (boolInit && !boolInit.currentValue) {
-        addPatch(
-          loc.file, loc.src,
-          boolInit.start, boolInit.end,
-          '!0',
-          `Sub-patch A: Flip ${boolInit.raw} → !0 near sessionsBridge flag`,
-        );
-        subPatchResults.A.applied = true;
-        log(`Sub-patch A: Will flip ${boolInit.raw} → !0 at ${loc.relFile}:${boolInit.start}`);
-        break; // Only patch the first occurrence
-      }
-    }
-    if (!subPatchResults.A.applied) {
-      log('Sub-patch A: Found flag but no nearby boolean to flip.');
-    }
-  } else {
-    log('Sub-patch A: Flag 3572572142 not found.');
-  }
-}
-
-// --- Sub-patch B: Remote session control check ---
-{
-  const locs = flagLocations.get(FLAG_HASHES.remoteSessionControl);
-  if (locs.length > 0) {
-    for (const loc of locs) {
-      if (!loc.scope) {
-        log(`Sub-patch B: No enclosing scope for flag at ${loc.relFile}:${loc.node.start}`);
-        continue;
-      }
-
-      const cond = findConditionalNearFlag(loc.ast, loc.src, loc.node, loc.scope);
-      if (cond) {
-        addPatch(
-          loc.file, loc.src,
-          cond.start, cond.end,
-          '!1',
-          `Sub-patch B: Replace ${cond.raw} → !1 near remoteSessionControl flag`,
-        );
-        subPatchResults.B.applied = true;
-        log(`Sub-patch B: Will replace ${cond.raw} → !1 at ${loc.relFile}:${cond.start}`);
-        break;
-      }
-
-      // Fallback: try to find a nearby boolean init like sub-patch A
-      const boolInit = findNearbyBooleanInit(loc.ast, loc.src, loc.node, loc.scope);
-      if (boolInit && !boolInit.currentValue) {
-        addPatch(
-          loc.file, loc.src,
-          boolInit.start, boolInit.end,
-          '!0',
-          `Sub-patch B: Flip ${boolInit.raw} → !0 near remoteSessionControl flag`,
-        );
-        subPatchResults.B.applied = true;
-        log(`Sub-patch B: Will flip ${boolInit.raw} → !0 at ${loc.relFile}:${boolInit.start}`);
-        break;
-      }
-    }
-    if (!subPatchResults.B.applied) {
-      log('Sub-patch B: Found flag but no conditional/boolean to patch.');
-    }
-  } else {
-    log('Sub-patch B: Flag 2216414644 not found.');
-  }
-}
-
-// --- Sub-patch C: Platform label ---
-{
-  if (platformLabelCandidates.length > 0) {
-    // Pick the best candidate (shortest, most platform names)
-    const best = platformLabelCandidates[0];
-    const bodyNode = best.bodyNode;
-
-    if (bodyNode.type === 'BlockStatement') {
-      // Find the last return statement for the "unsupported" fallback
-      // and add a linux case before it.
-      // Strategy: find the conditional chain and add linux case.
-      // Simpler approach: prepend a linux check at the start of the function body.
-      const bodyStart = bodyNode.start; // points to '{'
-      const patch =
-        `{if(process.platform==="linux")return"Linux";` +
-        best.src.slice(bodyNode.start + 1, bodyNode.end);
-
-      addPatch(
-        best.file, best.src,
-        bodyNode.start, bodyNode.end,
-        patch,
-        `Sub-patch C: Add "linux" → "Linux" case to platform label function`,
-      );
-      subPatchResults.C.applied = true;
-      log(`Sub-patch C: Will add linux case to platform label at ${best.relFile}:${bodyNode.start}`);
-    } else {
-      // Concise arrow: expr → { if (linux) return "Linux"; return <expr>; }
-      const origExpr = best.src.slice(bodyNode.start, bodyNode.end);
-      const patch = `{if(process.platform==="linux")return"Linux";return ${origExpr}}`;
-
-      addPatch(
-        best.file, best.src,
-        bodyNode.start, bodyNode.end,
-        patch,
-        `Sub-patch C: Wrap concise arrow with linux case`,
-      );
-      subPatchResults.C.applied = true;
-      log(`Sub-patch C: Will wrap concise arrow at ${best.relFile}:${bodyNode.start}`);
-    }
-  } else {
-    log('Sub-patch C: No platform label function found.');
-  }
-}
-
-// --- Sub-patch D: hostLoopMode ---
-{
-  const locs = flagLocations.get(FLAG_HASHES.hostLoopMode);
-  if (locs.length > 0) {
-    for (const loc of locs) {
-      if (!loc.scope) {
-        log(`Sub-patch D: No enclosing scope for flag at ${loc.relFile}:${loc.node.start}`);
-        continue;
-      }
-
-      const boolInit = findNearbyBooleanInit(loc.ast, loc.src, loc.node, loc.scope);
-      if (boolInit && !boolInit.currentValue) {
-        addPatch(
-          loc.file, loc.src,
-          boolInit.start, boolInit.end,
-          '!0',
-          `Sub-patch D: Flip ${boolInit.raw} → !0 near hostLoopMode flag`,
-        );
-        subPatchResults.D.applied = true;
-        log(`Sub-patch D: Will flip ${boolInit.raw} → !0 at ${loc.relFile}:${boolInit.start}`);
-        break;
-      }
-    }
-    if (!subPatchResults.D.applied) {
-      log('Sub-patch D: Found flag but no nearby boolean to flip.');
-    }
-  } else {
-    log('Sub-patch D: Flag 1143815894 not found.');
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Phase 4: Write patched files
-// ---------------------------------------------------------------------------
-let totalPatched = 0;
-
-for (const [file, { src, patches }] of allPatches) {
-  const relFile = relative(appDir, file);
-
-  // Sort patches by descending start offset to preserve earlier offsets
-  const sorted = patches.sort((a, b) => b.start - a.start);
-
-  let patched = src;
-  for (const p of sorted) {
-    log(`Applying: ${p.description}`);
-    patched = patched.slice(0, p.start) + p.replacement + patched.slice(p.end);
-    totalPatched++;
-  }
-
-  writeFileSync(file, patched, 'utf8');
-  log(`Wrote ${relFile} (${src.length} → ${patched.length} bytes)`);
-}
-
-// ---------------------------------------------------------------------------
-// Phase 5: Summary and exit
-// ---------------------------------------------------------------------------
-log('------------------------------------------------------------');
-log('Dispatch patch summary:');
-for (const [key, result] of Object.entries(subPatchResults)) {
-  const status = result.applied ? 'APPLIED' : 'NOT FOUND';
-  const hashStr = result.hash ? ` (${result.hash})` : '';
-  log(`  Sub-patch ${key} — ${result.name}${hashStr}: ${status}`);
-}
-log(`Total patches applied: ${totalPatched}`);
-log('------------------------------------------------------------');
-
-// Exit 1 only if ALL sub-patches failed (no useful patches at all)
-if (totalPatched === 0) {
-  log('ERROR: No Dispatch patches could be applied. The minified code may have changed structure.');
+if (candidateFiles.length === 0) {
+  log(`ERROR: No .js files found under ${viteDir}.`);
   process.exit(1);
 }
 
-// Warn if some sub-patches didn't apply (non-fatal)
-const notApplied = Object.entries(subPatchResults).filter(([, r]) => !r.applied);
-if (notApplied.length > 0) {
-  log(`WARNING: ${notApplied.length} sub-patch(es) did not apply. Dispatch may be partially functional.`);
+// ---------------------------------------------------------------------------
+// AST helpers
+// ---------------------------------------------------------------------------
+
+/** Sole-parameter name of a function node, or null. */
+function soleParamName(fn) {
+  if (!fn || !Array.isArray(fn.params) || fn.params.length !== 1) return null;
+  const p = fn.params[0];
+  return p && p.type === 'Identifier' ? p.name : null;
 }
 
+/**
+ * True if `fn` calls `Object.keys(STORE)` or `Object.entries(STORE)` on the
+ * given store identifier. The GrowthBook store setter is the only function that
+ * both assigns the store from its parameter AND diffs it key-by-key to emit
+ * change events (`for (const [r,n] of Object.entries(STORE)) … BD.emit(r,n)`),
+ * so this structurally distinguishes it from incidental `X = param, Y = !0`
+ * setters elsewhere in the bundle.
+ */
+function fnIteratesStore(fn, storeName) {
+  let found = false;
+  walk.simple(fn, {
+    CallExpression(node) {
+      if (found) return;
+      const c = node.callee;
+      if (!c || c.type !== 'MemberExpression') return;
+      if (!c.object || c.object.type !== 'Identifier' || c.object.name !== 'Object') return;
+      const m = c.property && (c.property.name ?? c.property.value);
+      if (m !== 'keys' && m !== 'entries') return;
+      const arg = node.arguments && node.arguments[0];
+      if (arg && arg.type === 'Identifier' && arg.name === storeName) found = true;
+    },
+  });
+  return found;
+}
+
+/**
+ * Find the GrowthBook store setter: an AssignmentExpression `STORE = PARAM`
+ * that sits in a SequenceExpression immediately before `READY = !0`, where
+ * PARAM is the enclosing function's sole parameter AND that function also
+ * iterates STORE via Object.keys/entries (the change-emit diff). Returns
+ * { fnNode, assign, paramName, storeName } or null.
+ */
+function findStoreSetter(ast) {
+  let found = null;
+
+  walk.ancestor(ast, {
+    AssignmentExpression(node, _state, ancestors) {
+      if (found) return;
+      if (node.operator !== '=') return;
+      if (!node.left || node.left.type !== 'Identifier') return;
+      if (!node.right || node.right.type !== 'Identifier') return;
+      const storeName = node.left.name;
+      const paramName = node.right.name;
+
+      // Must be inside a SequenceExpression with a following `<id> = !0`.
+      const seq = ancestors[ancestors.length - 2];
+      if (!seq || seq.type !== 'SequenceExpression') return;
+      const idx = seq.expressions.indexOf(node);
+      if (idx === -1) return;
+      const next = seq.expressions[idx + 1];
+      const isReadyTrue =
+        next &&
+        next.type === 'AssignmentExpression' &&
+        next.operator === '=' &&
+        next.left.type === 'Identifier' &&
+        next.right.type === 'UnaryExpression' &&
+        next.right.operator === '!' &&
+        next.right.argument.type === 'Literal' &&
+        next.right.argument.value === 0;
+      if (!isReadyTrue) return;
+
+      // PARAM must be the sole parameter of the nearest enclosing function.
+      let fn = null;
+      for (let i = ancestors.length - 1; i >= 0; i--) {
+        const a = ancestors[i];
+        if (
+          a.type === 'FunctionDeclaration' ||
+          a.type === 'FunctionExpression' ||
+          a.type === 'ArrowFunctionExpression'
+        ) {
+          fn = a;
+          break;
+        }
+      }
+      if (!fn) return;
+      if (soleParamName(fn) !== paramName) return;
+
+      // The store setter diffs/emits over the store — incidental `X=p,Y=!0`
+      // setters do not. This is the discriminator.
+      if (!fnIteratesStore(fn, storeName)) return;
+
+      found = { fnNode: fn, assign: node, paramName, storeName };
+    },
+  });
+
+  return found;
+}
+
+/** Build the replacement expression for the setter's right-hand side. */
+function buildForceExpr(paramName) {
+  const idsArr = JSON.stringify(FLAG_IDS);
+  // (t=>{ const o = (t && typeof t==="object") ? t : {};
+  //       for (const k of IDS)
+  //         o[k] = { on:true,
+  //                  value:(o[k] && typeof o[k]==="object" && o[k].value && typeof o[k].value==="object") ? o[k].value : {} };
+  //       return o; })(PARAM)
+  return (
+    `(t=>{const o=t&&typeof t=="object"?t:{};` +
+    `for(const k of ${idsArr})` +
+    `o[k]={on:!0,value:o[k]&&typeof o[k]=="object"&&o[k].value&&typeof o[k].value=="object"?o[k].value:{}};` +
+    `return o})(${paramName})`
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+log(`Forcing Dispatch/LAM flags on: ${FLAG_IDS.join(', ')}`);
+
+let patchedFile = null;
+
+for (const file of candidateFiles) {
+  let src;
+  try {
+    src = readFileSync(file, 'utf8');
+  } catch {
+    continue;
+  }
+
+  // Cheap text pre-filter: the gate flag id must appear as a string key.
+  if (!FLAG_IDS.some((id) => src.includes(`"${id}"`) || src.includes(`'${id}'`))) {
+    continue;
+  }
+
+  const ast = tryParse(src, file, {}, log);
+  if (!ast) continue;
+
+  const setter = findStoreSetter(ast);
+  if (!setter) continue;
+
+  // Replace the right-hand `PARAM` with the force-enable IIFE.
+  const r = setter.assign.right;
+  const replacement = buildForceExpr(setter.paramName);
+  const out = src.slice(0, r.start) + replacement + src.slice(r.end);
+
+  // Self-validate: the result must still parse.
+  const reparsed = tryParse(out, file, {}, log);
+  if (!reparsed) {
+    log(`ERROR: Patched ${file} no longer parses — refusing to write.`);
+    process.exit(1);
+  }
+
+  writeFileSync(file, out, 'utf8');
+  patchedFile = file;
+  log(
+    `Patched store setter in ${file}: ` +
+      `store="${setter.storeName}" param="${setter.paramName}" ` +
+      `(${src.length} → ${out.length} bytes).`
+  );
+  for (const f of FLAGS) log(`  forced on: ${f.id}  — ${f.name}`);
+  break;
+}
+
+if (!patchedFile) {
+  log('ERROR: GrowthBook store setter not found.');
+  log('  Looked for an assignment `STORE = <param>` followed by `READY = !0`');
+  log('  where STORE is read as `STORE[k].on` elsewhere (isFeatureOn shape).');
+  log('  The minified bundle shape likely changed — re-derive with:');
+  log('    node patches/recon-dispatch-flags.mjs <app-extracted-dir>');
+  log('  (Dispatch flags will NOT be forced; main/default builds are unaffected.)');
+  process.exit(1);
+}
+
+log('Dispatch flag override applied.');
 process.exit(0);
