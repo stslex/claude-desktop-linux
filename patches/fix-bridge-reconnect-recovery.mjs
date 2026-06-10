@@ -130,6 +130,33 @@ const targets = []; // { start, end, err, cls }
 let anchorFnFound = false;
 let alreadyPatched = false;
 
+/**
+ * True if the subtree contains a `<…>.status === 404` comparison — the defining
+ * check of the reconnect recovery test. Requiring it (rather than merely "the
+ * right operand mentions .status") keeps this default-on patch from rewriting an
+ * unrelated sibling guard that happens to live in the same function, e.g.
+ * `r instanceof q0 && r.status === 409`, into the recovery expression.
+ * It still matches both the original `r.status===404` and an already-broadened
+ * `(r.status===404||r.status===400)` right-hand side.
+ */
+function hasStatus404(node) {
+  let found = false;
+  simple(node, {
+    BinaryExpression(b) {
+      if (
+        b.operator === '===' &&
+        b.right.type === 'Literal' &&
+        b.right.value === 404 &&
+        b.left.type === 'MemberExpression' &&
+        (b.left.property?.name === 'status' || b.left.property?.value === 'status')
+      ) {
+        found = true;
+      }
+    },
+  });
+  return found;
+}
+
 function checkFn(node) {
   if (!node.body) return;
   const fnSrc = src.slice(node.start, node.end);
@@ -146,10 +173,12 @@ function checkFn(node) {
       if (x.operator !== '&&') return;
       if (!x.left || x.left.type !== 'BinaryExpression' || x.left.operator !== 'instanceof') return;
       if (!x.left.left || x.left.left.type !== 'Identifier') return;
-      // The right operand must be the status test (distinguishes the `n`
-      // computation from e.g. the `r instanceof Error ? …` warn-log ternary).
-      const rightSrc = src.slice(x.right.start, x.right.end);
-      if (!/\.status\b/.test(rightSrc)) return;
+      // The right operand must be the recovery's `=== 404` test specifically —
+      // NOT merely any `.status` access. This excludes the warn-log ternary
+      // (`r instanceof Error ? …`, not an `&&`) and, crucially, any unrelated
+      // sibling guard such as `r instanceof q0 && r.status === 409` that may
+      // share this function.
+      if (!hasStatus404(x.right)) return;
       targets.push({
         start: x.start,
         end: x.end,
