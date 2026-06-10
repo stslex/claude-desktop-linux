@@ -295,6 +295,21 @@ for (const filePath of jsFiles) {
     const body = node.body;
     if (!body || body.type !== 'BlockStatement') return;
 
+    // MANDATORY: a platform/availability gate is *defined* by returning a
+    // `{ status: … }` object — that is the value apply-platform-gate.mjs
+    // overwrites the body with. Without this hard requirement the loose
+    // score >= THRESHOLD heuristic (especially in --all mode) also matches
+    // dozens of unrelated platform-branching helpers — path resolvers,
+    // config dispatchers, the wake-scheduler factory `Our`, etc. — that
+    // merely reference "darwin"/"win32"/"platform". Clobbering those to
+    // `return { status: "supported" }` silently breaks them (e.g. the
+    // wake-scheduler then throws "reconcile is not a function" because its
+    // factory now returns a status object instead of a scheduler). On
+    // 1.11187.4 this guard cuts the matched set from 49 → 15 while keeping
+    // every genuine gate. A real gate always returns a status object; if it
+    // does not, it is not a gate and must be left untouched.
+    if (!hasAnyStatusProperty(body)) return;
+
     const score = scoreBody(body, src);
     if (score === 0) return;
 

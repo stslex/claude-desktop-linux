@@ -312,7 +312,19 @@ if [ -n "\$WAYLAND_DISPLAY" ] && [ -z "\$ELECTRON_OZONE_PLATFORM_HINT" ]; then
   WAYLAND_FLAGS="--enable-features=UseOzonePlatform,WaylandWindowDecorations --ozone-platform=wayland"
 fi
 
-exec "${electronBin}" --class=claude-desktop \$WAYLAND_FLAGS --no-sandbox "$out/lib/claude-desktop/app" "\$@"
+# --password-store=gnome-libsecret: pin Electron's safeStorage backend to
+# libsecret (this closure already bundles it — see buildInputs above). When
+# launched from a Wayland compositor / minimal session, Electron's automatic
+# os_crypt backend detection often fails to identify the desktop environment
+# and reports safeStorage as unavailable, so OAuth tokens are never persisted
+# and the app re-runs the cookie→token exchange on every request (visible in
+# the log as repeated "safeStorage not available, tokens will not persist").
+# Pinning the backend makes safeStorage available and lets tokens persist.
+# If no secret-service is reachable at runtime Electron degrades gracefully
+# (isEncryptionAvailable() → false), i.e. no worse than the current state.
+SAFESTORAGE_FLAGS="--password-store=gnome-libsecret"
+
+exec "${electronBin}" --class=claude-desktop \$WAYLAND_FLAGS \$SAFESTORAGE_FLAGS --no-sandbox "$out/lib/claude-desktop/app" "\$@"
 LAUNCHER
                 chmod +x $out/bin/claude-desktop
               '' else ''
