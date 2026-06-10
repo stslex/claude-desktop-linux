@@ -378,6 +378,34 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Patch — Bridge reconnect recovery: a dead Dispatch orchestrator session
+# self-heals instead of staying stuck.
+#
+# reconnectSession() returns HTTP 400 "Session not found" (not 404) for a
+# reaped session, but the recovery only treats 404 as "create fresh". The 400
+# then makes the bridge keep the dead remoteSessionId forever, so mobile
+# messages arrive but Dispatch never answers. This broadens the check to 400.
+# Non-fatal: a warning here never blocks the build.
+# ---------------------------------------------------------------------------
+log "Checking Dispatch bridge reconnect recovery..."
+
+DISPATCH_RECOVERY_LOG="$BUILD_DIR/patch-dispatch-recovery.log"
+
+set +e
+node "$PATCHES_DIR/fix-bridge-reconnect-recovery.mjs" \
+  2>"$DISPATCH_RECOVERY_LOG"
+DISPATCH_RECOVERY_EXIT=$?
+set -e
+
+cat "$DISPATCH_RECOVERY_LOG" >&2
+
+if [[ $DISPATCH_RECOVERY_EXIT -ne 0 ]]; then
+  log "WARNING: fix-bridge-reconnect-recovery.mjs failed (exit $DISPATCH_RECOVERY_EXIT) — a dead orchestrator session may not auto-recover."
+else
+  log "Dispatch bridge reconnect recovery checked."
+fi
+
+# ---------------------------------------------------------------------------
 # Experimental patches — Cowork socket, Dispatch flags, ComputerUseTcc
 #
 # These AST patches are gated behind ENABLE_EXPERIMENTAL_PATCHES=1 because
