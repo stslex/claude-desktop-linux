@@ -11,48 +11,59 @@
  *
  *     await apiClient.reconnectSession(environmentId, remoteSessionId)
  *     ... catch (r) {
- *       const n = r instanceof <ApiError> && r.status === 404;   // ← only 404
- *       if (!n) return;                       // ← anything else: give up
+ *       const n = r instanceof <ApiError> && r.status === 404;   // only this class+404
+ *       if (!n) return;                       // anything else: give up
  *       await writePersistedRemoteSessionId(null);
  *     }
- *     // only reached on 404 / no session:
- *     await apiClient.createSession(environmentId, "Dispatch background conversation", …)
+ *     // only reached on "gone" / no session → create a fresh session
  *
  * When the persisted session has been reaped server-side, `reconnectSession`
- * returns **HTTP 400** with body "Session not found" — NOT 404. The recovery
- * only treats 404 as "gone → create a fresh session", so the 400 falls into
- * `if (!n) return;`: the bridge keeps the dead `remoteSessionId` forever, never
- * creates a fresh orchestrator, and every message the phone sends is routed to
- * a session that can never attach a transport (`worker/register` → 400). Result:
- * messages arrive on the desktop but Dispatch never answers. The only way out
- * is a manual reset. (Observed on 1.11847.5; symptom in the log:
+ * returns **HTTP 400** with body "Session not found". The sessions-api error
+ * helper only wraps 401/403/404/409 in the `<ApiError>` class (with a `.status`
+ * field); EVERYTHING ELSE — including 400 — hits `default: throw new Error(...)`,
+ * i.e. a plain `Error` with NO `.status`. So `r instanceof <ApiError>` is already
+ * false for the 400, the status test never runs, `n` is false, and the bridge
+ * keeps the dead `remoteSessionId` forever. Every message the phone sends is then
+ * routed to a session that can never attach a transport (`worker/register` → 400):
+ * messages arrive on the desktop, but Dispatch never answers.
+ *
+ * (An earlier version of this patch only broadened `r.status===404` to
+ * `||r.status===400`. That was insufficient: the `r instanceof <ApiError>` guard
+ * short-circuits to false for the plain-Error 400, so the status test was never
+ * reached. Confirmed on the 1.11847.5 build — the log shows
  * `Failed to reconnect session …: ReconnectSession: Failed with status 400:
- * Session not found` on every launch.)
+ * Session not found` with no "creating fresh" and no "Created session".)
  *
  * ── The fix ───────────────────────────────────────────────────────────────
- * Broaden the recovery test so a "not found" reconnect is treated as recoverable
- * whether the server signals it as 404 or 400:
+ * Replace the whole recovery test
  *
- *     r.status === 404   →   (r.status === 404 || r.status === 400)
+ *     r instanceof <ApiError> && r.status === 404
  *
- * `reconnectSession`'s only 4xx-with-no-retry outcome is an unreconnectable
- * session, so creating a fresh one is the correct response either way — the old
- * session was already unusable, nothing is lost. After this, a dead orchestrator
- * session self-heals on the next launch instead of staying stuck.
+ * with one that also recognises the plain-Error "Session not found" via the
+ * error MESSAGE (which both the 404 and the 400 path carry):
+ *
+ *     (r instanceof <ApiError> && (r.status === 404 || r.status === 400))
+ *       || (r && typeof r.message === "string" && /not found/i.test(r.message))
+ *
+ * The first clause preserves the original 404 behaviour exactly; the second
+ * catches the plain-Error 400 "Session not found" (and is narrow — transient
+ * network failures don't say "not found", so a momentarily unreachable session
+ * is not abandoned). After this, a reaped orchestrator session self-heals into a
+ * fresh one on the next launch.
  *
  * Target is located by AST: the function whose source contains the stable
- * literal "Dispatch background conversation" (the createSession title), then its
- * single `<err>.status === 404` comparison. Minified identifiers are not relied
- * upon.
+ * literal "Dispatch background conversation", then the single LogicalExpression
+ * `<err> instanceof <Class> && <…status…>` inside it. Minified identifiers are
+ * read from the AST, not assumed.
  *
  * Usage:
  *   node patches/fix-bridge-reconnect-recovery.mjs [--bundle <path>]
  *
  * Exit codes:
- *   0  Patched, or the anchor function is absent (feature changed / not present).
- *   1  Anchor found but the 404 check could not be located, or parse/IO error,
- *      or the patched bundle no longer parses. patch-cowork.sh treats a non-zero
- *      exit as a non-fatal WARNING, so default builds are unaffected.
+ *   0  Patched, already patched (idempotent), or the anchor is absent.
+ *   1  Anchor found but the recovery test could not be located, or parse/IO
+ *      error, or the patched bundle no longer parses. patch-cowork.sh treats a
+ *      non-zero exit as a non-fatal WARNING, so default builds are unaffected.
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'fs';
@@ -61,6 +72,8 @@ import { parse } from 'acorn';
 import { simple } from 'acorn-walk';
 
 const ANCHOR = 'Dispatch background conversation';
+// Marker of an already-applied fix (the message clause we add).
+const IDEMPOTENT_RE = /\/not found\/i\.test\(/;
 
 // ---------------------------------------------------------------------------
 // Resolve bundle path
@@ -86,7 +99,6 @@ process.stderr.write(
   `[fix-bridge-reconnect-recovery] Scanning ${bundlePath} (${src.length} chars)...\n`
 );
 
-// Cheap pre-filter: if the anchor is gone, there is nothing to do.
 if (!src.includes(ANCHOR)) {
   process.stderr.write(
     `[fix-bridge-reconnect-recovery] Anchor "${ANCHOR}" not present — ` +
@@ -111,16 +123,12 @@ try {
 }
 
 // ---------------------------------------------------------------------------
-// Locate: the `<err>.status === 404` comparison inside the function whose body
-// contains the ANCHOR literal.
+// Locate: the recovery test `<err> instanceof <Class> && <…status…>` inside the
+// function whose body contains the ANCHOR literal.
 // ---------------------------------------------------------------------------
-const targets = []; // { start, end, objSrc }
+const targets = []; // { start, end, err, cls }
 let anchorFnFound = false;
 let alreadyPatched = false;
-
-// Recognises the broadened form this patch writes, e.g.
-// `r.status===404||r.status===400` (idempotency guard).
-const BROADENED_RE = /status\s*===\s*404\s*\|\|\s*[^)]*status\s*===\s*400/;
 
 function checkFn(node) {
   if (!node.body) return;
@@ -128,30 +136,26 @@ function checkFn(node) {
   if (!fnSrc.includes(ANCHOR)) return;
   anchorFnFound = true;
 
-  // Idempotency (INVARIANTS.md): if the recovery check is already broadened,
-  // do nothing — and do NOT collect the still-present `…===404` operand as a
-  // target, which would re-wrap it on every run.
-  if (BROADENED_RE.test(fnSrc)) {
+  if (IDEMPOTENT_RE.test(fnSrc)) {
     alreadyPatched = true;
     return;
   }
 
   simple(node, {
-    BinaryExpression(x) {
-      if (
-        x.operator === '===' &&
-        x.right.type === 'Literal' &&
-        x.right.value === 404 &&
-        x.left.type === 'MemberExpression' &&
-        x.left.property &&
-        (x.left.property.name === 'status' || x.left.property.value === 'status')
-      ) {
-        targets.push({
-          start: x.start,
-          end: x.end,
-          objSrc: src.slice(x.left.object.start, x.left.object.end),
-        });
-      }
+    LogicalExpression(x) {
+      if (x.operator !== '&&') return;
+      if (!x.left || x.left.type !== 'BinaryExpression' || x.left.operator !== 'instanceof') return;
+      if (!x.left.left || x.left.left.type !== 'Identifier') return;
+      // The right operand must be the status test (distinguishes the `n`
+      // computation from e.g. the `r instanceof Error ? …` warn-log ternary).
+      const rightSrc = src.slice(x.right.start, x.right.end);
+      if (!/\.status\b/.test(rightSrc)) return;
+      targets.push({
+        start: x.start,
+        end: x.end,
+        err: src.slice(x.left.left.start, x.left.left.end),
+        cls: src.slice(x.left.right.start, x.left.right.end),
+      });
     },
   });
 }
@@ -162,12 +166,11 @@ simple(ast, {
   ArrowFunctionExpression: checkFn,
 });
 
-// Deduplicate by offset (the anchor function may be visited via nested nodes).
 const unique = [...new Map(targets.map((t) => [t.start, t])).values()];
 
 if (alreadyPatched && unique.length === 0) {
   process.stderr.write(
-    '[fix-bridge-reconnect-recovery] Recovery check already broadened — ' +
+    '[fix-bridge-reconnect-recovery] Recovery test already message-aware — ' +
     'nothing to do (idempotent).\n'
   );
   process.exit(0);
@@ -177,22 +180,22 @@ if (unique.length === 0) {
   if (!anchorFnFound) {
     process.stderr.write(
       `[fix-bridge-reconnect-recovery] Anchor "${ANCHOR}" present but not inside ` +
-      'a function body we recognised — skipping. (Non-fatal.)\n'
+      'a recognised function body — skipping. (Non-fatal.)\n'
     );
     process.exit(0);
   }
   process.stderr.write(
     `[fix-bridge-reconnect-recovery] Anchor "${ANCHOR}" found but no ` +
-    '`<err>.status === 404` recovery check inside it — bundle shape changed. ' +
-    'Re-derive the target. (Non-fatal.)\n'
+    '`<err> instanceof <Class> && <…status…>` recovery test inside it — bundle ' +
+    'shape changed. Re-derive the target. (Non-fatal.)\n'
   );
   process.exit(1);
 }
 
 if (unique.length > 1) {
   process.stderr.write(
-    `[fix-bridge-reconnect-recovery] WARNING: ${unique.length} candidate 404 ` +
-    'checks in the anchor function; patching all of them.\n'
+    `[fix-bridge-reconnect-recovery] WARNING: ${unique.length} candidate recovery ` +
+    'tests in the anchor function; patching all of them.\n'
   );
 }
 
@@ -204,26 +207,17 @@ unique.sort((a, b) => b.start - a.start);
 let patched = src;
 let count = 0;
 for (const t of unique) {
+  const replacement =
+    `(${t.err} instanceof ${t.cls}&&(${t.err}.status===404||${t.err}.status===400))` +
+    `||${t.err}&&typeof ${t.err}.message=="string"&&/not found/i.test(${t.err}.message)`;
   const orig = patched.slice(t.start, t.end);
-  if (orig !== `${t.objSrc}.status===404` && !/\.status\s*===\s*404$/.test(orig)) {
-    process.stderr.write(
-      `[fix-bridge-reconnect-recovery] Unexpected slice at [${t.start}..${t.end}]: ` +
-      `${JSON.stringify(orig)} — skipping.\n`
-    );
-    continue;
-  }
-  const replacement = `(${t.objSrc}.status===404||${t.objSrc}.status===400)`;
   patched = patched.slice(0, t.start) + replacement + patched.slice(t.end);
   count++;
   process.stderr.write(
-    `[fix-bridge-reconnect-recovery] Broadened ${orig} → ${replacement} ` +
-    `at [${t.start}..${t.end}]\n`
+    `[fix-bridge-reconnect-recovery] Rewrote recovery test at [${t.start}..${t.end}]\n` +
+    `    from: ${orig}\n` +
+    `    to:   ${replacement}\n`
   );
-}
-
-if (count === 0) {
-  process.stderr.write('[fix-bridge-reconnect-recovery] Nothing applied.\n');
-  process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +242,6 @@ if (!ok) {
 
 writeFileSync(bundlePath, patched, 'utf8');
 process.stderr.write(
-  `[fix-bridge-reconnect-recovery] Done — ${count} recovery check(s) broadened in ${bundlePath}.\n`
+  `[fix-bridge-reconnect-recovery] Done — ${count} recovery test(s) made message-aware in ${bundlePath}.\n`
 );
 process.exit(0);
