@@ -406,6 +406,35 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Patch — Bridge transport toggle: allow falling back from the axios SDK-adapter
+# transport to the electron.net CCR transport via FORCE_CCR_TRANSPORT=1.
+#
+# The SDK-adapter transport's worker/register runs over axios (Node). On
+# proxied / Cloudflare-fronted networks that 400s while the bridge's own
+# register/poll (electron.net / Chromium) succeed against the same host. This
+# adds a runtime opt-out — default behaviour is unchanged; the build is only
+# affected at launch when FORCE_CCR_TRANSPORT=1 is set. Non-fatal.
+# ---------------------------------------------------------------------------
+log "Checking Dispatch bridge transport toggle..."
+
+DISPATCH_TRANSPORT_LOG="$BUILD_DIR/patch-dispatch-transport.log"
+
+set +e
+node "$PATCHES_DIR/fix-bridge-transport-toggle.mjs" \
+  --bundle "$VITE_BUILD_DIR/index.js" \
+  2>"$DISPATCH_TRANSPORT_LOG"
+DISPATCH_TRANSPORT_EXIT=$?
+set -e
+
+cat "$DISPATCH_TRANSPORT_LOG" >&2
+
+if [[ $DISPATCH_TRANSPORT_EXIT -ne 0 ]]; then
+  log "WARNING: fix-bridge-transport-toggle.mjs failed (exit $DISPATCH_TRANSPORT_EXIT) — FORCE_CCR_TRANSPORT opt-out unavailable."
+else
+  log "Dispatch bridge transport toggle checked."
+fi
+
+# ---------------------------------------------------------------------------
 # Experimental patches — Cowork socket, Dispatch flags, ComputerUseTcc
 #
 # These AST patches are gated behind ENABLE_EXPERIMENTAL_PATCHES=1 because
