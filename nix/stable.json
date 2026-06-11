@@ -1,6 +1,6 @@
 {
   "channel": "stable",
   "version": "1.12603.1",
-  "url": "https://github.com/stslex/claude-desktop-linux/releases/download/v1.12603.1-repack-0/claude-desktop-1.12603.1-repack-0-x86_64-nix.tar.gz",
-  "sha256": "24e36354e41328e0f1f4f0cf8cbdce3c7a76c271b098c82d092e3e63ff494873"
+  "url": "https://github.com/stslex/claude-desktop-linux/releases/download/v1.12603.1-repack-1/claude-desktop-1.12603.1-repack-1-x86_64-nix.tar.gz",
+  "sha256": "917b728bab0f2bead8c8fea2d8003855493d3e155958a3cd21f01f4c17943599"
 }
