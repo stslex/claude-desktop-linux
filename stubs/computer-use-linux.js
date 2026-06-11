@@ -265,11 +265,14 @@ async function grimCapture(display, geometry) {
   // report (displayWidth/Height/origin*) and miscalibrate clicks on secondary
   // monitors. Warn once rather than fail silently; per-output `-o` targeting +
   // origin offsets are the multi-output TODO (see file header / coordSpace).
-  if (!_warnedMultiOutput && describeDisplays().length > 1) {
-    _warnedMultiOutput = true;
-    log(`WARNING: ${describeDisplays().length} outputs detected; v1 captures the whole ` +
-        'layout (no -o targeting). Screenshot/click coordinates are only reliable on a ' +
-        'SINGLE-output setup — multi-output is a TODO.');
+  if (!_warnedMultiOutput) {
+    const outputs = describeDisplays().length; // enumerate once
+    if (outputs > 1) {
+      _warnedMultiOutput = true;
+      log(`WARNING: ${outputs} outputs detected; v1 captures the whole layout ` +
+          '(no -o targeting). Screenshot/click coordinates are only reliable on a ' +
+          'SINGLE-output setup — multi-output is a TODO.');
+    }
   }
   const args = [];
   if (geometry) {
