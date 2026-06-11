@@ -116,11 +116,16 @@ jobs:
           # letting the concurrent stable and dev builds both deploy would leave
           # whichever finished last — wiping the other channel's apt/yum/pacman
           # repo. Dev's Pages repos still refresh on push to the dev branch.
-          # Non-fatal: if the dev branch is missing the dispatch just fails.
-          gh workflow run build.yml \
-            --repo "${{ github.repository }}" \
-            --ref dev \
-            -f channel=dev \
-            -f deploy_pages=false \
-            && echo "Triggered build.yml (channel=dev, deploy_pages=false) for version $UPSTREAM." \
-            || echo "WARNING: could not trigger dev build (dev branch missing?); stable build still queued."
+          # Non-fatal: the dev dispatch can fail for several reasons (the dev
+          # branch's build.yml not yet carrying the deploy_pages input, a missing
+          # dev branch, or an API/permission error) — the stable build is already
+          # queued regardless, so just warn (to stderr) and continue.
+          if gh workflow run build.yml \
+               --repo "${{ github.repository }}" \
+               --ref dev \
+               -f channel=dev \
+               -f deploy_pages=false; then
+            echo "Triggered build.yml (channel=dev, deploy_pages=false) for version $UPSTREAM."
+          else
+            echo "WARNING: could not trigger the dev build (e.g. dev branch missing, dev build.yml without the deploy_pages input yet, or an API/permission error); stable build still queued." >&2
+          fi
