@@ -56,8 +56,10 @@ if (!global[INIT_SYM] && process.type === 'browser') {
           'Categories=Network;',
           'Icon=claude-desktop',
           'MimeType=x-scheme-handler/claude;',
-          // Must equal the app_id the window reports (product name → "claude"),
-          // so the taskbar/window-list can map the window to this entry + Icon.
+          // StartupWMClass is the X11 WM_CLASS match key (and is also consulted by
+          // Wayland bars like waybar's wlr/taskbar). The window reports app_id /
+          // WM_CLASS "claude" (product name; overrides --class), so set it to
+          // "claude" so the window maps to this entry + Icon.
           'StartupWMClass=claude',
           '',
         ].join('\n');

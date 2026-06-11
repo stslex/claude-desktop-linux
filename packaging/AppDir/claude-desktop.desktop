@@ -7,8 +7,11 @@ Icon=claude-desktop
 Terminal=false
 Categories=Office;Network;
 MimeType=x-scheme-handler/claude;
-# Must equal the Wayland app_id / X11 WM_CLASS the window actually reports.
-# The upstream app sets it from its product name → "claude" (NOT "claude-desktop"),
-# overriding the launcher's --class, so the taskbar/window-list maps a window to
-# this entry (and its Icon=) only when this is "claude". Verify with: niri msg windows.
+# StartupWMClass is the X11 WM_CLASS match key (also used under XWayland). On
+# native Wayland the window's app_id is the primary key — ideally it equals the
+# desktop file ID — but waybar's wlr/taskbar and similar bars also match against
+# StartupWMClass. This window reports app_id / WM_CLASS "claude" (the upstream app
+# derives it from its product name and overrides the launcher's --class; check
+# with: niri msg windows), so set it to "claude" so the window resolves to this
+# entry and its Icon=.
 StartupWMClass=claude

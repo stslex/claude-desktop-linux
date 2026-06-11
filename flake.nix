@@ -302,13 +302,14 @@ if [ -z "\$CLAUDE_CODE_LOCAL_BINARY" ]; then
   done
 fi
 
-# --class requests a Wayland app_id / X11 WM_CLASS. We exec nixpkgs'
-# electron binary directly, so without it the app_id would default to
-# "electron". NOTE: the upstream app overrides this at runtime and sets the
-# app_id from its product name → "claude" (verify with: niri msg windows),
-# so the window reports "claude" regardless of --class. We pass "claude" here
-# to match that observed value and StartupWMClass=claude in claude-desktop.desktop,
-# so compositors/taskbars (e.g. Niri) can map the window to its Icon= entry.
+# --class requests a Wayland app_id / X11 WM_CLASS. We exec nixpkgs' electron
+# directly, so without it the app_id would default to "electron". NOTE: the
+# upstream app overrides --class at runtime and reports app_id "claude" (from its
+# product name; verify with: niri msg windows). On native Wayland the window's
+# app_id is the primary key a shell matches to a desktop entry (StartupWMClass is
+# the X11 WM_CLASS key, also honored by bars like waybar's wlr/taskbar). We pass
+# "claude" to match the observed app_id and the StartupWMClass=claude in
+# claude-desktop.desktop, so the taskbar resolves the window to its Icon= entry.
 WAYLAND_FLAGS=""
 if [ -n "\$WAYLAND_DISPLAY" ] && [ -z "\$ELECTRON_OZONE_PLATFORM_HINT" ]; then
   WAYLAND_FLAGS="--enable-features=UseOzonePlatform,WaylandWindowDecorations --ozone-platform=wayland"
