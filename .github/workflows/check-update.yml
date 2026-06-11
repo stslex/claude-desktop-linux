@@ -103,3 +103,16 @@ jobs:
             --ref main \
             -f channel=stable
           echo "Triggered build.yml (channel=stable) for version $UPSTREAM."
+
+          # Also rebuild the dev channel so it tracks new upstream versions. The
+          # dev channel otherwise only rebuilds on push to the dev branch, so a
+          # new upstream release would update stable but leave dev pinned to an
+          # older Claude Desktop version. This builds dev-branch HEAD as a
+          # prerelease (latest upstream + any unreleased dev fixes). Non-fatal:
+          # if the dev branch is missing the dispatch just fails harmlessly.
+          gh workflow run build.yml \
+            --repo "${{ github.repository }}" \
+            --ref dev \
+            -f channel=dev \
+            && echo "Triggered build.yml (channel=dev) for version $UPSTREAM." \
+            || echo "WARNING: could not trigger dev build (dev branch missing?); stable build still queued."
