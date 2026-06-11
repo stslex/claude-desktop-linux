@@ -485,6 +485,183 @@ const vm = new Proxy(_vmBase, {
 vm._callbacks = _callbacks;
 vm._procs     = _procs;
 
+// ===========================================================================
+// computerUse namespace resolution (EXPERIMENTAL — DISABLED BY DEFAULT)
+//
+// Three states, chosen by env flags:
+//   COMPUTER_USE_RECON=1  → install a logging Proxy that records the live call
+//                           sequence to /tmp/cd-computeruse-recon.md and returns
+//                           permissive stand-ins (Phase-1 runtime recon). This
+//                           NEVER touches the bundle; it just reveals the
+//                           contract. Active ONLY with the flag.
+//   ENABLE_COMPUTER_USE=1 → delegate to stubs/computer-use-linux.js (grim/ydotool
+//                           backend). The module is only present next to this
+//                           stub when the build ran with ENABLE_EXPERIMENTAL_PATCHES=1,
+//                           so BOTH conditions are required (recon §8.5).
+//   (neither)             → null, exactly as before. The orchestrator does
+//                           `if(!A.computerUse) throw` only ON USE, so a null
+//                           value is inert until a computer-use task starts.
+//
+// RECON takes precedence when both flags are set (it is the diagnostic path).
+// Every branch is wrapped so a failure degrades to null + a log line, never a
+// crash — `main` with default env is byte-for-byte unchanged in behaviour.
+// ===========================================================================
+const COMPUTER_USE_RECON_LOG = '/tmp/cd-computeruse-recon.md';
+
+/** Build a valid ≥1024-byte PNG (gradient) for recon screenshot stand-ins.
+ *  A 1×1 PNG would fail the orchestrator's decoded-length check (Lgt=1024)
+ *  and short-circuit the task — defeating the recon. See recon §8.6. */
+function _buildReconPngBase64(w, h) {
+  const zlib = require('zlib');
+  const crcTable = (() => {
+    const t = new Int32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      t[n] = c;
+    }
+    return t;
+  })();
+  const crc32 = (buf) => {
+    let c = 0xFFFFFFFF;
+    for (let i = 0; i < buf.length; i++) c = crcTable[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  };
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
+    const typeBuf = Buffer.from(type, 'ascii');
+    const body = Buffer.concat([typeBuf, data]);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(body), 0);
+    return Buffer.concat([len, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0; // 8-bit RGBA
+  const raw = Buffer.alloc((w * 4 + 1) * h);
+  let o = 0;
+  for (let y = 0; y < h; y++) {
+    raw[o++] = 0; // no filter
+    for (let x = 0; x < w; x++) {
+      raw[o++] = (x * 255 / w) | 0; raw[o++] = (y * 255 / h) | 0; raw[o++] = 128; raw[o++] = 255;
+    }
+  }
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(raw)),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+  return png.toString('base64');
+}
+
+function _installReconProxy() {
+  const fs = require('fs');
+  const RECON_W = 1920, RECON_H = 1080;           // synthetic "display" size
+  const RECON_IMG_W = 160, RECON_IMG_H = 120;     // actual stand-in image size
+  let pngB64;
+  try { pngB64 = _buildReconPngBase64(RECON_IMG_W, RECON_IMG_H); } // gradient → comfortably >1024 bytes
+  catch (_) { pngB64 = ''; }
+
+  let seq = 0;
+  const appendLog = (line) => {
+    try { fs.appendFileSync(COMPUTER_USE_RECON_LOG, line + '\n'); } catch (_) {}
+  };
+  const shortArgs = (args) => {
+    try {
+      return JSON.stringify(args.map((a) => {
+        if (Buffer.isBuffer(a)) return `<Buffer ${a.length}>`;
+        if (typeof a === 'string' && a.length > 60) return a.slice(0, 60) + '…';
+        if (typeof a === 'function') return '<fn>';
+        return a;
+      })).slice(0, 300);
+    } catch (_) { return '<unserialisable>'; }
+  };
+
+  // Permissive stand-ins keyed by full dotted path — chosen so the orchestrator
+  // PROCEEDS (recon §8.6) rather than erroring out.
+  // width/height describe the actual stand-in image (post-downscale dims in the
+  // real contract); displayWidth/Height describe the native display. Keeping them
+  // distinct so the orchestrator's modelX*displayWidth/width mapping is coherent.
+  const screenshotObj = () => ({
+    base64: pngB64, width: RECON_IMG_W, height: RECON_IMG_H,
+    displayWidth: RECON_W, displayHeight: RECON_H, displayId: 0, originX: 0, originY: 0,
+  });
+  const standIn = (path) => {
+    switch (path) {
+      case 'screenshot.captureExcluding': return screenshotObj();
+      case 'screenshot.captureRegion':    return { base64: pngB64 };
+      case 'resolvePrepareCapture':       return { ...screenshotObj(), hidden: [], activated: null };
+      case 'display.getSize':             return { width: RECON_W, height: RECON_H, scaleFactor: 1, originX: 0, originY: 0 };
+      case 'display.listAll':             return [{ displayId: 0, width: RECON_W, height: RECON_H, scaleFactor: 1, originX: 0, originY: 0, isPrimary: true, label: 'recon-0' }];
+      case 'tcc.checkAccessibility':
+      case 'tcc.checkScreenRecording':
+      case 'tcc.requestAccessibility':
+      case 'tcc.requestScreenRecording':  return true;
+      case 'apps.prepareDisplay':         return { activated: null, hidden: [] };
+      case 'apps.previewHideSet':
+      case 'apps.findWindowDisplays':
+      case 'apps.listInstalled':
+      case 'apps.listRunning':            return [];
+      case 'apps.appUnderPoint':
+      case 'apps.iconDataUrl':            return null;
+      default:                            return undefined; // open/unhide and unknowns
+    }
+  };
+
+  const logged = (path) => function (...args) {
+    appendLog(`${String(++seq).padStart(4, '0')} | computerUse.${path} | argc=${args.length} | ${shortArgs(args)}`);
+    return standIn(path);
+  };
+  const subNs = (prefix) => new Proxy({}, {
+    get(_t, p) {
+      if (typeof p === 'symbol') return undefined;
+      if (p === 'then') return undefined;
+      return logged(`${prefix}${String(p)}`);
+    },
+  });
+
+  appendLog(`\n## 7.live — COMPUTER_USE_RECON session (pid ${process.pid})`);
+  appendLog('seq | method | argc | args');
+  process.stderr.write('[claude-swift stub] COMPUTER_USE_RECON=1 — logging computerUse proxy installed → ' + COMPUTER_USE_RECON_LOG + '\n');
+
+  return new Proxy({}, {
+    get(_t, p) {
+      if (typeof p === 'symbol') return undefined;
+      if (p === 'then') return undefined; // never thenable
+      const key = String(p);
+      // Known sub-namespaces return a logging sub-proxy; everything else is a
+      // logged root-level method (e.g. resolvePrepareCapture).
+      if (key === 'apps' || key === 'display' || key === 'screenshot' || key === 'tcc') {
+        return subNs(`${key}.`);
+      }
+      return logged(key);
+    },
+  });
+}
+
+function resolveComputerUse() {
+  // Recon proxy first (diagnostic; self-contained; needs no backend module).
+  if (process.env.COMPUTER_USE_RECON === '1') {
+    try { return _installReconProxy(); }
+    catch (e) { process.stderr.write(`[claude-swift stub] recon proxy install failed: ${e.message}\n`); return null; }
+  }
+  // Real Linux backend — requires BOTH the runtime flag AND the module being
+  // present (copied next to this stub only under ENABLE_EXPERIMENTAL_PATCHES=1).
+  if (process.env.ENABLE_COMPUTER_USE === '1') {
+    try {
+      const backend = require('./computer-use-linux.js');
+      process.stderr.write('[claude-swift stub] ENABLE_COMPUTER_USE=1 — Linux computer-use backend active (EXPERIMENTAL)\n');
+      return backend.createComputerUse();
+    } catch (e) {
+      process.stderr.write(
+        `[claude-swift stub] ENABLE_COMPUTER_USE=1 but backend unavailable (${e.message}); ` +
+        'computerUse stays null. Did the build run with ENABLE_EXPERIMENTAL_PATCHES=1?\n');
+      return null;
+    }
+  }
+  return null; // default: identical to prior behaviour
+}
+
 // ---------------------------------------------------------------------------
 // Export shape — the app loads via dynamic import():
 //   Nr = (await import("@ant/claude-swift")).default
@@ -510,5 +687,7 @@ _module.quickAccess  = {
 };
 _module.midnightOwl  = { setEnabled() {} };
 _module.wakeScheduler = null;        // accessed as Nr?.wakeScheduler ?? null — null-guarded
-_module.computerUse  = null;         // guarded: if(!A.computerUse) throw — only throws on use
+// EXPERIMENTAL, default OFF: null unless COMPUTER_USE_RECON=1 or ENABLE_COMPUTER_USE=1.
+// The orchestrator does `if(!A.computerUse) throw` only ON USE, so null is inert.
+_module.computerUse  = resolveComputerUse();
 module.exports = _module;
