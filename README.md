@@ -32,10 +32,18 @@ See [ARCHITECTURE.MD](ARCHITECTURE.MD) for design decisions and trade-offs.
 
 - **Chat** — full Claude Desktop chat interface on Linux
 - **MCP** — Model Context Protocol support works as-is (it is pure JS)
-- **Cowork (Claude Code)** — unlocked and functional via `bubblewrap` sandbox
-  or direct host execution
-- **Dispatch** — partially supported; works via SSE when the app is open
-  (requires `claude-cowork-service` daemon — see below)
+- **Cowork (Claude Code)** — experimental, disabled by default. Enable with
+  `ENABLE_EXPERIMENTAL_PATCHES=1` when running `scripts/patch-cowork.sh`;
+  known to cause SIGSEGV on some bundles pending a lifecycle method fix
+  (see the `fix_cowork` branch). Default builds only patch the platform
+  gate so the Cowork UI renders; the socket transport and ComputerUseTcc
+  AST injections that wire it end-to-end stay off.
+- **Dispatch (default builds)** — the Dispatch availability gate is
+  patched (`patches/fix-dispatch-gate.mjs`) and renderer IPC handlers are
+  stubbed (`stubs/dispatch-polyfill.js`), but GrowthBook feature flags
+  are NOT overridden — `patches/patch-dispatch.mjs` is experimental and
+  only runs under `ENABLE_EXPERIMENTAL_PATCHES=1`. Background delivery
+  (APNs/FCM push) is unavailable regardless of build flags.
 - **Auto-update pipeline** — GitHub Actions polls for new releases every 6 hours
   and publishes automatically; AppImage supports delta updates via `AppImageUpdate`
 
@@ -45,7 +53,8 @@ See [ARCHITECTURE.MD](ARCHITECTURE.MD) for design decisions and trade-offs.
 
 | Feature | Reason |
 |---|---|
-| **Dispatch** | Partially supported — works via SSE when the app is open; GrowthBook feature flags are force-enabled and `claude-cowork-service` provides the socket backend; background delivery (APNs/FCM push) is not available so tasks won't arrive when the app is closed |
+| **Dispatch (default builds)** | Availability gate is patched (`patches/fix-dispatch-gate.mjs`) and renderer IPC handlers are stubbed (`stubs/dispatch-polyfill.js`), so the UI renders, but GrowthBook feature flags are not overridden in default builds — `patches/patch-dispatch.mjs` is experimental (see [Build Flags](#build-flags)). |
+| **Dispatch (experimental, `ENABLE_EXPERIMENTAL_PATCHES=1`)** | Adds the GrowthBook override (`patches/patch-dispatch.mjs`). Even with the flag set, background delivery (APNs/FCM push) is unavailable, so tasks sent from mobile while the app is closed never arrive — this depends on platform features Linux does not provide and is not gated by an env var. |
 | **Computer Use** | macOS implementation uses `AXUIElement`; an `xdotool`/`scrot` replacement would be fragile across desktop environments |
 | **ARM64** | Electron binary selection and AppImage build are x86_64 only; ARM64 is a future milestone |
 
@@ -599,6 +608,25 @@ and their `.sha256` files.
 | `SKIP_DOWNLOAD` | *(unset)* | Set to `1` to reuse the existing downloaded archive |
 | `COWORK_BACKEND` | `bubblewrap` | `bubblewrap` or `host` |
 | `ELECTRON_OVERRIDE` | *(unset)* | Force a specific Electron version |
+
+### Build Flags
+
+Some bundle-level patches are gated behind feature flags because they
+currently corrupt the JS bundle on some Claude Desktop releases. Default
+builds run only the patches listed under "Default-on patches" in
+[CLAUDE.MD](CLAUDE.MD#build-phases); every patch listed under
+"Default-off (experimental) patches" stays off unless the matching flag
+below is set.
+
+| Flag | Default | What it gates |
+|---|---|---|
+| `ENABLE_EXPERIMENTAL_PATCHES` | unset (off) | When set to `1`, `scripts/patch-cowork.sh` additionally runs `patches/patch-cowork-socket.mjs` (named pipe → Unix socket transport), `patches/patch-dispatch.mjs` (GrowthBook feature flag overrides for Dispatch), and `patches/patch-computer-use-tcc.mjs` (ComputerUseTcc IPC stub AST injection). All three currently corrupt the JS bundle on some Claude Desktop versions and can cause SIGSEGV on launch — see `scripts/patch-cowork.sh` lines 342–414 and the `fix_cowork` branch. |
+
+`ENABLE_EXPERIMENTAL_PATCHES` is the canonical pattern for any new patch
+that is not yet safe to enable by default: gate the new step behind a
+check on this env var in `scripts/patch-cowork.sh`, leave the default
+unset, and add a row here documenting the failure mode so users opting
+in know what they are taking on.
 
 ---
 

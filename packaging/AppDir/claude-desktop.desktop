@@ -7,4 +7,4 @@ Icon=claude-desktop
 Terminal=false
 Categories=Office;Network;
 MimeType=x-scheme-handler/claude;
-StartupWMClass=Claude
+StartupWMClass=claude-desktop

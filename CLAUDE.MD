@@ -18,59 +18,71 @@ entirely and run the Claude Code binary directly on the host.
 
 ```
 .
-├── CLAUDE.md                    ← you are here
-├── ARCHITECTURE.md              ← detailed design decisions
+├── CLAUDE.MD                           ← you are here
+├── ARCHITECTURE.MD                     ← detailed design decisions
+├── README.md                           ← user-facing install + feature docs
+├── flake.nix / flake.lock              ← Nix flake (stable + dev channels)
+├── nix/                                ← channel metadata (stable.json / dev.json)
+├── package.json / package-lock.json    ← acorn + @electron/asar for AST patches
 ├── scripts/
-│   ├── fetch-dmg.sh             ← download + SHA256-verify the DMG
-│   ├── extract-asar.sh          ← DMG → app.asar + detect versions
-│   ├── inject-stubs.sh          ← replace native modules with JS stubs
-│   ├── patch-cowork.sh          ← unlock Cowork on Linux
-│   ├── install-cowork-service.sh ← install claude-cowork-service daemon
-│   ├── validate-bundle.sh        ← standalone JS syntax validation gate
-│   └── build-packages.sh        ← RPM + AppImage assembly
+│   ├── fetch-and-extract.sh            ← download DMG, SHA256-verify, dmg2img + 7z extract, unpack app.asar, emit VERSION + ELECTRON_VERSION, extract icons
+│   ├── inject-stubs.sh                 ← replace @ant/claude-native and @ant/claude-swift with JS stubs
+│   ├── patch-cowork.sh                 ← apply Cowork AST patches and prepend CJS shims; gates the three experimental AST patches behind ENABLE_EXPERIMENTAL_PATCHES=1
+│   ├── validate-bundle.sh              ← standalone acorn syntax gate (also run inline at the end of patch-cowork.sh)
+│   ├── install-cowork-service.sh       ← install claude-cowork-service systemd user daemon (runtime, optional)
+│   ├── build-packages.sh               ← orchestrator: re-pack ASAR, then RPM + DEB + Pacman + Nix + AppImage
+│   ├── build-rpm.sh                    ← RPM build step
+│   ├── build-deb.sh                    ← DEB build step
+│   ├── build-pacman.sh                 ← Pacman .pkg.tar.zst build step
+│   ├── build-nix.sh                    ← Nix-compatible tarball build step
+│   ├── build-appimage.sh               ← AppImage assembly step
+│   └── update-appimage.sh              ← wrapper around AppImageUpdate for in-place AppImage replacement
 ├── stubs/
-│   ├── claude-native.js         ← @ant/claude-native replacement
-│   ├── claude-swift.js          ← @ant/claude-swift replacement (Cowork VM API)
-│   ├── platform-headers.js      ← Anthropic API header injection for Cowork
-│   ├── ipc-stubs.js             ← ComputerUseTcc IPC handler stubs
-│   └── dispatch-polyfill.js     ← Dispatch IPC stubs + foreground polling
+│   ├── package.json                    ← `{ "type": "commonjs" }` parent for the two replacement modules
+│   ├── claude-native.js                ← @ant/claude-native replacement
+│   ├── claude-native-pkg.json          ← package.json that ships inside the @ant/claude-native stub
+│   ├── claude-swift.js                 ← @ant/claude-swift replacement (Cowork VM API → child_process.spawn)
+│   ├── claude-swift-pkg.json           ← package.json that ships inside the @ant/claude-swift stub
+│   ├── platform-headers.js             ← Anthropic API header injection (copied next to main entry by patch-cowork.sh)
+│   ├── ipc-stubs.js                    ← ComputerUseTcc IPC handler stubs (copied next to main entry)
+│   └── dispatch-polyfill.js            ← Dispatch IPC stubs + foreground polling (copied next to main entry)
 ├── patches/
-│   ├── find-platform-gate.mjs   ← AST search for the Cowork gate function
-│   ├── fix-tray-icon.mjs        ← AST fix for minifier tray icon variable bug
-│   ├── fix-tray-config.sh       ← ensure menuBarEnabled in user config
-│   ├── fix-bundle-download.mjs  ← AST patch for platform-gated binary download
-│   ├── fix-dispatch-gate.mjs    ← AST patch for Dispatch availability gate
-│   ├── patch-cowork-socket.mjs  ← AST patch: named pipe → Unix socket
-│   ├── patch-dispatch.mjs       ← AST patch: GrowthBook feature flag overrides
-│   ├── patch-computer-use-tcc.mjs ← AST injection of ComputerUseTcc stubs
-│   └── path-translator.mjs      ← /sessions/… → ~/.local/share/… remapping
+│   ├── patch-utils.mjs                 ← shared helpers used by the three experimental AST patches
+│   ├── find-platform-gate.mjs          ← AST search for the Cowork availability gate
+│   ├── apply-platform-gate.mjs         ← replace platform-gate body with `return { status: "supported" }`
+│   ├── find-ccd-platform.mjs           ← locate CCD getHostPlatform / getBinaryPathIfReady
+│   ├── apply-ccd-platform.mjs          ← add linux-x64 / linux-arm64 support to CCD
+│   ├── find-vm-download.mjs            ← locate the download_and_sdk_prepare step
+│   ├── apply-vm-download.mjs           ← make the VM download step return early on Linux
+│   ├── fix-bundle-download.mjs         ← bypass platform check around the binary bundle download
+│   ├── fix-dispatch-gate.mjs           ← patch the Dispatch availability gate
+│   ├── fix-tray-icon.mjs               ← AST fix for the minifier tray icon variable reference
+│   ├── fix-tray-config.sh              ← ensures menuBarEnabled in user config (runtime helper, not run during build)
+│   ├── module-load-patch.js            ← shared Module._load interceptor registry (prepended into main bundle)
+│   ├── shell-env-patch.js              ← fix shell path worker not found on Linux (prepended)
+│   ├── platform-override.js            ← runtime fallback for the platform gate (prepended)
+│   ├── native-frame.js                 ← icon injection + tray click handler for Linux (prepended)
+│   ├── open-url-bridge.js              ← second-instance → open-url bridge for Linux OAuth (prepended)
+│   ├── path-translator.mjs             ← /sessions/<id>/mnt/<name>/… → ~/.local/share/claude-linux/sessions/… (converted ESM→CJS at patch time and prepended)
+│   ├── patch-cowork-socket.mjs         ← EXPERIMENTAL — named pipe → Unix socket transport (only runs under ENABLE_EXPERIMENTAL_PATCHES=1)
+│   ├── patch-dispatch.mjs              ← EXPERIMENTAL — GrowthBook feature flag overrides (only runs under ENABLE_EXPERIMENTAL_PATCHES=1)
+│   └── patch-computer-use-tcc.mjs      ← EXPERIMENTAL — AST injection of ComputerUseTcc stubs (only runs under ENABLE_EXPERIMENTAL_PATCHES=1)
 ├── packaging/
-│   ├── claude-desktop.spec      ← RPM spec file
-│   ├── AppDir/                  ← AppImage skeleton
-│   │   ├── AppRun
-│   │   ├── claude-desktop.desktop
-│   │   └── usr/
-│   └── icons/                   ← extracted PNG sizes 16…512
+│   ├── claude-desktop.spec             ← RPM spec file
+│   ├── PKGBUILD                        ← Pacman build file
+│   ├── claude-desktop.svg              ← fallback SVG icon (PNG icons are extracted at build time by fetch-and-extract.sh into packaging/icons/)
+│   └── AppDir/                         ← AppImage skeleton (AppRun, claude-desktop.desktop, usr/)
+├── output/                             ← built packages land here
 └── .github/
     └── workflows/
-        ├── check-update.yml     ← polls for new DMG every 6 h
-        ├── build.yml            ← full build + release
-        └── smoke-test.yml       ← smoke tests (syntax, RPM install, headless launch)
+        ├── check-update.yml            ← polls for new DMG every 6 h
+        ├── build.yml                   ← full build + release
+        └── smoke-test.yml              ← smoke tests (syntax, RPM install, headless launch)
 ```
 
 ## Invariants — Never Break These
 
-- **All scripts must be idempotent.** Running a script twice must produce the same
-  result as running it once. Use guard files (`$BUILD_DIR/.step-done`) to skip
-  completed steps.
-- **Every downloaded file must be SHA256-verified** before use. Store the checksum
-  next to the file as `<file>.sha256`.
-- **Patches must self-validate.** If a patch cannot find the pattern it is looking
-  for, it must exit 1 with a clear diagnostic message. A silently no-op patch is
-  worse than a build failure.
-- **No hardcoded versions anywhere.** Claude Desktop version, Electron version, and
-  DMG URL are all discovered at runtime from the DMG itself.
-- **`set -euo pipefail`** at the top of every shell script.
+Invariants and non-goals are defined in INVARIANTS.md (change-protected, see .github/workflows/invariant-guard.yml).
 
 ## Environment Variables
 
@@ -104,6 +116,78 @@ Resolved at runtime if missing; the scripts will print install instructions.
 | `bubblewrap` (`bwrap`) | Cowork sandbox (runtime, not build) |
 | `electron` | Runtime; bundled inside AppImage |
 | `cowork-svc-linux` | Optional: Cowork/Dispatch socket daemon (runtime) |
+
+## Build Phases
+
+A full build runs these scripts in order; each is idempotent and writes a
+guard file under `$BUILD_DIR` so re-running picks up where the previous
+run left off.
+
+1. `scripts/fetch-and-extract.sh` — download DMG, SHA256-verify, convert
+   via `dmg2img`, extract with `7z`, unpack `app.asar` via
+   `@electron/asar`, emit `$BUILD_DIR/VERSION` and
+   `$BUILD_DIR/ELECTRON_VERSION`, extract icons into `packaging/icons/`.
+2. `scripts/inject-stubs.sh` — replace `node_modules/@ant/claude-native`
+   and `node_modules/@ant/claude-swift` with the JS stubs from `stubs/`.
+3. `scripts/patch-cowork.sh` — see breakdown below.
+4. `scripts/build-packages.sh` — re-pack `app.asar` once, then build
+   `build-rpm.sh`, `build-deb.sh`, `build-pacman.sh`, `build-nix.sh`, and
+   `build-appimage.sh` into `$OUTPUT_DIR`.
+
+### Patches applied by `scripts/patch-cowork.sh`
+
+Default-on patches (always run, must keep `main` green; if any of these
+starts breaking the build, fix it in place rather than feature-flagging
+it off):
+
+- `patches/find-platform-gate.mjs` + `patches/apply-platform-gate.mjs` —
+  replace the Cowork availability-gate body with
+  `return { status: "supported" }`.
+- `patches/fix-tray-icon.mjs` — fix the minifier tray icon variable
+  reference (warns on failure, does not exit non-zero).
+- `patches/find-ccd-platform.mjs` + `patches/apply-ccd-platform.mjs` —
+  add `linux-x64` / `linux-arm64` support to CCD `getHostPlatform` and
+  `getBinaryPathIfReady` (warns on failure).
+- `patches/find-vm-download.mjs` + `patches/apply-vm-download.mjs` —
+  make `download_and_sdk_prepare` return early on Linux (warns on
+  failure).
+- Inline `sed` guard for `.files[X][Y]` access in the main bundle, so
+  `files["linux"]` returning `undefined` does not crash callers.
+- `patches/fix-bundle-download.mjs` — bypass the platform check around
+  the binary bundle download (warns on failure).
+- `patches/fix-dispatch-gate.mjs` — patch the Dispatch availability
+  gate (warns on failure). Note this is the *availability* gate only;
+  GrowthBook feature flags are not touched in default builds.
+- File copies + idempotent prepend into the main entry of these CJS
+  shims (every file is copied to the main entry's directory and
+  `require()`-ed at the top of the bundle):
+  `patches/module-load-patch.js`, `patches/shell-env-patch.js`,
+  `stubs/platform-headers.js`, `patches/platform-override.js`,
+  `stubs/ipc-stubs.js`, `stubs/dispatch-polyfill.js`,
+  `patches/native-frame.js`, `patches/open-url-bridge.js`, and
+  `patches/path-translator.mjs` (converted ESM→CJS on the fly).
+- Post-patch acorn syntax validation + `scripts/validate-bundle.sh`.
+
+Default-off (experimental) patches — gated behind
+`ENABLE_EXPERIMENTAL_PATCHES=1` because they currently corrupt the JS
+bundle on some Claude Desktop versions and can cause SIGSEGV on launch
+(see `scripts/patch-cowork.sh` lines 342–414 and the `fix_cowork`
+branch):
+
+- `patches/patch-cowork-socket.mjs` — rewrites the Cowork socket
+  transport from a Windows named pipe to a Linux Unix domain socket.
+- `patches/patch-dispatch.mjs` — force-enables the GrowthBook feature
+  flags that gate Dispatch (sessions-bridge init, remote session
+  control, hostLoopMode).
+- `patches/patch-computer-use-tcc.mjs` — AST-injects ComputerUseTcc IPC
+  handler stubs into the main bundle.
+
+Other env vars that affect `patch-cowork.sh` behaviour:
+
+| Variable | Effect |
+|---|---|
+| `SKIP_COWORK_PATCH=1` | Skip the whole script (no platform-gate patch, no shim prepend). Top-level escape hatch — does not gate the experimental patches selectively. |
+| `BUILD_DIR` | Scratch directory (default `/tmp/claude-build`); also where the `.patch-cowork-done` guard lives. |
 
 ## Key Files Inside the Extracted ASAR
 
@@ -381,38 +465,25 @@ Triggered by `check-update.yml` or manual dispatch (with optional `version`
 input). Runs on `ubuntu-latest`. Steps:
 
 1. Install build dependencies via `apt-get` + `npm`
-2. `fetch-dmg.sh` → download and verify DMG
-3. `extract-asar.sh` → unpack, detect versions
-4. `inject-stubs.sh` → replace native modules
-5. `patch-cowork.sh` → platform gate + path translator
-6. `build-packages.sh` → RPM + AppImage
-7. Upload artifacts
-8. Create GitHub Release with RPM, AppImage, and `.sha256` files as assets
+2. `fetch-and-extract.sh` → download DMG, SHA256-verify, extract
+   `app.asar`, emit `VERSION` + `ELECTRON_VERSION`, extract icons
+3. `inject-stubs.sh` → replace `@ant/claude-native` and `@ant/claude-swift`
+   with the JS stubs in `stubs/`
+4. `patch-cowork.sh` → run the default-on patches listed under
+   [Build Phases](#build-phases); experimental AST patches stay off
+   unless `ENABLE_EXPERIMENTAL_PATCHES=1` is set
+5. `build-packages.sh` → re-pack ASAR, build RPM + DEB + Pacman + Nix +
+   AppImage
+6. Upload artifacts
+7. Create GitHub Release with the packages and their `.sha256` files as
+   assets
 
 Cache keys: `node_modules` by `package-lock.json` hash; Electron binary by
 version string. The DMG is never cached — always fetch fresh.
 
 ## What This Project Intentionally Does Not Do
 
-- **Dispatch — partially supported.** Dispatch works via SSE when the app is
-  open.  GrowthBook feature flags are force-enabled by `patches/patch-dispatch.mjs`
-  (sessions-bridge init, remote session control, hostLoopMode).  UI platform gates
-  are bypassed, IPC handlers are stubbed (`stubs/dispatch-polyfill.js`), and
-  Electron's Notification API is polyfilled.  The `claude-cowork-service` daemon
-  provides the socket backend that Dispatch's session management requires.
-  Background delivery (APNs/FCM push wake-up) is not available; tasks sent from
-  mobile when the app is closed won't arrive until next launch.
-- **No Computer Use.** Requires `xdotool`/`scrot` hacks that are fragile and
-  version-sensitive. Out of scope for the initial release.
-- **No KVM isolation.** See Cowork Isolation Backends above.
-- **Platform headers are spoofed only on Anthropic API requests for Cowork
-  activation.** `stubs/platform-headers.js` injects `Anthropic-Client-OS-Platform:
-  darwin` and `Anthropic-Client-OS-Version: 14.0` on requests to `*.anthropic.com`
-  and `*.claude.ai` only.  Without these headers, the server never enables Cowork
-  or serves the claude-code binary bundle.  No other domains are affected.  We do
-  not modify User-Agent strings or general browsing headers.
-- **No ARM64 support yet.** The Electron binary selection and AppImage build are
-  x86_64 only. ARM64 is a future milestone.
+Invariants and non-goals are defined in INVARIANTS.md (change-protected, see .github/workflows/invariant-guard.yml).
 
 ## Updating After a Claude Desktop Release
 

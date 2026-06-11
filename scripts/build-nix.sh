@@ -152,12 +152,13 @@ else
     fi
 fi
 
-# Always install SVG icon for scalable resolution support
-SVG_ICON="$REPO_DIR/packaging/claude-desktop.svg"
-if [[ -f "$SVG_ICON" ]]; then
-    install -Dm644 "$SVG_ICON" \
-        "$NIX_ROOT/share/icons/hicolor/scalable/apps/claude-desktop.svg"
-fi
+# Intentionally NOT installing a scalable SVG into hicolor.
+# packaging/claude-desktop.svg is a hand-drawn placeholder (the upstream
+# macOS .icns has no vector source), and XDG icon resolution prefers
+# scalable/ over the correct raster sizes — which is why the dock
+# previously rendered the placeholder while the tray (which uses a
+# pre-resized raster) looked fine. The PNGs above (16..512) cover every
+# size a Linux dock/search/launcher will request.
 
 # Write version metadata
 echo "$FULL_VERSION" > "$NIX_ROOT/lib/claude-desktop/VERSION"
