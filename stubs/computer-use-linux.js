@@ -451,6 +451,11 @@ function buildComputerUse() {
   };
   const wrapNs = (obj, prefix) => new Proxy(obj, {
     get(t, p) {
+      // Guard `then` BEFORE the unknown-property no-op: otherwise `then` would
+      // resolve to a function, making the sub-namespace a thenable, so
+      // `await computerUse.display` (or Promise.resolve of it) would hang.
+      // Mirrors the root proxy and the vm/recon proxies in claude-swift.js.
+      if (p === 'then') return undefined;
       if (p in t) return t[p];
       if (typeof p === 'symbol') return t[p];
       return noop(`${prefix}${String(p)}`);
@@ -613,6 +618,9 @@ if (require.main === module && process.argv.includes('--selftest')) {
     check('apps.prepareDisplay shape', JSON.stringify(cu.apps.prepareDisplay()) === '{"activated":null,"hidden":[]}');
     check('apps.listInstalled() === []', Array.isArray(cu.apps.listInstalled()) && cu.apps.listInstalled().length === 0);
     check('unknown namespace member → no-op (no throw)', (() => { try { return cu.nope === undefined ? true : cu.nope() === undefined; } catch { return false; } })());
+    check('sub-namespaces are not thenable (await-safe)', cu.apps.then === undefined && cu.display.then === undefined && cu.screenshot.then === undefined && cu.tcc.then === undefined);
+    const _appsNs = cu.apps; // capture once (each access returns a fresh sub-proxy)
+    check('await of a sub-namespace resolves (no hang)', (await Promise.resolve(_appsNs)) === _appsNs);
 
     // coordSpace identity (v1)
     const cs = coordSpace({ width: 2560, height: 1440, scaleFactor: 1, originX: 0, originY: 0 });
