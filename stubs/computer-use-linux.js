@@ -88,7 +88,10 @@ function electron() {
 // ---------------------------------------------------------------------------
 function detectTool(bin) {
   try {
-    execFileSync('which', [bin], { stdio: ['ignore', 'ignore', 'ignore'], timeout: 2000 });
+    // `which` resolves in well under this; the short timeout caps the worst case
+    // so the (load-time, experimental-only) detection can't stall startup for
+    // long on a pathological PATH. 3 tools × 600ms ≈ 1.8s worst case.
+    execFileSync('which', [bin], { stdio: ['ignore', 'ignore', 'ignore'], timeout: 600 });
     return true;
   } catch { return false; }
 }
@@ -253,10 +256,26 @@ function resolveDisplay(displayId) {
 // and the image/jpeg mimeType the orchestrator hardcodes both hold.
 // `geometry` (optional) = { x, y, w, h } in display logical points → grim -g.
 // ---------------------------------------------------------------------------
+let _multiOutputChecked = false;
+
 async function grimCapture(display, geometry) {
   if (!TOOLS.grim) throw new Error('grim not installed');
+  // v1: single output → no `-o`, so grim captures the whole layout. When more
+  // than one output exists this can disagree with the per-display geometry we
+  // report (displayWidth/Height/origin*) and miscalibrate clicks on secondary
+  // monitors. Probe once (regardless of count) so describeDisplays() doesn't
+  // run on every capture; warn if multi-output. Per-output `-o` targeting +
+  // origin offsets are the multi-output TODO (see file header / coordSpace).
+  if (!_multiOutputChecked) {
+    _multiOutputChecked = true;
+    const outputs = describeDisplays().length;
+    if (outputs > 1) {
+      log(`WARNING: ${outputs} outputs detected; v1 captures the whole layout ` +
+          '(no -o targeting). Screenshot/click coordinates are only reliable on a ' +
+          'SINGLE-output setup — multi-output is a TODO.');
+    }
+  }
   const args = [];
-  // v1: single output → no `-o`. Multi-output TODO: args.push('-o', outputName).
   if (geometry) {
     args.push('-g', `${Math.round(geometry.x)},${Math.round(geometry.y)} ${Math.round(geometry.w)}x${Math.round(geometry.h)}`);
   }
