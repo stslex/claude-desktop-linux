@@ -12,7 +12,7 @@ shapes have caused SIGSEGV here).
 ## 1. Locate before you read — print offsets
 
 ```sh
-BUNDLE=/tmp/claude-build/app-extracted/.vite/build/index.js
+export BUNDLE=/tmp/claude-build/app-extracted/.vite/build/index.js   # export so child `node` sees it
 node -e 'const s=require("fs").readFileSync(process.env.BUNDLE,"utf8");
 const re=/PATTERN/g;let m,n=0;
 while((m=re.exec(s))&&n<60){console.log(m.index, JSON.stringify(s.slice(m.index-60,m.index+120)));n++}'

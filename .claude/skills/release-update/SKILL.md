@@ -11,10 +11,13 @@ minifier renames every release). When upstream changes that shape, a patch's
 
 ## 1. Identify what broke
 
-A failing `patch-cowork.sh` names the script that exited non-zero. The common one:
+A failing `patch-cowork.sh` names the script that exited non-zero. The common one
+requires the extracted-bundle dir as a positional arg (the same one
+`patch-cowork.sh` passes as `$VITE_BUILD_DIR`/`$APP_DIR`); without it the script
+exits 1 with a usage error:
 
 ```sh
-node patches/find-platform-gate.mjs --dump-candidates
+node patches/find-platform-gate.mjs "${BUILD_DIR:-/tmp/claude-build}/app-extracted" --dump-candidates
 ```
 
 This prints every function that partially matches the platform-gate shape
@@ -27,7 +30,7 @@ NEVER open `.vite/build/index.js` with a whole-file read. Slice byte ranges and
 print offsets first (see the `bundle-recon` skill for the full technique):
 
 ```sh
-BUNDLE=/tmp/claude-build/app-extracted/.vite/build/index.js
+export BUNDLE=/tmp/claude-build/app-extracted/.vite/build/index.js   # export so child `node` sees it
 # find candidate strings/symbols
 node -e 'const s=require("fs").readFileSync(process.env.BUNDLE,"utf8");const re=/process\.platform/g;let m,n=0;while((m=re.exec(s))&&n<40){console.log(m.index,JSON.stringify(s.slice(m.index-50,m.index+80)));n++}'
 # read a region once you have an offset

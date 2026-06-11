@@ -516,7 +516,8 @@ Invariants and non-goals are defined in INVARIANTS.md (change-protected, see .gi
 
 When `find-platform-gate.mjs` exits 1 on a new version:
 
-1. Run `node patches/find-platform-gate.mjs --dump-candidates` to print all
+1. Run `node patches/find-platform-gate.mjs "$BUILD_DIR/app-extracted" --dump-candidates`
+   (the extracted-bundle dir is a required positional arg) to print all
    functions that partially match.
 2. Inspect the candidates and identify the new gate function shape.
 3. Update the AST pattern in `find-platform-gate.mjs`.
