@@ -305,7 +305,7 @@ fi
 # --class requests a Wayland app_id / X11 WM_CLASS. We exec nixpkgs'
 # electron binary directly, so without it the app_id would default to
 # "electron". NOTE: the upstream app overrides this at runtime and sets the
-# app_id from its product name → "claude" (verified via `niri msg windows`),
+# app_id from its product name → "claude" (verify with: niri msg windows),
 # so the window reports "claude" regardless of --class. We pass "claude" here
 # to match that observed value and StartupWMClass=claude in claude-desktop.desktop,
 # so compositors/taskbars (e.g. Niri) can map the window to its Icon= entry.
