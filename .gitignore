@@ -7,4 +7,8 @@ node_modules/
 *.img
 *.dmg
 build/
-.claude
+
+# Claude Code: ignore personal/local config (settings.local.json, caches),
+# but track shared, checked-in skills under .claude/skills/.
+.claude/*
+!.claude/skills/
