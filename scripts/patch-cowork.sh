@@ -421,6 +421,7 @@ DISPATCH_TRANSPORT_LOG="$BUILD_DIR/patch-dispatch-transport.log"
 
 set +e
 node "$PATCHES_DIR/fix-bridge-transport-toggle.mjs" \
+  --bundle "$VITE_BUILD_DIR/index.js" \
   2>"$DISPATCH_TRANSPORT_LOG"
 DISPATCH_TRANSPORT_EXIT=$?
 set -e
