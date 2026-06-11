@@ -82,6 +82,16 @@ entirely and run the Claude Code binary directly on the host.
         └── smoke-test.yml              ← smoke tests (syntax, RPM install, headless launch)
 ```
 
+## Claude Code Skills
+
+Repeatable workflows for this repo live in `.claude/skills/<name>/SKILL.md` and
+are auto-discovered by Claude Code:
+
+- `build-packages` — the fetch → inject → patch → build pipeline, guards, env vars.
+- `release-update` — adapt to a new Claude Desktop release when an AST pattern stops matching.
+- `bundle-recon` — reverse-engineer a symbol/contract in the minified bundle without guessing.
+- `computer-use-test` — exercise/diagnose the experimental Linux computer-use backend.
+
 ## Invariants — Never Break These
 
 Invariants and non-goals are defined in INVARIANTS.md (change-protected, see .github/workflows/invariant-guard.yml).

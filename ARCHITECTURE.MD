@@ -333,6 +333,62 @@ platform gate (separate from the Cowork gate).
 
 ---
 
+## Computer Use on Linux
+
+**Experimental, disabled by default.** A Wayland backend exists but does not
+activate without two explicit flags, and is not reachable end-to-end on the
+stock bundle. Full contract and rationale: `docs/computer-use-decision.md`.
+
+### Two native surfaces
+
+"Computer use" is backed by two different native surfaces on macOS/Windows, and
+the Linux backend (`stubs/computer-use-linux.js`) mirrors both:
+
+- `@ant/claude-swift` `.computerUse` — display enumeration, screenshots, and app
+  metadata. The Linux implementation uses `grim` (wlr-screencopy) for capture
+  and Electron `nativeImage` to resize/JPEG-encode, matching the Windows
+  executor's `desktopCapturer` → `nativeImage.resize().toJPEG()` shape. Screenshots
+  return JPEG (the consumer hardcodes `image/jpeg` and validates decoded length
+  ≥ 1024 bytes), not PNG.
+- `@ant/claude-native` — mouse/keyboard. The Linux input primitives use `ydotool`
+  (absolute pointer, click, scroll, type; needs a running `ydotoold` with
+  `/dev/uinput` access) with `wtype` as the keyboard fallback. They are exported
+  separately (`createInput()`) — input is **not** a member of `computerUse`, so
+  placing it there would contradict the interface — and are not wired by the
+  current change.
+
+### Contract established by recon, not guessing
+
+Guessing this contract previously caused a SIGSEGV regression, so it was
+reverse-engineered read-only: `patches/recon-computer-use.mjs` (static acorn
+walk) plus a runtime logging Proxy behind `COMPUTER_USE_RECON=1`, both writing to
+`/tmp/cd-computeruse-recon.md`. Unidentified namespace methods resolve to logged
+no-ops via a Proxy, and missing tools (`grim`/`ydotool`/`wtype`) log once and
+degrade to no-ops rather than crashing.
+
+### One coordinate transform
+
+The orchestrator converts model coordinates (in downsampled screenshot-image
+pixels) to clicks as `round(modelX * displayWidth / width) + originX` and passes
+the result untransformed to the input backend. So the screenshot's
+`{displayWidth, displayHeight, originX, originY}` and `display.getSize()` must be
+in the same space `ydotool`'s absolute pointer consumes. This mapping lives in a
+single function (`coordSpace()`); v1 assumes a single output, scaleFactor 1,
+origin (0,0) — and warns loudly on fractional scaling rather than miscalibrating.
+Multi-output and DIP↔px conversion are TODO.
+
+### Why it is not end-to-end
+
+The stock bundle hard-gates Linux computer use in three independent places: the
+platform allow-list (`new Set(["darwin","win32"])`), the executor-factory
+dispatch (`win32 ? createWin32Executor : createDarwinExecutor` — no Linux branch,
+so Linux throws at construction), and the absence of a Linux capability profile.
+Lifting these needs AST patches in the minified bundle and revisits the
+`INVARIANTS.md` "No Computer Use" non-goal — a maintainer decision, intentionally
+out of scope. `INVARIANTS.md` is not edited.
+
+---
+
 ## Package Format Decisions
 
 ### RPM: system Electron, no bundle
@@ -442,6 +498,14 @@ platform gates are bypassed, and IPC handlers are stubbed.  The
 management requires.  Background delivery (APNs/FCM push wake-up) is not
 available — tasks sent from mobile when the app is closed won't arrive until the
 next launch.  See "Dispatch on Linux" section above for details.
+
+**Computer Use — experimental, default off, not end-to-end.** A Wayland backend
+(`stubs/computer-use-linux.js`: `grim` + `ydotool`/`wtype`) is staged under
+`ENABLE_EXPERIMENTAL_PATCHES=1` and activated by `ENABLE_COMPUTER_USE=1`; with
+neither, `computerUse` is `null` and behaviour is unchanged.  The stock bundle
+still hard-gates Linux in three places, so it is not reachable end-to-end —
+lifting that revisits the ratified "No Computer Use" non-goal and is a maintainer
+decision.  See "Computer Use on Linux" above and `docs/computer-use-decision.md`.
 
 ## Explicit Non-Goals
 

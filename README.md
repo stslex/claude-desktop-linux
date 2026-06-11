@@ -38,6 +38,14 @@ See [ARCHITECTURE.MD](ARCHITECTURE.MD) for design decisions and trade-offs.
   (see the `fix_cowork` branch). Default builds only patch the platform
   gate so the Cowork UI renders; the socket transport and ComputerUseTcc
   AST injections that wire it end-to-end stay off.
+- **Computer Use** — experimental, disabled by default. A Wayland backend
+  (`stubs/computer-use-linux.js`: `grim` screenshots + `ydotool`/`wtype`
+  input) is staged under `ENABLE_EXPERIMENTAL_PATCHES=1` and activated at
+  runtime by `ENABLE_COMPUTER_USE=1`; with neither, `computerUse` stays
+  `null` and nothing changes. It is **not** wired end-to-end — the stock
+  bundle still hard-gates Linux computer use, which is a maintainer
+  decision tied to the `INVARIANTS.md` "No Computer Use" non-goal. See
+  [Build Flags](#build-flags) and [docs/computer-use-decision.md](docs/computer-use-decision.md).
 - **Dispatch (default builds)** — the Dispatch availability gate is
   patched (`patches/fix-dispatch-gate.mjs`) and renderer IPC handlers are
   stubbed (`stubs/dispatch-polyfill.js`), but GrowthBook feature flags
@@ -55,7 +63,8 @@ See [ARCHITECTURE.MD](ARCHITECTURE.MD) for design decisions and trade-offs.
 |---|---|
 | **Dispatch (default builds)** | Availability gate is patched (`patches/fix-dispatch-gate.mjs`) and renderer IPC handlers are stubbed (`stubs/dispatch-polyfill.js`), so the UI renders, but GrowthBook feature flags are not overridden in default builds — `patches/patch-dispatch.mjs` is experimental (see [Build Flags](#build-flags)). |
 | **Dispatch (experimental, `ENABLE_EXPERIMENTAL_PATCHES=1`)** | Adds the GrowthBook override (`patches/patch-dispatch.mjs`). Even with the flag set, background delivery (APNs/FCM push) is unavailable, so tasks sent from mobile while the app is closed never arrive — this depends on platform features Linux does not provide and is not gated by an env var. |
-| **Computer Use** | macOS implementation uses `AXUIElement`; an `xdotool`/`scrot` replacement would be fragile across desktop environments |
+| **Computer Use (default builds)** | `computerUse` is `null`; not enabled. The macOS implementation uses `AXUIElement`. |
+| **Computer Use (experimental, `ENABLE_EXPERIMENTAL_PATCHES=1` + `ENABLE_COMPUTER_USE=1`)** | A Wayland backend exists (`stubs/computer-use-linux.js`: `grim` + `ydotool`/`wtype`) but is **not** reachable end-to-end — the stock bundle hard-gates Linux in three places (platform allow-list, executor dispatch, capability profiles), and lifting them touches the ratified "No Computer Use" non-goal (`INVARIANTS.md`), so it is a maintainer decision. v1 also assumes a single output with no fractional scaling. See [docs/computer-use-decision.md](docs/computer-use-decision.md). |
 | **ARM64** | Electron binary selection and AppImage build are x86_64 only; ARM64 is a future milestone |
 
 ---
