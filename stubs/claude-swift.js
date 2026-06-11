@@ -556,9 +556,10 @@ function _buildReconPngBase64(w, h) {
 
 function _installReconProxy() {
   const fs = require('fs');
-  const RECON_W = 1920, RECON_H = 1080;
+  const RECON_W = 1920, RECON_H = 1080;           // synthetic "display" size
+  const RECON_IMG_W = 160, RECON_IMG_H = 120;     // actual stand-in image size
   let pngB64;
-  try { pngB64 = _buildReconPngBase64(160, 120); } // gradient → comfortably >1024 bytes
+  try { pngB64 = _buildReconPngBase64(RECON_IMG_W, RECON_IMG_H); } // gradient → comfortably >1024 bytes
   catch (_) { pngB64 = ''; }
 
   let seq = 0;
@@ -578,8 +579,11 @@ function _installReconProxy() {
 
   // Permissive stand-ins keyed by full dotted path — chosen so the orchestrator
   // PROCEEDS (recon §8.6) rather than erroring out.
+  // width/height describe the actual stand-in image (post-downscale dims in the
+  // real contract); displayWidth/Height describe the native display. Keeping them
+  // distinct so the orchestrator's modelX*displayWidth/width mapping is coherent.
   const screenshotObj = () => ({
-    base64: pngB64, width: RECON_W, height: RECON_H,
+    base64: pngB64, width: RECON_IMG_W, height: RECON_IMG_H,
     displayWidth: RECON_W, displayHeight: RECON_H, displayId: 0, originX: 0, originY: 0,
   });
   const standIn = (path) => {
