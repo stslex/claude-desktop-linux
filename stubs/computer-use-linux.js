@@ -310,6 +310,34 @@ async function captureToContract(display, targetMaxW, targetMaxH, quality, geome
   };
 }
 
+/**
+ * The win32-parity graceful-failure shape. Returned (never thrown) by every
+ * capture method when grim is missing or fails, so a direct caller surfaces a
+ * clean `captureError` instead of aborting — matching this module's documented
+ * "missing tools degrade to a no-op" contract. The screenshot tool handler
+ * checks `captureError` and returns capture_failed; handlers that only read
+ * `.base64` (e.g. zoom) get an empty string rather than an exception.
+ *
+ * @param {number|undefined} displayId
+ * @param {unknown} err
+ */
+function captureFailure(displayId, err) {
+  return {
+    base64: '', width: 0, height: 0, displayWidth: 0, displayHeight: 0,
+    displayId: displayId != null ? displayId : 0, originX: 0, originY: 0,
+    captureError: err instanceof Error ? err.message : String((err && err.message) || err || 'Screenshot capture failed'),
+  };
+}
+
+/** captureToContract with the graceful-failure shape on any error. */
+async function safeCapture(display, targetMaxW, targetMaxH, quality, geometry) {
+  try {
+    return await captureToContract(display, targetMaxW, targetMaxH, quality, geometry);
+  } catch (err) {
+    return captureFailure(display ? display.displayId : undefined, err);
+  }
+}
+
 // ===========================================================================
 // computerUse NAMESPACE  (the @ant/claude-swift surface)
 // ===========================================================================
@@ -340,17 +368,20 @@ function buildComputerUse() {
     screenshot: {
       // captureExcluding(allowedBundleIds, quality, targetMaxW, targetMaxH, displayId)
       // Wayland has no per-window exclusion via grim; allowedBundleIds is
-      // accepted and ignored (v1). Whole-display capture.
+      // accepted and ignored (v1). Whole-display capture. On grim missing/failure
+      // returns the graceful captureError shape (never rejects) — same as
+      // resolvePrepareCapture — so direct callers surface a clean failure.
       async captureExcluding(_allowedBundleIds, quality, targetMaxW, targetMaxH, displayId) {
         const d = resolveDisplay(displayId);
-        return captureToContract(d, targetMaxW, targetMaxH, quality, null);
+        return safeCapture(d, targetMaxW, targetMaxH, quality, null);
       },
       // captureRegion(allowedBundleIds, x, y, w, h, targetMaxW, targetMaxH, quality, displayId)
-      // x/y/w/h in display logical points. Only .base64 is consumed downstream,
-      // but we return the full contract shape for safety.
+      // x/y/w/h in display logical points. Only .base64 is consumed downstream;
+      // we return the full contract shape, and the graceful captureError shape
+      // (with base64:"") on failure rather than rejecting.
       async captureRegion(_allowedBundleIds, x, y, w, h, targetMaxW, targetMaxH, quality, displayId) {
         const d = resolveDisplay(displayId);
-        return captureToContract(d, targetMaxW, targetMaxH, quality, { x, y, w, h });
+        return safeCapture(d, targetMaxW, targetMaxH, quality, { x, y, w, h });
       },
     },
 
@@ -360,19 +391,10 @@ function buildComputerUse() {
     // We do not hide apps on Wayland (no equivalent), so hidden=[] activated=null.
     async resolvePrepareCapture(allowedBundleIds, _hostBundleId, quality, targetMaxW, targetMaxH, preferredDisplayId, _autoResolve, _doHide) {
       const d = resolveDisplay(preferredDisplayId);
-      try {
-        const shot = await captureToContract(d, targetMaxW, targetMaxH, quality, null);
-        return { ...shot, hidden: [], activated: null };
-      } catch (err) {
-        // Mirror the win32 graceful-failure shape so the tool surfaces a clean
-        // capture_failed rather than throwing.
-        return {
-          base64: '', width: 0, height: 0, displayWidth: 0, displayHeight: 0,
-          displayId: (preferredDisplayId != null ? preferredDisplayId : (d ? d.displayId : 0)),
-          originX: 0, originY: 0, hidden: [], activated: null,
-          captureError: err instanceof Error ? err.message : 'Screenshot capture failed',
-        };
-      }
+      // safeCapture yields either a full shot or the win32-parity captureError
+      // shape; either way we add hidden/activated so the contract holds.
+      const shot = await safeCapture(d, targetMaxW, targetMaxH, quality, null);
+      return { ...shot, hidden: [], activated: null };
     },
 
     // -- tcc (Linux has no TCC; permission is implicit) ---------------------
@@ -598,6 +620,25 @@ if (require.main === module && process.argv.includes('--selftest')) {
       }
     } else {
       process.stdout.write('skip live capture (grim absent)\n');
+    }
+
+    // Failure path: with grim forced absent, captureExcluding/captureRegion/
+    // resolvePrepareCapture must RETURN the captureError shape, never reject.
+    {
+      const savedGrim = TOOLS.grim;
+      TOOLS.grim = false; // _internals.TOOLS is the same object the methods read
+      try {
+        const a = await cu.screenshot.captureExcluding([], 0.75, 1568, 882, 0);
+        check('captureExcluding(no grim) returns captureError (no throw)', a && typeof a.captureError === 'string' && a.base64 === '');
+        const b = await cu.screenshot.captureRegion([], 0, 0, 10, 10, 16, 16, 0.75, 0);
+        check('captureRegion(no grim) returns captureError (no throw)', b && typeof b.captureError === 'string');
+        const c = await cu.resolvePrepareCapture([], 'host', 0.75, 1568, 882, 0, true, true);
+        check('resolvePrepareCapture(no grim) → captureError + hidden/activated', c && typeof c.captureError === 'string' && Array.isArray(c.hidden) && c.activated === null);
+      } catch (e) {
+        check(`capture failure path threw (${e.message})`, false);
+      } finally {
+        TOOLS.grim = savedGrim;
+      }
     }
 
     process.stdout.write(failures === 0 ? '\nSELFTEST PASS\n' : `\nSELFTEST FAIL (${failures})\n`);
