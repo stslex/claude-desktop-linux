@@ -504,33 +504,8 @@ if [[ "${ENABLE_EXPERIMENTAL_PATCHES:-}" == "1" ]]; then
   else
     log "ComputerUseTcc IPC handlers patched."
   fi
-
-  # -------------------------------------------------------------------------
-  # Stage — EXPERIMENTAL Linux computer-use backend (DISABLED by default)
-  #
-  # Copy stubs/computer-use-linux.js next to the injected @ant/claude-swift
-  # stub so claude-swift.js can require('./computer-use-linux.js') AT RUNTIME
-  # when ENABLE_COMPUTER_USE=1 is ALSO set. The build-flag gate (this block,
-  # ENABLE_EXPERIMENTAL_PATCHES=1) controls the file's PRESENCE; the runtime
-  # flag controls activation — so BOTH are required. Without this step the
-  # runtime require fails gracefully and computerUse stays null.
-  # Contract recon: /tmp/cd-computeruse-recon.md.
-  # -------------------------------------------------------------------------
-  log "Staging experimental Linux computer-use backend..."
-  CU_SRC="$REPO_DIR/stubs/computer-use-linux.js"
-  CU_DEST_DIR="$APP_DIR/node_modules/@ant/claude-swift"
-  if [[ -f "$CU_SRC" && -d "$CU_DEST_DIR" ]]; then
-    if node --check "$CU_SRC" 2>/dev/null; then
-      cp "$CU_SRC" "$CU_DEST_DIR/computer-use-linux.js"
-      log "Staged computer-use-linux.js → @ant/claude-swift/ (set ENABLE_COMPUTER_USE=1 at runtime to activate)."
-    else
-      log "WARNING: $CU_SRC failed node --check; NOT staging (computerUse stays null)."
-    fi
-  else
-    log "WARNING: computer-use backend source or @ant/claude-swift dir missing; skipping (computerUse stays null)."
-  fi
 else
-  log "Skipping experimental patches (Cowork socket, Dispatch flags, ComputerUseTcc, computer-use backend)."
+  log "Skipping experimental patches (Cowork socket, Dispatch flags, ComputerUseTcc)."
   log "Set ENABLE_EXPERIMENTAL_PATCHES=1 to enable them."
 fi
 
@@ -814,7 +789,6 @@ log "  Dispatch gate       : checked (shared with Cowork gate or patched separat
 log "  Cowork socket       : $(if [[ "${ENABLE_EXPERIMENTAL_PATCHES:-}" == "1" ]]; then echo "named pipe → Unix domain socket on Linux"; else echo "SKIPPED (experimental)"; fi)"
 log "  Dispatch flags      : $(if [[ "${ENABLE_EXPERIMENTAL_PATCHES:-}" == "1" ]]; then echo "GrowthBook feature flags force-enabled for Linux"; else echo "SKIPPED (experimental)"; fi)"
 log "  ComputerUseTcc      : $(if [[ "${ENABLE_EXPERIMENTAL_PATCHES:-}" == "1" ]]; then echo "IPC stubs injected into main bundle"; else echo "SKIPPED (experimental)"; fi)"
-log "  Computer-use backend: $(if [[ "${ENABLE_EXPERIMENTAL_PATCHES:-}" == "1" ]]; then echo "staged next to @ant/claude-swift (run-time ENABLE_COMPUTER_USE=1 to activate)"; else echo "SKIPPED (experimental)"; fi)"
 log "  Patches injected    : $MAIN_ENTRY"
 log "    module-load-patch.js   (shared Module._load interceptor registry)"
 log "    shell-env-patch.js     (fix shell path worker not found on Linux)"

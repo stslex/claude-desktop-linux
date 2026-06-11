@@ -45,11 +45,9 @@ entirely and run the Claude Code binary directly on the host.
 │   ├── claude-swift-pkg.json           ← package.json that ships inside the @ant/claude-swift stub
 │   ├── platform-headers.js             ← Anthropic API header injection (copied next to main entry by patch-cowork.sh)
 │   ├── ipc-stubs.js                    ← ComputerUseTcc IPC handler stubs (copied next to main entry)
-│   ├── dispatch-polyfill.js            ← Dispatch IPC stubs + foreground polling (copied next to main entry)
-│   └── computer-use-linux.js           ← EXPERIMENTAL Linux computer-use backend (grim screenshots + ydotool/wtype input); staged next to @ant/claude-swift only under ENABLE_EXPERIMENTAL_PATCHES=1, activated at runtime by ENABLE_COMPUTER_USE=1 (default off)
+│   └── dispatch-polyfill.js            ← Dispatch IPC stubs + foreground polling (copied next to main entry)
 ├── patches/
 │   ├── patch-utils.mjs                 ← shared helpers used by the three experimental AST patches
-│   ├── recon-computer-use.mjs          ← READ-ONLY acorn recon of the @ant/claude-swift computerUse contract (writes /tmp/cd-computeruse-recon.md); pairs with the COMPUTER_USE_RECON=1 runtime proxy in stubs/claude-swift.js
 │   ├── find-platform-gate.mjs          ← AST search for the Cowork availability gate
 │   ├── apply-platform-gate.mjs         ← replace platform-gate body with `return { status: "supported" }`
 │   ├── find-ccd-platform.mjs           ← locate CCD getHostPlatform / getBinaryPathIfReady
@@ -99,9 +97,7 @@ Invariants and non-goals are defined in INVARIANTS.md (change-protected, see .gi
 | `DISPATCH_DEBUG` | `` | Set to `1` for Dispatch IPC traffic logging |
 | `DISPATCH_POLL_INTERVAL_MS` | `30000` | Dispatch foreground polling interval (ms) |
 | `SKIP_DISPATCH_POLL` | `` | Set to `1` to disable Dispatch polling |
-| `ENABLE_EXPERIMENTAL_PATCHES` | `` | Set to `1` to run cowork-socket, dispatch, and computer-use-tcc AST patches (off by default — they corrupt the JS bundle), and to stage `stubs/computer-use-linux.js` next to the `@ant/claude-swift` stub |
-| `ENABLE_COMPUTER_USE` | `` | Runtime (read by `stubs/claude-swift.js`). With this AND `ENABLE_EXPERIMENTAL_PATCHES=1` (build), the `computerUse` namespace is backed by `stubs/computer-use-linux.js` (grim/ydotool). Default off → `computerUse` stays `null`. Single-output / no-fractional-scaling v1; full end-to-end also needs bundle changes that are a maintainer decision (INVARIANTS non-goal). |
-| `COMPUTER_USE_RECON` | `` | Runtime diagnostic. Replaces `computerUse` with a logging Proxy that appends live calls to `/tmp/cd-computeruse-recon.md` and returns permissive stand-ins. Never modifies the bundle; precedes `ENABLE_COMPUTER_USE`. |
+| `ENABLE_EXPERIMENTAL_PATCHES` | `` | Set to `1` to run cowork-socket, dispatch, and computer-use-tcc AST patches (off by default — they corrupt the JS bundle) |
 | `VERSION_SUFFIX` | `` | Appended to version in filenames and package metadata (e.g. `~dev.20260404.abc1234`); set automatically by CI |
 
 ## Build Dependencies
@@ -185,19 +181,6 @@ branch):
   control, hostLoopMode).
 - `patches/patch-computer-use-tcc.mjs` — AST-injects ComputerUseTcc IPC
   handler stubs into the main bundle.
-- Staging of `stubs/computer-use-linux.js` (the EXPERIMENTAL Linux
-  computer-use backend) next to the injected `@ant/claude-swift` stub.
-  This copy does **not** touch the bundle — it only makes the module
-  available for `stubs/claude-swift.js` to `require()` at runtime when
-  `ENABLE_COMPUTER_USE=1` is also set. With neither flag, `computerUse`
-  stays `null` and behaviour is unchanged. The backend uses `grim`
-  (screenshots) and `ydotool`/`wtype` (input); it is v1 (single output,
-  no fractional scaling). The interface it implements was reverse-engineered
-  read-only by `patches/recon-computer-use.mjs` + the `COMPUTER_USE_RECON=1`
-  proxy → `/tmp/cd-computeruse-recon.md`. NOTE: the stock bundle still
-  hard-gates Linux computer use (platform set, executor dispatch, capability
-  profiles); making it work end-to-end needs further bundle changes that
-  touch the `INVARIANTS.md` "No Computer Use" non-goal — a maintainer decision.
 
 Other env vars that affect `patch-cowork.sh` behaviour:
 
