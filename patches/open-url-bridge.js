@@ -54,8 +54,11 @@ if (!global[INIT_SYM] && process.type === 'browser') {
           'Terminal=false',
           'Type=Application',
           'Categories=Network;',
+          'Icon=claude-desktop',
           'MimeType=x-scheme-handler/claude;',
-          'StartupWMClass=Claude',
+          // Must equal the app_id the window reports (product name → "claude"),
+          // so the taskbar/window-list can map the window to this entry + Icon.
+          'StartupWMClass=claude',
           '',
         ].join('\n');
 

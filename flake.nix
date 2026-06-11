@@ -302,11 +302,13 @@ if [ -z "\$CLAUDE_CODE_LOCAL_BINARY" ]; then
   done
 fi
 
-# --class= pins the Wayland app_id (and X11 WM_CLASS under XWayland)
-# to "claude-desktop". We exec nixpkgs' electron binary directly, so
-# without this the app_id defaults to "electron" — which doesn't match
-# claude-desktop.desktop, and compositors like Niri can't resolve the
-# window to its Icon= entry, leaving the icon blank.
+# --class requests a Wayland app_id / X11 WM_CLASS. We exec nixpkgs'
+# electron binary directly, so without it the app_id would default to
+# "electron". NOTE: the upstream app overrides this at runtime and sets the
+# app_id from its product name → "claude" (verified via `niri msg windows`),
+# so the window reports "claude" regardless of --class. We pass "claude" here
+# to match that observed value and StartupWMClass=claude in claude-desktop.desktop,
+# so compositors/taskbars (e.g. Niri) can map the window to its Icon= entry.
 WAYLAND_FLAGS=""
 if [ -n "\$WAYLAND_DISPLAY" ] && [ -z "\$ELECTRON_OZONE_PLATFORM_HINT" ]; then
   WAYLAND_FLAGS="--enable-features=UseOzonePlatform,WaylandWindowDecorations --ozone-platform=wayland"
@@ -324,7 +326,7 @@ fi
 # (isEncryptionAvailable() → false), i.e. no worse than the current state.
 SAFESTORAGE_FLAGS="--password-store=gnome-libsecret"
 
-exec "${electronBin}" --class=claude-desktop \$WAYLAND_FLAGS \$SAFESTORAGE_FLAGS --no-sandbox "$out/lib/claude-desktop/app" "\$@"
+exec "${electronBin}" --class=claude \$WAYLAND_FLAGS \$SAFESTORAGE_FLAGS --no-sandbox "$out/lib/claude-desktop/app" "\$@"
 LAUNCHER
                 chmod +x $out/bin/claude-desktop
               '' else ''
