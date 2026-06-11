@@ -108,11 +108,19 @@ jobs:
           # dev channel otherwise only rebuilds on push to the dev branch, so a
           # new upstream release would update stable but leave dev pinned to an
           # older Claude Desktop version. This builds dev-branch HEAD as a
-          # prerelease (latest upstream + any unreleased dev fixes). Non-fatal:
-          # if the dev branch is missing the dispatch just fails harmlessly.
+          # prerelease (latest upstream + any unreleased dev fixes).
+          #
+          # deploy_pages=false: this dev build publishes its GitHub Release and
+          # commits nix/dev.json, but does NOT deploy GitHub Pages. The Pages
+          # deploy is a full-site replace with no way to merge channels, so
+          # letting the concurrent stable and dev builds both deploy would leave
+          # whichever finished last — wiping the other channel's apt/yum/pacman
+          # repo. Dev's Pages repos still refresh on push to the dev branch.
+          # Non-fatal: if the dev branch is missing the dispatch just fails.
           gh workflow run build.yml \
             --repo "${{ github.repository }}" \
             --ref dev \
             -f channel=dev \
-            && echo "Triggered build.yml (channel=dev) for version $UPSTREAM." \
+            -f deploy_pages=false \
+            && echo "Triggered build.yml (channel=dev, deploy_pages=false) for version $UPSTREAM." \
             || echo "WARNING: could not trigger dev build (dev branch missing?); stable build still queued."

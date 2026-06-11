@@ -22,6 +22,10 @@ on:
           - dev
           - none
         default: auto
+      deploy_pages:
+        description: 'Deploy repository metadata to GitHub Pages (set false to skip — e.g. an auto dev build that must not replace the stable site)'
+        type: boolean
+        default: true
 
 permissions: {}
 
@@ -423,7 +427,11 @@ jobs:
       #   Stable → /stable/ directory    Dev → /dev/ directory
       # -----------------------------------------------------------------------
       - name: Build repository metadata for GitHub Pages
-        if: env.CHANNEL == 'stable' || env.CHANNEL == 'dev'
+        # Skipped when dispatched with deploy_pages=false (the auto dev build) so
+        # a single-channel artifact can't replace the other channel's live site.
+        # deploy-pages does a full-site replace and Pages has no dir index to
+        # merge from, so concurrent stable+dev deploys would clobber each other.
+        if: (env.CHANNEL == 'stable' || env.CHANNEL == 'dev') && github.event.inputs.deploy_pages != 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.ver.outputs.version }}
@@ -677,7 +685,7 @@ jobs:
           fi
 
       - name: Upload Pages artifact
-        if: env.CHANNEL == 'stable' || env.CHANNEL == 'dev'
+        if: (env.CHANNEL == 'stable' || env.CHANNEL == 'dev') && github.event.inputs.deploy_pages != 'false'
         uses: actions/upload-pages-artifact@v3
         with:
           path: pages/
@@ -812,9 +820,12 @@ jobs:
   # ---------------------------------------------------------------------------
   deploy-pages:
     needs: [determine-channel, build]
+    # deploy_pages=false (auto dev build) skips Pages entirely so it can't
+    # full-replace the other channel's live repository metadata.
     if: >
-      needs.determine-channel.outputs.channel == 'stable' ||
-      needs.determine-channel.outputs.channel == 'dev'
+      (needs.determine-channel.outputs.channel == 'stable' ||
+       needs.determine-channel.outputs.channel == 'dev') &&
+      github.event.inputs.deploy_pages != 'false'
     runs-on: ubuntu-latest
     permissions:
       pages: write
