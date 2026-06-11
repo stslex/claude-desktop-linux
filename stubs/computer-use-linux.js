@@ -256,19 +256,20 @@ function resolveDisplay(displayId) {
 // and the image/jpeg mimeType the orchestrator hardcodes both hold.
 // `geometry` (optional) = { x, y, w, h } in display logical points → grim -g.
 // ---------------------------------------------------------------------------
-let _warnedMultiOutput = false;
+let _multiOutputChecked = false;
 
 async function grimCapture(display, geometry) {
   if (!TOOLS.grim) throw new Error('grim not installed');
   // v1: single output → no `-o`, so grim captures the whole layout. When more
   // than one output exists this can disagree with the per-display geometry we
   // report (displayWidth/Height/origin*) and miscalibrate clicks on secondary
-  // monitors. Warn once rather than fail silently; per-output `-o` targeting +
+  // monitors. Probe once (regardless of count) so describeDisplays() doesn't
+  // run on every capture; warn if multi-output. Per-output `-o` targeting +
   // origin offsets are the multi-output TODO (see file header / coordSpace).
-  if (!_warnedMultiOutput) {
-    const outputs = describeDisplays().length; // enumerate once
+  if (!_multiOutputChecked) {
+    _multiOutputChecked = true;
+    const outputs = describeDisplays().length;
     if (outputs > 1) {
-      _warnedMultiOutput = true;
       log(`WARNING: ${outputs} outputs detected; v1 captures the whole layout ` +
           '(no -o targeting). Screenshot/click coordinates are only reliable on a ' +
           'SINGLE-output setup — multi-output is a TODO.');
