@@ -201,20 +201,50 @@ if (!global[INIT_SYM] && process.type === 'browser') {
       return trayIcon || icon;
     }
 
+    // Show + focus the main window (used by tray click and the "Show" menu item).
+    function showMainWindow() {
+      const wins = OrigBrowserWindow.getAllWindows();
+      const mainWin = wins.find(w => !w.isDestroyed()) || null;
+      if (mainWin) {
+        if (mainWin.isMinimized()) mainWin.restore();
+        mainWin.show();
+        mainWin.focus();
+      }
+    }
+
     function addTrayClickHandler(tray) {
-      const showWindow = () => {
-        const wins = OrigBrowserWindow.getAllWindows();
-        const mainWin = wins.find(w => !w.isDestroyed()) || null;
-        if (mainWin) {
-          if (mainWin.isMinimized()) mainWin.restore();
-          mainWin.show();
-          mainWin.focus();
-        }
-      };
       // 'click' covers most Linux tray implementations; 'double-click' is
       // needed on some desktop environments (e.g. KDE Plasma with SNI).
-      tray.on('click', showWindow);
-      tray.on('double-click', showWindow);
+      tray.on('click', showMainWindow);
+      tray.on('double-click', showMainWindow);
+    }
+
+    // Provide a Linux tray context menu.  The app shows its tray menu via the
+    // macOS/Windows-only `right-click` event + `tray.popUpContextMenu()`, and
+    // never calls `setContextMenu()` (grep: 0 occurrences) — so on Linux
+    // (StatusNotifierItem / dbusmenu) the tray has NO menu and there is no way
+    // to quit from it.  setContextMenu() is the correct Linux mechanism, so we
+    // attach a minimal Show / Quit menu.  (We can't reuse the app's own menu —
+    // it is built lazily inside a minified closure we cannot reach.)
+    function applyTrayContextMenu(tray) {
+      try {
+        const { Menu } = electron;
+        if (!Menu || typeof tray.setContextMenu !== 'function') return;
+        const menu = Menu.buildFromTemplate([
+          { label: 'Show Claude', click: showMainWindow },
+          { type: 'separator' },
+          {
+            label: 'Quit Claude',
+            click: () => {
+              const a = electron.app || electron.default?.app;
+              if (a) a.quit();
+            },
+          },
+        ]);
+        tray.setContextMenu(menu);
+      } catch (e) {
+        log(`applyTrayContextMenu failed: ${e.message}`);
+      }
     }
 
     // Tray churn guard (Linux).  The app rebuilds its tray — OQ.destroy() then
@@ -269,6 +299,7 @@ if (!global[INIT_SYM] && process.type === 'browser') {
           singletonTray.removeAllListeners('click');
           singletonTray.removeAllListeners('double-click');
           addTrayClickHandler(singletonTray);
+          applyTrayContextMenu(singletonTray);
           log('Tray construct intercepted: reused persistent tray (no new SNI)');
           return singletonTray;
         }
@@ -278,8 +309,9 @@ if (!global[INIT_SYM] && process.type === 'browser') {
         const tray = new Target(resolvedIcon);
         installTrayInstancePatches(tray);
         addTrayClickHandler(tray);
+        applyTrayContextMenu(tray);
         singletonTray = tray;
-        log('Tray click handler added');
+        log('Tray click handler added + Linux context menu set');
         return tray;
       },
     });
