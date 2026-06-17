@@ -201,38 +201,117 @@ if (!global[INIT_SYM] && process.type === 'browser') {
       return trayIcon || icon;
     }
 
+    // Show + focus the main window (used by tray click and the "Show" menu item).
+    function showMainWindow() {
+      const wins = OrigBrowserWindow.getAllWindows();
+      const mainWin = wins.find(w => !w.isDestroyed()) || null;
+      if (mainWin) {
+        if (mainWin.isMinimized()) mainWin.restore();
+        mainWin.show();
+        mainWin.focus();
+      }
+    }
+
     function addTrayClickHandler(tray) {
-      const showWindow = () => {
-        const wins = OrigBrowserWindow.getAllWindows();
-        const mainWin = wins.find(w => !w.isDestroyed()) || null;
-        if (mainWin) {
-          if (mainWin.isMinimized()) mainWin.restore();
-          mainWin.show();
-          mainWin.focus();
-        }
-      };
       // 'click' covers most Linux tray implementations; 'double-click' is
       // needed on some desktop environments (e.g. KDE Plasma with SNI).
-      tray.on('click', showWindow);
-      tray.on('double-click', showWindow);
+      tray.on('click', showMainWindow);
+      tray.on('double-click', showMainWindow);
+    }
+
+    // Provide a Linux tray context menu.  The app shows its tray menu via the
+    // macOS/Windows-only `right-click` event + `tray.popUpContextMenu()`, and
+    // never calls `setContextMenu()` (grep: 0 occurrences) — so on Linux
+    // (StatusNotifierItem / dbusmenu) the tray has NO menu and there is no way
+    // to quit from it.  setContextMenu() is the correct Linux mechanism, so we
+    // attach a minimal Show / Quit menu.  (We can't reuse the app's own menu —
+    // it is built lazily inside a minified closure we cannot reach.)
+    function applyTrayContextMenu(tray) {
+      try {
+        const { Menu } = electron;
+        if (!Menu || typeof tray.setContextMenu !== 'function') return;
+        const menu = Menu.buildFromTemplate([
+          { label: 'Show Claude', click: showMainWindow },
+          { type: 'separator' },
+          {
+            label: 'Quit Claude',
+            click: () => {
+              const a = electron.app || electron.default?.app;
+              if (a) a.quit();
+            },
+          },
+        ]);
+        tray.setContextMenu(menu);
+      } catch (e) {
+        log(`applyTrayContextMenu failed: ${e.message}`);
+      }
+    }
+
+    // Tray churn guard (Linux).  The app rebuilds its tray — OQ.destroy() then
+    // `new Tray()` — on every nativeTheme "updated" and menuBar toggle.  On
+    // macOS that is cheap; on Linux each rebuild re-exports the
+    // StatusNotifierItem dbus objects, and because Tray.destroy() does not
+    // release them synchronously the new export collides
+    // ("org.kde.StatusNotifierItem.* is already exported") and the tray ends up
+    // broken.  At startup those events fire several times, so the tray is
+    // recreated ~5x and the SNI registration is left in a broken state.
+    //
+    // Since patchTrayIcon() forces a CONSTANT Linux tray icon (it ignores the
+    // app's macOS/theme icon), every rebuild is a visual no-op.  So we keep a
+    // single persistent Tray and collapse the churn onto one SNI:
+    //   - construct: if a live tray exists, refresh its image + click handlers
+    //     and return it (no new SNI);
+    //   - destroy: defer briefly — the app's destroy()+`new Tray()` rebuild
+    //     cancels the timer via the next construct, while a genuine disable
+    //     (destroy with no following construct) still tears the tray down.
+    let singletonTray = null;
+    let pendingTrayDestroy = null;
+    const TRAY_DESTROY_DEFER_MS = 200;
+
+    function installTrayInstancePatches(tray) {
+      // Keep post-construction icon updates (e.g. notification badges) on our
+      // Linux-compatible icon instead of reverting to the macOS resource.
+      const origSetImage = tray.setImage.bind(tray);
+      tray.setImage = function patchedSetImage(img) {
+        return origSetImage(patchTrayIcon(img));
+      };
+      // Defer destroy so a rebuild reuses this instance instead of churning the
+      // StatusNotifierItem.
+      const origDestroy = tray.destroy.bind(tray);
+      tray.destroy = function deferredDestroy() {
+        if (pendingTrayDestroy) clearTimeout(pendingTrayDestroy);
+        pendingTrayDestroy = setTimeout(() => {
+          pendingTrayDestroy = null;
+          try { if (!tray.isDestroyed()) origDestroy(); } catch (_) {}
+          if (singletonTray === tray) singletonTray = null;
+        }, TRAY_DESTROY_DEFER_MS);
+      };
     }
 
     const PatchedTray = new Proxy(OrigTray, {
       construct(Target, [icon, ...rest]) {
         const resolvedIcon = patchTrayIcon(icon);
+        // Reuse the persistent tray across the app's destroy()+recreate churn.
+        if (singletonTray && !singletonTray.isDestroyed()) {
+          if (pendingTrayDestroy) { clearTimeout(pendingTrayDestroy); pendingTrayDestroy = null; }
+          try { singletonTray.setImage(resolvedIcon); } catch (_) {}
+          // Reset listeners so the app's re-added handler doesn't accumulate.
+          singletonTray.removeAllListeners('click');
+          singletonTray.removeAllListeners('double-click');
+          addTrayClickHandler(singletonTray);
+          applyTrayContextMenu(singletonTray);
+          log('Tray construct intercepted: reused persistent tray (no new SNI)');
+          return singletonTray;
+        }
         log('Tray construct intercepted: icon=' + (resolvedIcon === trayIcon ? 'replaced' : 'original'));
         // Use `new Target(...)` directly instead of Reflect.construct with
         // newTarget to avoid issues where Electron's Tray checks new.target.
         const tray = new Target(resolvedIcon);
-        // Intercept setImage() so that post-construction icon updates (e.g.
-        // notification badges) also use our Linux-compatible icon instead of
-        // reverting to the macOS resource.
-        const origSetImage = tray.setImage.bind(tray);
-        tray.setImage = function patchedSetImage(img) {
-          return origSetImage(patchTrayIcon(img));
-        };
+        installTrayInstancePatches(tray);
         addTrayClickHandler(tray);
-        log('Tray click handler added');
+        applyTrayContextMenu(tray);
+        singletonTray = tray;
+        log('Tray click handler added + Linux context menu set');
         return tray;
       },
     });

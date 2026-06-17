@@ -177,6 +177,7 @@ it off):
   `require()`-ed at the top of the bundle):
   `patches/module-load-patch.js`, `patches/shell-env-patch.js`,
   `stubs/platform-headers.js`, `patches/platform-override.js`,
+  `patches/systempreferences-shim.js`, `patches/electron-macos-shim.js`,
   `stubs/ipc-stubs.js`, `stubs/dispatch-polyfill.js`,
   `patches/native-frame.js`, `patches/open-url-bridge.js`, and
   `patches/path-translator.mjs` (converted ESM→CJS on the fly).

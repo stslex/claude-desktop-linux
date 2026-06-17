@@ -141,6 +141,7 @@ class AuthRequest {
 
   constructor() {
     this._callbackURLScheme = 'claude';
+    this._teardown = null;
   }
 
   /**
@@ -182,22 +183,40 @@ class AuthRequest {
       const onOpenUrl = (event, cbUrl) => {
         if (typeof cbUrl === 'string' && cbUrl.toLowerCase().startsWith(`${scheme}://`)) {
           process.stderr.write(`[claude-native stub] OAuth callback received: ${cbUrl}\n`);
-          app.removeListener('open-url', onOpenUrl);
+          this._teardown();
           resolve({ callbackUrl: cbUrl });
         }
       };
-      app.on('open-url', onOpenUrl);
 
       // Safety timeout: after 5 minutes give up so the UI can show an error.
       const timer = setTimeout(() => {
-        app.removeListener('open-url', onOpenUrl);
+        this._teardown();
         process.stderr.write(`[claude-native stub] OAuth timeout — no ${scheme}:// callback received.\n`);
         resolve({ callbackUrl: `${scheme}://timeout` });
       }, 5 * 60 * 1000);
-
       // Don't keep the Node event loop alive just for the timeout.
       if (timer.unref) timer.unref();
+
+      // Expose teardown so cancel() can remove this in-flight listener + timer.
+      this._teardown = () => {
+        app.removeListener('open-url', onOpenUrl);
+        clearTimeout(timer);
+        this._teardown = null;
+      };
+      app.on('open-url', onOpenUrl);
     });
+  }
+
+  /**
+   * Cancel an in-flight auth session.  The app calls `request.cancel()` before
+   * starting a new attempt (e.g. retrying Google sign-in) and on teardown.
+   * macOS' ASWebAuthenticationSession provides this; our stub must too — without
+   * it `oL.cancel()` throws "cancel is not a function", which aborts the second
+   * Google sign-in attempt and leaves the user unable to log in via Google
+   * (email/in-app login is unaffected as it uses no deep-link callback).
+   */
+  cancel() {
+    if (typeof this._teardown === 'function') this._teardown();
   }
 
   // Legacy alias

@@ -86,43 +86,75 @@ if (!global[INIT_SYM] && process.type === 'browser') {
       }
     }
 
-    // Ensure the single-instance lock is held.  Without it, a second process
-    // launched by the OS to handle claude:// will NOT trigger second-instance
-    // on the first — it will just start a second window instead.
+    // Enforce single-instance on Linux.  The macOS app never calls
+    // requestSingleInstanceLock() — macOS guarantees a single app instance
+    // natively via LaunchServices, so the bundle has zero single-instance
+    // code.  On Linux there is no such guarantee: every launcher click / OS
+    // protocol-handler invocation spawns a brand-new process.  Without a lock
+    // (and a quit when the lock is lost) each launch opens a new window and a
+    // new tray, and the duplicate StatusNotifierItem registrations collide.
+    //
+    // So WE own single-instance here: the first process keeps the lock; any
+    // later process fails to get it and must quit immediately.  Electron
+    // delivers that process's argv to the first instance via "second-instance"
+    // (handled below), where we focus the existing window.
     const hadLock = app.hasSingleInstanceLock();
-    if (!hadLock) {
-      const gotLock = app.requestSingleInstanceLock();
-      process.stderr.write(`[open-url-bridge] requestSingleInstanceLock() => ${gotLock} (hadLock=false)\n`);
+    const gotLock = hadLock || app.requestSingleInstanceLock();
+    process.stderr.write(`[open-url-bridge] single-instance lock: gotLock=${gotLock} (hadLock=${hadLock})\n`);
+    if (!gotLock) {
+      // We are a secondary instance.  The primary already received this
+      // process's argv via Electron's "second-instance" event (handled in the
+      // primary, below), so quit before the app bundle creates a window / tray.
+      // app.quit() before 'ready' prevents any window from being created.
+      process.stderr.write('[open-url-bridge] secondary instance — quitting (primary will focus)\n');
+      app.quit();
     } else {
-      process.stderr.write(`[open-url-bridge] already holds single instance lock\n`);
-    }
+      // Primary instance.  Focus (restore + show + raise) the main window.
+      const focusMainWindow = () => {
+        try {
+          const BW = electron.BrowserWindow || electron.default?.BrowserWindow;
+          if (!BW) return;
+          const win = BW.getAllWindows().find((w) => !w.isDestroyed());
+          if (win) {
+            if (win.isMinimized()) win.restore();
+            if (!win.isVisible()) win.show();
+            win.focus();
+          }
+        } catch (e) {
+          process.stderr.write(`[open-url-bridge] focusMainWindow failed: ${e.message}\n`);
+        }
+      };
 
-    // -----------------------------------------------------------------------
-    // Bridge second-instance → open-url
-    // Fires when the OS launches a second copy of the app with a claude:// URL
-    // (e.g. after OAuth completes in the browser).
-    // -----------------------------------------------------------------------
-    app.on('second-instance', (event, argv) => {
-      const url = argv.find(a => typeof a === 'string' && /^claude:\/\//i.test(a));
-      if (url) {
-        process.stderr.write(`[open-url-bridge] second-instance → open-url: ${url}\n`);
-        app.emit('open-url', event, url);
-      }
-    });
-
-    // -----------------------------------------------------------------------
-    // Handle startup with a claude:// URL in argv (first launch as protocol
-    // handler before any instance is running).
-    // -----------------------------------------------------------------------
-    const startupUrl = process.argv.slice(1).find(
-      a => typeof a === 'string' && /^claude:\/\//i.test(a)
-    );
-    if (startupUrl) {
-      app.once('ready', () => {
-        process.stderr.write(`[open-url-bridge] startup argv → open-url: ${startupUrl}\n`);
-        // Provide a minimal event-like object so event.preventDefault() won't throw.
-        app.emit('open-url', { preventDefault() {} }, startupUrl);
+      // ---------------------------------------------------------------------
+      // second-instance: a second launch occurred (launcher click, or OS
+      // protocol handler).  Bring the running window forward — the
+      // single-instance UX the macOS-only code path provides natively — and,
+      // if a claude:// URL was passed (e.g. after OAuth), bridge it to
+      // "open-url" (a macOS-only event the app listens for).
+      // ---------------------------------------------------------------------
+      app.on('second-instance', (event, argv) => {
+        focusMainWindow();
+        const url = argv.find(a => typeof a === 'string' && /^claude:\/\//i.test(a));
+        if (url) {
+          process.stderr.write(`[open-url-bridge] second-instance → open-url: ${url}\n`);
+          app.emit('open-url', event, url);
+        }
       });
+
+      // ---------------------------------------------------------------------
+      // Handle startup with a claude:// URL in argv (first launch as protocol
+      // handler before any instance is running).
+      // ---------------------------------------------------------------------
+      const startupUrl = process.argv.slice(1).find(
+        a => typeof a === 'string' && /^claude:\/\//i.test(a)
+      );
+      if (startupUrl) {
+        app.once('ready', () => {
+          process.stderr.write(`[open-url-bridge] startup argv → open-url: ${startupUrl}\n`);
+          // Minimal event-like object so event.preventDefault() won't throw.
+          app.emit('open-url', { preventDefault() {} }, startupUrl);
+        });
+      }
     }
 
   } catch (e) {

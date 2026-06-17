@@ -678,6 +678,18 @@ PLAT_OVERRIDE_DEST="$MAIN_ENTRY_DIR/platform-override.js"
 cp "$PLAT_OVERRIDE_SRC" "$PLAT_OVERRIDE_DEST"
 log "Copied platform-override to $PLAT_OVERRIDE_DEST"
 
+# -- systempreferences-shim (already CJS, just copy) --------------------------
+SYSPREF_SHIM_SRC="$PATCHES_DIR/systempreferences-shim.js"
+SYSPREF_SHIM_DEST="$MAIN_ENTRY_DIR/systempreferences-shim.js"
+cp "$SYSPREF_SHIM_SRC" "$SYSPREF_SHIM_DEST"
+log "Copied systempreferences-shim to $SYSPREF_SHIM_DEST"
+
+# -- electron-macos-shim (already CJS, just copy) -----------------------------
+ELECTRON_MACOS_SHIM_SRC="$PATCHES_DIR/electron-macos-shim.js"
+ELECTRON_MACOS_SHIM_DEST="$MAIN_ENTRY_DIR/electron-macos-shim.js"
+cp "$ELECTRON_MACOS_SHIM_SRC" "$ELECTRON_MACOS_SHIM_DEST"
+log "Copied electron-macos-shim to $ELECTRON_MACOS_SHIM_DEST"
+
 # -- platform-headers (already CJS, copy from stubs/) -------------------------
 PLAT_HEADERS_SRC="$REPO_DIR/stubs/platform-headers.js"
 PLAT_HEADERS_DEST="$MAIN_ENTRY_DIR/platform-headers.js"
@@ -696,25 +708,57 @@ DISPATCH_DEST="$MAIN_ENTRY_DIR/dispatch-polyfill.js"
 cp "$DISPATCH_SRC" "$DISPATCH_DEST"
 log "Copied dispatch-polyfill to $DISPATCH_DEST"
 
-# -- Prepend all requires (idempotent: skip if already present) ---------------
-if grep -qF 'module-load-patch' "$MAIN_ENTRY"; then
-  log "Patches already injected into $MAIN_ENTRY — skipping prepend."
+# -- Prepend all shim requires ------------------------------------------------
+# Single source of truth for the CJS shims require()-d at the top of the main
+# entry, in load order. Also drives the post-patch validation list below, so a
+# shim can never be copied without being both wired and validated.
+PREPEND_SHIMS=(
+  module-load-patch.js
+  shell-env-patch.js
+  platform-headers.js
+  platform-override.js
+  systempreferences-shim.js
+  electron-macos-shim.js
+  ipc-stubs.js
+  dispatch-polyfill.js
+  native-frame.js
+  open-url-bridge.js
+  path-translator.js
+)
+
+# Idempotent AND self-repairing: strip any already-injected require lines, then
+# re-prepend the full canonical block in order. A single all-or-nothing guard
+# (e.g. "is module-load-patch present?") would skip the whole prepend on re-run,
+# leaving a newly added shim copied-but-never-loaded — which silently
+# reintroduces the very crash the shim fixes. Rebuilding the block every run
+# wires every shim regardless of prior state (fresh, partial, or stale order).
+REQUIRE_LINES_FILE="$(mktemp)"
+for shim in "${PREPEND_SHIMS[@]}"; do
+  echo "require('./$shim');"
+done > "$REQUIRE_LINES_FILE"
+
+PRESENT_COUNT=0
+for shim in "${PREPEND_SHIMS[@]}"; do
+  if grep -qxF "require('./$shim');" "$MAIN_ENTRY"; then
+    PRESENT_COUNT=$((PRESENT_COUNT + 1))
+  fi
+done
+
+TMPFILE="$(mktemp)"
+{
+  cat "$REQUIRE_LINES_FILE"
+  # Drop any pre-existing canonical require lines so they are not duplicated,
+  # then append the (rest of the) bundle. `|| true`: grep -v exits 1 if it
+  # selects no lines, which must not abort under `set -e`.
+  grep -vxFf "$REQUIRE_LINES_FILE" "$MAIN_ENTRY" || true
+} > "$TMPFILE"
+mv "$TMPFILE" "$MAIN_ENTRY"
+rm -f "$REQUIRE_LINES_FILE"
+
+if [[ "$PRESENT_COUNT" -eq "${#PREPEND_SHIMS[@]}" ]]; then
+  log "All ${#PREPEND_SHIMS[@]} shim requires already present in $MAIN_ENTRY — re-normalized order."
 else
-  TMPFILE="$(mktemp)"
-  {
-    echo "require('./module-load-patch.js');"
-    echo "require('./shell-env-patch.js');"
-    echo "require('./platform-headers.js');"
-    echo "require('./platform-override.js');"
-    echo "require('./ipc-stubs.js');"
-    echo "require('./dispatch-polyfill.js');"
-    echo "require('./native-frame.js');"
-    echo "require('./open-url-bridge.js');"
-    echo "require('./path-translator.js');"
-    cat "$MAIN_ENTRY"
-  } > "$TMPFILE"
-  mv "$TMPFILE" "$MAIN_ENTRY"
-  log "Prepended module-load-patch + shell-env-patch + platform-headers + platform-override + ipc-stubs + dispatch-polyfill + native-frame + open-url-bridge + path-translator to $MAIN_ENTRY"
+  log "Injected $(( ${#PREPEND_SHIMS[@]} - PRESENT_COUNT )) missing shim require(s) of ${#PREPEND_SHIMS[@]} into $MAIN_ENTRY (${PREPEND_SHIMS[*]})."
 fi
 
 # ---------------------------------------------------------------------------
@@ -746,17 +790,7 @@ done < <(find "$VITE_BUILD_DIR" -type f \( -name '*.js' -o -name '*.mjs' \) -pri
 
 add_validation_file "$MAIN_ENTRY"
 
-for helper_file in \
-  module-load-patch.js \
-  shell-env-patch.js \
-  platform-headers.js \
-  platform-override.js \
-  ipc-stubs.js \
-  dispatch-polyfill.js \
-  native-frame.js \
-  open-url-bridge.js \
-  path-translator.js
-do
+for helper_file in "${PREPEND_SHIMS[@]}"; do
   add_validation_file "$MAIN_ENTRY_DIR/$helper_file"
 done
 
