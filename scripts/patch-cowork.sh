@@ -678,6 +678,12 @@ PLAT_OVERRIDE_DEST="$MAIN_ENTRY_DIR/platform-override.js"
 cp "$PLAT_OVERRIDE_SRC" "$PLAT_OVERRIDE_DEST"
 log "Copied platform-override to $PLAT_OVERRIDE_DEST"
 
+# -- systempreferences-shim (already CJS, just copy) --------------------------
+SYSPREF_SHIM_SRC="$PATCHES_DIR/systempreferences-shim.js"
+SYSPREF_SHIM_DEST="$MAIN_ENTRY_DIR/systempreferences-shim.js"
+cp "$SYSPREF_SHIM_SRC" "$SYSPREF_SHIM_DEST"
+log "Copied systempreferences-shim to $SYSPREF_SHIM_DEST"
+
 # -- platform-headers (already CJS, copy from stubs/) -------------------------
 PLAT_HEADERS_SRC="$REPO_DIR/stubs/platform-headers.js"
 PLAT_HEADERS_DEST="$MAIN_ENTRY_DIR/platform-headers.js"
@@ -706,6 +712,7 @@ else
     echo "require('./shell-env-patch.js');"
     echo "require('./platform-headers.js');"
     echo "require('./platform-override.js');"
+    echo "require('./systempreferences-shim.js');"
     echo "require('./ipc-stubs.js');"
     echo "require('./dispatch-polyfill.js');"
     echo "require('./native-frame.js');"
@@ -714,7 +721,7 @@ else
     cat "$MAIN_ENTRY"
   } > "$TMPFILE"
   mv "$TMPFILE" "$MAIN_ENTRY"
-  log "Prepended module-load-patch + shell-env-patch + platform-headers + platform-override + ipc-stubs + dispatch-polyfill + native-frame + open-url-bridge + path-translator to $MAIN_ENTRY"
+  log "Prepended module-load-patch + shell-env-patch + platform-headers + platform-override + systempreferences-shim + ipc-stubs + dispatch-polyfill + native-frame + open-url-bridge + path-translator to $MAIN_ENTRY"
 fi
 
 # ---------------------------------------------------------------------------
@@ -751,6 +758,7 @@ for helper_file in \
   shell-env-patch.js \
   platform-headers.js \
   platform-override.js \
+  systempreferences-shim.js \
   ipc-stubs.js \
   dispatch-polyfill.js \
   native-frame.js \
