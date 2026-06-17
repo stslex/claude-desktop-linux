@@ -684,6 +684,12 @@ SYSPREF_SHIM_DEST="$MAIN_ENTRY_DIR/systempreferences-shim.js"
 cp "$SYSPREF_SHIM_SRC" "$SYSPREF_SHIM_DEST"
 log "Copied systempreferences-shim to $SYSPREF_SHIM_DEST"
 
+# -- electron-macos-shim (already CJS, just copy) -----------------------------
+ELECTRON_MACOS_SHIM_SRC="$PATCHES_DIR/electron-macos-shim.js"
+ELECTRON_MACOS_SHIM_DEST="$MAIN_ENTRY_DIR/electron-macos-shim.js"
+cp "$ELECTRON_MACOS_SHIM_SRC" "$ELECTRON_MACOS_SHIM_DEST"
+log "Copied electron-macos-shim to $ELECTRON_MACOS_SHIM_DEST"
+
 # -- platform-headers (already CJS, copy from stubs/) -------------------------
 PLAT_HEADERS_SRC="$REPO_DIR/stubs/platform-headers.js"
 PLAT_HEADERS_DEST="$MAIN_ENTRY_DIR/platform-headers.js"
@@ -713,6 +719,7 @@ else
     echo "require('./platform-headers.js');"
     echo "require('./platform-override.js');"
     echo "require('./systempreferences-shim.js');"
+    echo "require('./electron-macos-shim.js');"
     echo "require('./ipc-stubs.js');"
     echo "require('./dispatch-polyfill.js');"
     echo "require('./native-frame.js');"
@@ -721,7 +728,7 @@ else
     cat "$MAIN_ENTRY"
   } > "$TMPFILE"
   mv "$TMPFILE" "$MAIN_ENTRY"
-  log "Prepended module-load-patch + shell-env-patch + platform-headers + platform-override + systempreferences-shim + ipc-stubs + dispatch-polyfill + native-frame + open-url-bridge + path-translator to $MAIN_ENTRY"
+  log "Prepended module-load-patch + shell-env-patch + platform-headers + platform-override + systempreferences-shim + electron-macos-shim + ipc-stubs + dispatch-polyfill + native-frame + open-url-bridge + path-translator to $MAIN_ENTRY"
 fi
 
 # ---------------------------------------------------------------------------
@@ -759,6 +766,7 @@ for helper_file in \
   platform-headers.js \
   platform-override.js \
   systempreferences-shim.js \
+  electron-macos-shim.js \
   ipc-stubs.js \
   dispatch-polyfill.js \
   native-frame.js \
